@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  up)
+    docker compose up -d mysql
+    ;;
+  down)
+    docker compose down
+    ;;
+  logs)
+    # 用法：./scripts/run.sh logs tradebot
+    svc="${1:-tradebot}"
+    docker compose logs -f --tail=200 "$svc"
+    ;;
+  getdata)
+    docker compose run --rm tradebot python app/getdata_full.py
+    ;;
+  strategyA)
+    docker compose run --rm tradebot python app/strategy_a_pick.py
+    ;;
+  unlock)
+    docker compose run --rm tradebot python app/unlock_can_sell.py
+    ;;
+  mysql)
+    # 进入 mysql 容器交互
+    docker compose exec mysql sh -lc 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -D"$MYSQL_DATABASE"'
+    ;;
+  *)
+    echo "Usage:"
+    echo "  ./scripts/run.sh up            # 启动 mysql"
+    echo "  ./scripts/run.sh down          # 停止全部"
+    echo "  ./scripts/run.sh logs [svc]    # 看日志"
+    echo "  ./scripts/run.sh getdata       # 跑 getdata_full.py"
+    echo "  ./scripts/run.sh strategyA     # 跑 A策略选股"
+    echo "  ./scripts/run.sh unlock        # 跑 unlock_can_sell"
+    echo "  ./scripts/run.sh mysql         # 进入 mysql"
+    exit 1
+    ;;
+esac

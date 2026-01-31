@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd /app
+
+ts() { date '+[%Y-%m-%d %H:%M:%S]'; }
+
+echo "$(ts) ===== START healthcheck ====="
+python -u app/healthcheck.py
+echo "$(ts) ===== DONE healthcheck ====="
+
+# 可选：启动前打点信息
+echo "$(ts) ===== START tradebot main ====="
+echo "$(ts) TRADE_ENV=${TRADE_ENV:-paper}"
+echo "$(ts) DB=${DB_HOST:-mysql}:${DB_PORT:-3306}/${DB_NAME:-cszy2000}"
+
+# 关键：用 exec 把进程替换成主程序（容器就会一直活着）
+exec python -u app/trade_bot_main.py
