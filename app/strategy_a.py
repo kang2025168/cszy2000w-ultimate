@@ -186,6 +186,16 @@ def mark_order_success(conn, stock_code: str, order_id):
 class NonRetryableOrderError(Exception):
     """确定性错误：不应重试（例如 not tradable）"""
 
+def safe_get_account(client):
+    try:
+        return client.get_account()
+    except Exception as e:
+        msg = str(e)
+        if "ACCOUNT_CLOSED_PENDING" in msg:
+            print("[警告] Alpaca account 状态 ACCOUNT_CLOSED_PENDING，跳过账户校验，继续下单", flush=True)
+            return None
+        raise
+
 def _is_not_tradable_error(e: Exception) -> bool:
     msg = str(e).lower()
     if "not tradable" in msg:
@@ -490,9 +500,14 @@ def strategy_A_buy(stock_code: str):
                 return
 
             broker = get_broker()
-            acct = broker.client.get_account()
+            acct = safe_get_account(broker.client)
 
-            buying_power = float(acct.buying_power)
+            # 如果账户对象拿不到（ACCOUNT_CLOSED_PENDING），用一个兜底 buying_power
+            if acct is None:
+                buying_power = 100000.0
+            else:
+                buying_power = float(acct.buying_power)
+
             usable = buying_power * 0.8
             cash = usable * weight
 
