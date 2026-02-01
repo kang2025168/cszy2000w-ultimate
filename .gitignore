@@ -5,3 +5,9 @@ logs/
 data/
 *.dump.sql
 .idea/
+
+# local dumps
+*.dump.sql
+*.sql.dump
+stock_prices_pool.dump.sql
+cszy2000.dump.sql
