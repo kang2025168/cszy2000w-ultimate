@@ -508,7 +508,7 @@ def strategy_A_buy(stock_code: str):
             else:
                 buying_power = float(acct.buying_power)
 
-            usable = buying_power * 0.8
+            usable = buying_power * 0.1
             cash = usable * weight
 
             # ✅ 小优化：避免浮点导致 qty=0 来回跳
