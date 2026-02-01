@@ -36,8 +36,8 @@ print(f"===== 当前运行环境: {TRADE_ENV} =====", flush=True)
 # =========================
 if TRADE_ENV == "paper":
     ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
-    ALPACA_KEY = "PKGVLNWWBEGONBLD23VNCCAD52"
-    ALPACA_SECRET = "9MJtyKEuRoGUyUqmhJvPojXS6b9AnMvW69GPGNrPe44o"
+    ALPACA_KEY = "PKU4Z37Z272D7RKRES2R77ZOY6"
+    ALPACA_SECRET = "BdY5DwFMwNHtEXm7bX2C3HFrmga4n9rqqf1F9PyMHFUC"
 else:
     ALPACA_BASE_URL = "https://api.alpaca.markets"
     ALPACA_KEY = "AKMUKOBY5QQG54OIYZDKVOR3JM"
