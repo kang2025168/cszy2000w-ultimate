@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 logs/
 data/
+*.dump.sql
+.idea/
