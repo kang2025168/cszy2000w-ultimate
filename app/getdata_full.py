@@ -14,7 +14,9 @@ import pandas as pd
 # =========================
 BASE_DIR = Path(__file__).resolve().parent
 # 容器内默认 CSV 放在 /app/data；也允许用 env 覆盖
-CSV_FILE = Path(os.getenv("SYMBOLS_CSV", "/app/data/low_price_symbols.csv")).resolve()
+# CSV_FILE = Path(os.getenv("SYMBOLS_CSV", "/app/data/low_price_symbols.csv")).resolve()
+BASE_DIR = "/app/data/mysql"
+CSV_FILE = os.path.join(BASE_DIR, "low_price_symbols.csv")
 OUT_FAILED_CSV = os.getenv("OUT_FAILED_CSV", "/app/data/failed_symbols_today.csv")
 
 # =========================
