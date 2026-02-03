@@ -1,16 +1,12 @@
-version: "3.9"
-
 services:
   mysql:
     image: mysql:8.0
-    container_name: cszy_mysql
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: ${DB_NAME}
       MYSQL_USER: ${DB_USER}
       MYSQL_PASSWORD: ${DB_PASS}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
-      TZ: America/Los_Angeles
     ports:
       - "3307:3306"
     volumes:
@@ -22,21 +18,17 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
-    networks:
-      - cszy_net
 
   tradebot:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: cszy_tradebot
     working_dir: /app
     env_file:
       - .env
     environment:
-      # ✅ 强制保证：tradebot 永远连容器内 mysql（服务名）
       DB_HOST: mysql
-      DB_PORT: "3306"
+      DB_PORT: 3306
       TZ: America/Los_Angeles
     volumes:
       - ./app:/app/app
@@ -48,9 +40,3 @@ services:
         condition: service_healthy
     command: ["bash", "-lc", "./scripts/run.sh strategy_a"]
     restart: unless-stopped
-    networks:
-      - cszy_net
-
-networks:
-  cszy_net:
-    driver: bridge
