@@ -234,6 +234,7 @@ def fetch_bars_batch(client: StockHistoricalDataClient, symbols: list[str], star
         start=pd.Timestamp(start_dt),
         end=pd.Timestamp(end_dt),
         feed=ALPACA_DATA_FEED,
+        adjustment="all",  # ✅关键：不做拆股/分红复权，volume更接近“原始成交量口径”
     )
 
     bars = client.get_stock_bars(req)
