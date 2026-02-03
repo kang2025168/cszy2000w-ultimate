@@ -19,7 +19,7 @@ case "$cmd" in
     docker compose logs -f --tail=200 "$svc"
     ;;
   getdata)
-    docker compose run --rm tradebot python app/getdata_full.py
+    docker compose run --rm tradebot python app/getdata_alpaca.py
     ;;
   strategyA)
     docker compose run --rm tradebot python app/strategy_a_pick.py

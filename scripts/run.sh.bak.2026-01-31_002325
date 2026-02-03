@@ -21,7 +21,7 @@ case "$cmd" in
     exec python -u app/trade_bot_main.py
     ;;
   getdata_full)
-    exec python -u app/getdata_full.py
+    exec python -u app/getdata_alpaca.py
     ;;
   strategy_a)
     echo "$(ts) ===== START tradebot main (strategy_a) ====="
