@@ -16,7 +16,7 @@
 ```bash
 docker compose up -d --build
 ```
-
+TradeBot#2026!
 3. 查看日志：
 
 ```bash
@@ -24,3 +24,4 @@ docker compose logs -f tradebot
 ```
 
 云端流程一致。
+docker compose exec mysql mysql -u tradebot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT NOW() as now_time, @@global.time_zone as gtz, @@session.time_zone as stz;"
