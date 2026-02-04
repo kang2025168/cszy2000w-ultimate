@@ -132,39 +132,9 @@ def pick_topk_strategy_a(
         FROM stock_prices_pool
         WHERE DATE(`date`) >= %s
           AND DATE(`date`) <= %s
-
-          -- ✅ 只在“当日”做价格筛选
-          AND (
-                DATE(`date`) < %s
-                OR close BETWEEN %s AND %s
-              )
-
-          -- 成交量基础过滤（安全）
-          AND volume IS NOT NULL
-          AND volume > 0
-
-          -- ✅ 只在“当日”检查涨幅
-          AND (
-                %s IS NULL
-                OR DATE(`date`) < %s
-                OR ((close - open) / NULLIF(open,0)) >= %s
-              )
-
         ORDER BY symbol, d
         """
-
-        df = pd.read_sql(
-            sql,
-            conn,
-            params=[
-                start_buffer, end_day,
-                end_day,  # DATE(date) < d0
-                price_low, price_high,
-                require_gain_today,
-                end_day,
-                require_gain_today
-            ]
-        )
+        df = pd.read_sql(sql, conn, params=[start_buffer, end_day])
     finally:
         try:
             conn.close()
