@@ -1,8 +1,10 @@
 services:
   mysql:
     image: mysql:8.0
+    container_name: cszy_mysql
     restart: unless-stopped
     environment:
+      TZ: America/Los_Angeles
       MYSQL_DATABASE: ${DB_NAME}
       MYSQL_USER: ${DB_USER}
       MYSQL_PASSWORD: ${DB_PASS}
@@ -12,7 +14,9 @@ services:
     volumes:
       - ./data/mysql:/var/lib/mysql
       - ./mysql-init:/docker-entrypoint-initdb.d
-    command: --default-authentication-plugin=mysql_native_password
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --default-time-zone=America/Los_Angeles
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-rootpass}"]
       interval: 5s
@@ -23,6 +27,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: cszy_tradebot
     working_dir: /app
     env_file:
       - .env
