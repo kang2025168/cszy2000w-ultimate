@@ -11,62 +11,40 @@ from datetime import datetime, time
 from pathlib import Path
 import atexit
 
+from app.strategy_a import *
+from app.strategy_b import *
+from app.strategy_c import *
+from app.strategy_d import *
+from app.strategy_e import *
+
 try:
     from zoneinfo import ZoneInfo
 except Exception:
     ZoneInfo = None
 
 # =========================
-# 0) 运行环境开关（唯一入口）
-#    ALPACA_MODE=paper | live
+# 0) 读取环境开关（唯一来源）
 # =========================
-mode = os.getenv("ALPACA_MODE", "paper").strip().lower()
-if mode not in ("paper", "live"):
-    raise RuntimeError(f"❌ 非法 ALPACA_MODE={mode}")
-
-if mode == "live":
-    os.environ["TRADE_ENV"] = "live"
-    os.environ["ALPACA_BASE_URL"] = os.getenv(
-        "LIVE_ALPACA_BASE_URL", "https://api.alpaca.markets"
-    )
-    os.environ["APCA_API_KEY_ID"] = os.getenv("LIVE_APCA_API_KEY_ID", "")
-    os.environ["APCA_API_SECRET_KEY"] = os.getenv("LIVE_APCA_API_SECRET_KEY", "")
-else:
-    os.environ["TRADE_ENV"] = "paper"
-    os.environ["ALPACA_BASE_URL"] = os.getenv(
-        "PAPER_ALPACA_BASE_URL", "https://paper-api.alpaca.markets"
-    )
-    os.environ["APCA_API_KEY_ID"] = os.getenv("PAPER_APCA_API_KEY_ID", "")
-    os.environ["APCA_API_SECRET_KEY"] = os.getenv("PAPER_APCA_API_SECRET_KEY", "")
-
-# 给所有旧代码 / SDK 用的统一变量名
-os.environ["ALPACA_KEY"] = os.environ.get("APCA_API_KEY_ID", "")
-os.environ["ALPACA_SECRET"] = os.environ.get("APCA_API_SECRET_KEY", "")
-
-# 统一读取（后面所有代码只认这一份）
-TRADE_ENV = os.getenv("TRADE_ENV", "paper").lower()
-ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "")
-ALPACA_KEY = os.getenv("ALPACA_KEY", "")
-ALPACA_SECRET = os.getenv("ALPACA_SECRET", "")
-
+TRADE_ENV = os.getenv("TRADE_ENV", "paper").strip().lower()
+if TRADE_ENV not in ("paper", "live"):
+    raise RuntimeError(f"❌ 非法 TRADE_ENV={TRADE_ENV}，只能是 paper 或 live")
 print(f"===== 当前运行环境: {TRADE_ENV} =====", flush=True)
-print(f"ALPACA_BASE_URL = {ALPACA_BASE_URL}", flush=True)
-print(f"KEY_PREFIX = {ALPACA_KEY[:5]}", flush=True)
 
 # =========================
-# 1) 项目路径 & imports（⚠️必须在环境变量之后）
+# 1) 根据环境选择 Alpaca Key
+#    ✅ 建议：未来改成从 env 读取；这里先保持你原样（最小改动）
 # =========================
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+if TRADE_ENV == "paper":
+    ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
+    ALPACA_KEY = "PKU4Z37Z272D7RKRES2R77ZOY6"
+    ALPACA_SECRET = "BdY5DwFMwNHtEXm7bX2C3HFrmga4n9rqqf1F9PyMHFUC"
+else:
+    ALPACA_BASE_URL = "https://api.alpaca.markets"
+    ALPACA_KEY = "AKMUKOBY5QQG54OIYZDKVOR3JM"
+    ALPACA_SECRET = "Cji6QtUqexq9TYpZFKwPmCN71jinJC21tKcYr6etbsyU"
 
-# 👉 所有 strategy 在这里 import，保证拿到正确的 env
-from app.strategy_a import *
-from app.strategy_b import *
-from app.strategy_c import *
-from app.strategy_d import *
-from app.strategy_e import *
-from app.strategy_a_pick import *
+print("ALPACA_BASE_URL =", ALPACA_BASE_URL, flush=True)
+print("KEY_PREFIX =", ALPACA_KEY[:5], flush=True)
 
 # =========================
 # 2) 强制 stdout/stderr UTF-8
