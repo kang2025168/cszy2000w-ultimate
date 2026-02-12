@@ -8,3 +8,4 @@ alpaca-py==0.29.0
 pandas-datareader>=0.10.0
 pandas-datareader>=0.10.0
 requests-cache
+alpaca-trade-api==3.1.1
