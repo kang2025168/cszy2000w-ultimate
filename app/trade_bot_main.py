@@ -7,7 +7,7 @@ import traceback
 import signal
 import logging
 from logging.handlers import TimedRotatingFileHandler
-from datetime import datetime, time
+from datetime import datetime, time as dt_time
 from pathlib import Path
 import atexit
 
@@ -144,8 +144,8 @@ from strategy_a_pick import *
 LA_TZ_NAME = os.getenv("TZ", "America/Los_Angeles")
 LA_TZ = ZoneInfo(LA_TZ_NAME) if ZoneInfo else None
 
-MARKET_OPEN = time(6, 30)
-MARKET_CLOSE = time(13, 0)
+MARKET_OPEN = dt_time(6, 30)
+MARKET_CLOSE = dt_time(13, 0)
 
 def now_la():
     if LA_TZ:
