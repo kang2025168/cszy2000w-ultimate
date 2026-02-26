@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-# strategy_a.py  (from 交易管理工具2/A策略买卖方法.py)
-
-from dotenv import load_dotenv
-load_dotenv()
-
-from app.common.config import load_settings
-S = load_settings()
+# app/strategy_a.py
 
 import os
 import time as t
@@ -26,30 +20,41 @@ from alpaca.data.requests import StockLatestTradeRequest
 
 
 # =====================================================
-#                    ENV / FLAGS
+#                 ENV / FLAGS（统一口径）
 # =====================================================
 def get_trade_env() -> str:
-    return "live" if (S.APP_ENV or "").strip().lower() == "live" else "paper"
+    """
+    ✅ 统一：只看 TRADE_ENV / ALPACA_MODE（由主程序负责注入）
+    """
+    v = (os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper").strip().lower()
+    return "live" if v == "live" else "paper"
 
 def is_after_hours_test_enabled() -> bool:
     return (os.getenv("ALLOW_AFTER_HOURS_TEST") or "0").strip() == "1"
 
+def _env(*names: str, default: str = "") -> str:
+    for n in names:
+        v = os.getenv(n)
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
+    return default
+
 
 # =====================================================
-#                    DB 配置（统一来源：S）
+#                    DB 配置（保持你原来的 env 方式）
 # =====================================================
 DB = dict(
-    host=S.DB_HOST,
-    port=S.DB_PORT,
-    user=S.DB_USER,
-    password=S.DB_PASSWORD,
-    database=S.DB_NAME,
+    host=_env("DB_HOST", default="mysql"),
+    port=int(_env("DB_PORT", default="3306")),
+    user=_env("DB_USER", default="tradebot"),
+    password=_env("DB_PASS", default="TradeBot#2026!"),
+    database=_env("DB_NAME", default="cszy2000"),
     cursorclass=pymysql.cursors.DictCursor,
     charset="utf8mb4",
     autocommit=True,
 )
 
-TABLE = "stock_operations"
+TABLE = os.getenv("OPS_TABLE", "stock_operations")
 
 
 # =====================================================
@@ -198,15 +203,10 @@ def safe_get_account(client):
 
 def _is_not_tradable_error(e: Exception) -> bool:
     msg = str(e).lower()
-    if "not tradable" in msg:
-        return True
-    if "42210000" in msg:
-        return True
-    return False
+    return ("not tradable" in msg) or ("42210000" in msg)
 
 def _is_insufficient_error(e: Exception) -> bool:
     msg = str(e).lower()
-    # 这些通常重试也没用
     keys = ["insufficient buying power", "insufficient", "not enough buying power", "account is not eligible"]
     return any(k in msg for k in keys)
 
@@ -219,22 +219,22 @@ def _is_non_retryable_error(e: Exception) -> bool:
 # =====================================================
 class Broker:
     def __init__(self):
-        api = (S.ALPACA_KEY or "").strip()
-        secret = (S.ALPACA_SECRET or "").strip()
+        """
+        ✅ 统一：只读通用变量（由主程序注入）
+        """
+        api = _env("APCA_API_KEY_ID", "ALPACA_KEY", default="").strip()
+        secret = _env("APCA_API_SECRET_KEY", "ALPACA_SECRET", default="").strip()
+
         if not api or not secret:
-            raise RuntimeError("⛔ 未找到 ALPACA_KEY / ALPACA_SECRET（请检查 .env）")
+            raise RuntimeError("⛔ 未找到 APCA_API_KEY_ID / APCA_API_SECRET_KEY（或 ALPACA_KEY/SECRET）")
 
         env = get_trade_env()
         paper = (env != "live")
         self.env = env
         self.paper = paper
 
-        self.client = TradingClient(
-            api_key=api,
-            secret_key=secret,
-            paper=paper,
-            url_override=S.ALPACA_BASE_URL,
-        )
+        # ✅ 最稳：不要 url_override，避免 paper/live url 混乱
+        self.client = TradingClient(api_key=api, secret_key=secret, paper=paper)
 
         print(f"[券商] 当前环境={env} paper={paper} key前缀={(api[:5] if api else '')}", flush=True)
 
@@ -293,17 +293,16 @@ _data_client_singleton = None
 def get_data_client():
     global _data_client_singleton
     if _data_client_singleton is None:
-        api = (S.ALPACA_KEY or "").strip()
-        secret = (S.ALPACA_SECRET or "").strip()
+        api = _env("APCA_API_KEY_ID", "ALPACA_KEY", default="").strip()
+        secret = _env("APCA_API_SECRET_KEY", "ALPACA_SECRET", default="").strip()
         if not api or not secret:
-            raise RuntimeError("⛔ 未找到 ALPACA_KEY / ALPACA_SECRET（DataClient）")
+            raise RuntimeError("⛔ 未找到 APCA_API_KEY_ID / APCA_API_SECRET_KEY（DataClient）")
         _data_client_singleton = StockHistoricalDataClient(api, secret)
     return _data_client_singleton
 
 
 # =====================================================
 #                 行情获取（失败返回 None）
-#         ✅ 小优化：本轮缓存，避免同一轮重复请求
 # =====================================================
 _price_cache = {}  # {"AAPL": (price, ts)}
 
@@ -341,7 +340,6 @@ def get_price_last(code: str):
         err = repr(e).encode("utf-8", "backslashreplace").decode("utf-8")
         print(f"[行情错误] Alpaca 获取失败 {code}: {err}", flush=True)
 
-    # yfinance 兜底：遇到 rate limit 就直接返回 None（别卡住）
     try:
         tk = yf.Ticker(code)
         df = tk.history(period="1d", interval="1m")
@@ -381,7 +379,7 @@ def get_open_price(code: str):
 
 
 # =====================================================
-#                 A 策略：卖出
+#                 A 策略：卖出（保持你原逻辑）
 # =====================================================
 def strategy_A_sell(stock_code: str):
     stock_code = (stock_code or "").strip().upper()
@@ -412,7 +410,6 @@ def strategy_A_sell(stock_code: str):
             broker = get_broker()
             today = datetime.now().strftime("%Y%m%d")
 
-            # 1) 开盘窗口：跳空止盈
             if MARKET_OPEN <= now <= OPEN_WINDOW_END:
                 op = get_open_price(stock_code)
                 if op is not None and op >= tp:
@@ -425,7 +422,6 @@ def strategy_A_sell(stock_code: str):
                     print(f"[卖出成功-跳空止盈] {stock_code} 开盘价={op} 止盈价={tp} 数量={qty}", flush=True)
                     return
 
-            # 2) 盘中：先止损，再止盈（allow_test=1 时非交易时段也会进入）
             if (MARKET_OPEN <= now < PRE_CLOSE_START) or allow_test:
                 if last <= sl:
                     intent = make_intent("A", "SELL_SL", stock_code, extra=today)
@@ -448,7 +444,6 @@ def strategy_A_sell(stock_code: str):
                     return
                 return
 
-            # 3) 收盘前：强制市价全平
             if PRE_CLOSE_START <= now <= MARKET_CLOSE:
                 intent = make_intent("A", "SELL_FORCE", stock_code, extra=today)
                 if not acquire_intent_lock(conn, stock_code, intent, side="SELL"):
@@ -466,7 +461,7 @@ def strategy_A_sell(stock_code: str):
 
 
 # =====================================================
-#                 A 策略：买入
+#                 A 策略：买入（保持你原逻辑）
 # =====================================================
 def strategy_A_buy(stock_code: str):
     stock_code = (stock_code or "").strip().upper()
@@ -502,16 +497,11 @@ def strategy_A_buy(stock_code: str):
             broker = get_broker()
             acct = safe_get_account(broker.client)
 
-            # 如果账户对象拿不到（ACCOUNT_CLOSED_PENDING），用一个兜底 buying_power
-            if acct is None:
-                buying_power = 100000.0
-            else:
-                buying_power = float(acct.buying_power)
+            buying_power = 100000.0 if acct is None else float(acct.buying_power)
 
             usable = buying_power * 0.1
             cash = usable * weight
 
-            # ✅ 小优化：避免浮点导致 qty=0 来回跳
             qty = int(cash // price)
             if qty <= 0:
                 return
@@ -522,7 +512,6 @@ def strategy_A_buy(stock_code: str):
             if not acquire_intent_lock(conn, stock_code, intent, side="BUY"):
                 return
 
-            # ✅ 再确认一次状态，避免刚被别的进程改掉
             latest = load_one(conn, stock_code) or {}
             if int(latest.get("can_buy") or 0) != 1 or int(latest.get("is_bought") or 0) == 1:
                 rollback_intent(conn, stock_code, intent)
@@ -536,7 +525,6 @@ def strategy_A_buy(stock_code: str):
                 print(f"[买入跳过-不可重试] {stock_code} {e}", flush=True)
                 rollback_intent(conn, stock_code, intent)
 
-                # not tradable -> can_buy=0；insufficient -> 不禁用，只回滚让你下次还有机会
                 if "not tradable" in str(e).lower() or "42210000" in str(e).lower():
                     mark_not_tradable(conn, stock_code, reason=str(e))
                 return
