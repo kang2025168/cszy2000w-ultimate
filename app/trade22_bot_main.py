@@ -7,10 +7,49 @@ import traceback
 import signal
 import logging
 from logging.handlers import TimedRotatingFileHandler
-from datetime import datetime, time
+from datetime import datetime, time as dt_time
 from pathlib import Path
 import atexit
 
+# 先把项目根目录加入 sys.path（让 python -m / 直接跑都能找到 app 包）
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
+# =========================
+# 0) 读取运行环境（TRADE_ENV / ALPACA_MODE 兼容）
+# =========================
+TRADE_ENV = (os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper").strip().lower()
+if TRADE_ENV not in ("paper", "live"):
+    raise RuntimeError(f"❌ 非法 TRADE_ENV/ALPACA_MODE={TRADE_ENV}，只能是 paper 或 live")
+print(f"===== 当前运行环境: {TRADE_ENV} =====", flush=True)
+
+# =========================
+# ✅ 方法A：把 PAPER/LIVE 的 key 注入到通用变量名（必须在 import strategy 之前）
+# =========================
+if TRADE_ENV == "paper":
+    os.environ.setdefault("ALPACA_BASE_URL", os.getenv("PAPER_ALPACA_BASE_URL", "https://paper-api.alpaca.markets"))
+    os.environ.setdefault("APCA_API_KEY_ID", os.getenv("PAPER_APCA_API_KEY_ID", ""))
+    os.environ.setdefault("APCA_API_SECRET_KEY", os.getenv("PAPER_APCA_API_SECRET_KEY", ""))
+else:
+    os.environ.setdefault("ALPACA_BASE_URL", os.getenv("LIVE_ALPACA_BASE_URL", "https://api.alpaca.markets"))
+    os.environ.setdefault("APCA_API_KEY_ID", os.getenv("LIVE_APCA_API_KEY_ID", ""))
+    os.environ.setdefault("APCA_API_SECRET_KEY", os.getenv("LIVE_APCA_API_SECRET_KEY", ""))
+
+# 再给旧变量名一份别名（兼容老代码）
+os.environ.setdefault("ALPACA_KEY", os.environ.get("APCA_API_KEY_ID", ""))
+os.environ.setdefault("ALPACA_SECRET", os.environ.get("APCA_API_SECRET_KEY", ""))
+
+print(f"[ENV] key_prefix={os.environ.get('APCA_API_KEY_ID','')[:5]} env={TRADE_ENV}", flush=True)
+
+# =========================
+# ✅ 现在再 import strategy（这样 strategy_b 才能读到正确 env）
+# =========================
 from app.strategy_a import *
 from app.strategy_b import *
 from app.strategy_c import *
@@ -22,29 +61,53 @@ try:
 except Exception:
     ZoneInfo = None
 
+
 # =========================
-# 0) 读取环境开关（唯一来源）
+# 0) 读取运行环境（TRADE_ENV / ALPACA_MODE 兼容）
 # =========================
-TRADE_ENV = os.getenv("TRADE_ENV", "paper").strip().lower()
+# 你现在 docker 里一般用 TRADE_ENV；但也兼容 ALPACA_MODE
+TRADE_ENV = (os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper").strip().lower()
 if TRADE_ENV not in ("paper", "live"):
-    raise RuntimeError(f"❌ 非法 TRADE_ENV={TRADE_ENV}，只能是 paper 或 live")
+    raise RuntimeError(f"❌ 非法 TRADE_ENV/ALPACA_MODE={TRADE_ENV}，只能是 paper 或 live")
 print(f"===== 当前运行环境: {TRADE_ENV} =====", flush=True)
 
+
 # =========================
-# 1) 根据环境选择 Alpaca Key
-#    ✅ 建议：未来改成从 env 读取；这里先保持你原样（最小改动）
+# 1) Alpaca Key：只从环境变量读取（不写死）
+#    兼容变量名：
+#      - 你 .env 里这套（推荐）：
+#          PAPER_APCA_API_KEY_ID / PAPER_APCA_API_SECRET_KEY
+#          LIVE_APCA_API_KEY_ID  / LIVE_APCA_API_SECRET_KEY
+#          PAPER_ALPACA_BASE_URL / LIVE_ALPACA_BASE_URL
+#      - alpaca-py 常见这套：
+#          APCA_API_KEY_ID / APCA_API_SECRET_KEY
+#      - 你旧代码用过的这套：
+#          ALPACA_KEY / ALPACA_SECRET / ALPACA_BASE_URL
 # =========================
+def _env(*names: str, default: str = "") -> str:
+    for n in names:
+        v = os.getenv(n)
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
+    return default
+
 if TRADE_ENV == "paper":
-    ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
-    ALPACA_KEY = "PKU4Z37Z272D7RKRES2R77ZOY6"
-    ALPACA_SECRET = "BdY5DwFMwNHtEXm7bX2C3HFrmga4n9rqqf1F9PyMHFUC"
+    ALPACA_BASE_URL = _env("PAPER_ALPACA_BASE_URL", "ALPACA_BASE_URL", default="https://paper-api.alpaca.markets")
+    ALPACA_KEY = _env("PAPER_APCA_API_KEY_ID", "APCA_API_KEY_ID", "ALPACA_KEY", default="")
+    ALPACA_SECRET = _env("PAPER_APCA_API_SECRET_KEY", "APCA_API_SECRET_KEY", "ALPACA_SECRET", default="")
 else:
-    ALPACA_BASE_URL = "https://api.alpaca.markets"
-    ALPACA_KEY = "AKMUKOBY5QQG54OIYZDKVOR3JM"
-    ALPACA_SECRET = "Cji6QtUqexq9TYpZFKwPmCN71jinJC21tKcYr6etbsyU"
+    ALPACA_BASE_URL = _env("LIVE_ALPACA_BASE_URL", "ALPACA_BASE_URL", default="https://api.alpaca.markets")
+    ALPACA_KEY = _env("LIVE_APCA_API_KEY_ID", "APCA_API_KEY_ID", "ALPACA_KEY", default="")
+    ALPACA_SECRET = _env("LIVE_APCA_API_SECRET_KEY", "APCA_API_SECRET_KEY", "ALPACA_SECRET", default="")
 
 print("ALPACA_BASE_URL =", ALPACA_BASE_URL, flush=True)
-print("KEY_PREFIX =", ALPACA_KEY[:5], flush=True)
+print("KEY_PREFIX =", (ALPACA_KEY[:5] if ALPACA_KEY else "<EMPTY>"), flush=True)
+
+if not ALPACA_KEY or not ALPACA_SECRET:
+    raise RuntimeError(
+        "❌ Alpaca key/secret 为空：请在容器环境里设置 PAPER_/LIVE_ APCA key/secret（或 APCA_API_KEY_ID/SECRET）"
+    )
+
 
 # =========================
 # 2) 强制 stdout/stderr UTF-8
@@ -54,6 +117,7 @@ try:
     sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 except Exception:
     pass
+
 
 # =========================
 # 3) 单实例锁（按环境）
@@ -97,33 +161,22 @@ def _cleanup_pid():
 _write_pid()
 atexit.register(_cleanup_pid)
 
-# =========================
-# 4) 加入项目根目录
-# =========================
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 # =========================
-# 5) imports
+# 5) imports (DB + pick)
 # =========================
 import pymysql
+from app.strategy_a_pick import *  # 你自己的 pick 模块
 
-from strategy_a_pick import *
-# from B策略买卖方法 import *
-# from C策略买卖方法 import *
-# from D策略买卖方法 import *
-# from E策略买卖方法 import *
 
 # =========================
 # 6) 交易时间（美西）
-#    ✅ Docker/云端默认可能是 UTC，这里强制用 LA
 # =========================
 LA_TZ_NAME = os.getenv("TZ", "America/Los_Angeles")
 LA_TZ = ZoneInfo(LA_TZ_NAME) if ZoneInfo else None
 
-MARKET_OPEN = time(6, 30)
-MARKET_CLOSE = time(13, 0)
+MARKET_OPEN = dt_time(6, 30)
+MARKET_CLOSE = dt_time(13, 0)
 
 def now_la():
     if LA_TZ:
@@ -138,11 +191,12 @@ def is_trading_time(now=None) -> bool:
     tnow = now.time()
     return MARKET_OPEN <= tnow <= MARKET_CLOSE
 
+
 # =========================
-# 7) DB 配置（✅最小改动：支持 env，默认 docker-compose 的 mysql 服务名）
+# 7) DB 配置
 # =========================
 DB = dict(
-    host=os.getenv("DB_HOST", "localhost"),  # docker 里通常是 mysql
+    host=os.getenv("DB_HOST", "localhost"),
     port=int(os.getenv("DB_PORT", "3306")),
     user=os.getenv("DB_USER", "root"),
     password=os.getenv("DB_PASS", "mlp009988"),
@@ -154,6 +208,7 @@ DB = dict(
 
 TABLE = os.getenv("OPS_TABLE", "stock_operations")
 
+
 # =========================
 # 8) 运行参数
 # =========================
@@ -161,14 +216,18 @@ SLEEP_BETWEEN_SYMBOLS = float(os.getenv("SLEEP_BETWEEN_SYMBOLS", "0.2"))
 SLEEP_BETWEEN_ROUNDS  = float(os.getenv("SLEEP_BETWEEN_ROUNDS", "10"))
 ERROR_BACKOFF_MIN     = int(os.getenv("ERROR_BACKOFF_MIN", "3"))
 ERROR_BACKOFF_MAX     = int(os.getenv("ERROR_BACKOFF_MAX", "15"))
+ROUND_JITTER_MAX      = float(os.getenv("ROUND_JITTER_MAX", "1.2"))
 
-# 每轮增加一点抖动，减少固定频率被风控（尤其 yfinance）
-ROUND_JITTER_MAX = float(os.getenv("ROUND_JITTER_MAX", "1.2"))
+# ✅ 买入闸门配置
+MIN_BUYING_POWER = float(os.getenv("MIN_BUYING_POWER", "900"))          # 低于则禁买
+BUYPOWER_REFRESH_SECS = int(os.getenv("BUYPOWER_REFRESH_SECS", "300"))  # 5分钟刷新一次
+
 
 # =========================
 # 9) 全局停止标记
 # =========================
 _STOP = False
+
 
 # =========================
 # 10) Logger（按环境区分日志）
@@ -176,14 +235,15 @@ _STOP = False
 def setup_logger():
     logger = logging.getLogger(f"trade_bot_{TRADE_ENV}")
     logger.setLevel(logging.INFO)
-    logger.propagate = False  # ✅ 防止重复输出
+    logger.propagate = False
 
     fmt = logging.Formatter(
         "%(asctime)s | %(levelname)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    log_dir = os.getenv("LOG_DIR", ".")
+    # ✅ 重要：容器里 /app 可能只读，所以默认写 /tmp/logs
+    log_dir = os.getenv("LOG_DIR", "/tmp/logs")
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     log_name = os.path.join(log_dir, f"AAA_trade_bot_{TRADE_ENV}.log")
 
@@ -207,6 +267,7 @@ def setup_logger():
 
 log = setup_logger()
 
+
 # =========================
 # 11) 信号处理
 # =========================
@@ -218,6 +279,7 @@ def _handle_signal(sig, frame):
 signal.signal(signal.SIGINT, _handle_signal)
 signal.signal(signal.SIGTERM, _handle_signal)
 
+
 # =========================
 # 12) DB 连接
 # =========================
@@ -226,7 +288,7 @@ def get_conn():
 
 def ensure_conn_alive(conn):
     try:
-        conn.ping(reconnect=True)  # ✅ pymysql 自带重连
+        conn.ping(reconnect=True)
         return conn
     except Exception:
         try:
@@ -236,24 +298,93 @@ def ensure_conn_alive(conn):
         log.warning("DB 连接失效，正在重连...")
         return get_conn()
 
-def load_rows(conn):
+
+# =========================
+# 12.1) Alpaca buying power（每5分钟刷新）
+# =========================
+_last_bp_ts = 0.0
+_cached_buying_power = None
+_buy_allowed = True
+_alpaca_client = None
+
+def _get_alpaca_client():
+    global _alpaca_client
+    if _alpaca_client is not None:
+        return _alpaca_client
+    try:
+        from alpaca.trading.client import TradingClient
+        # ✅ alpaca-py 用 paper=True/False 决定走纸盘/实盘
+        _alpaca_client = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=(TRADE_ENV == "paper"))
+        return _alpaca_client
+    except Exception as e:
+        raise RuntimeError(f"未安装或无法初始化 alpaca-py：{e}")
+
+def get_buying_power() -> float:
+    """从 Alpaca 获取 buying_power / cash"""
+    global _cached_buying_power
+    try:
+        log.info(f"[BP] using key_prefix={(ALPACA_KEY[:5] if ALPACA_KEY else '<EMPTY>')} env={TRADE_ENV}")
+        client = _get_alpaca_client()
+        acct = client.get_account()
+
+        if hasattr(acct, "buying_power") and getattr(acct, "buying_power") is not None:
+            return float(getattr(acct, "buying_power"))
+        if hasattr(acct, "cash") and getattr(acct, "cash") is not None:
+            return float(getattr(acct, "cash"))
+        return 0.0
+    except Exception as e:
+        log.error(f"[BP] 获取购买力失败：{e}")
+        return float(_cached_buying_power or 0.0)
+
+def refresh_buy_gate(force: bool = False) -> bool:
+    """每 BUYPOWER_REFRESH_SECS 刷新一次；返回 buy_allowed"""
+    global _last_bp_ts, _cached_buying_power, _buy_allowed
+    now = t.time()
+    if (not force) and (now - _last_bp_ts < BUYPOWER_REFRESH_SECS):
+        return _buy_allowed
+
+    bp = get_buying_power()
+    _cached_buying_power = bp
+    _last_bp_ts = now
+
+    new_allowed = (bp >= MIN_BUYING_POWER)
+    if new_allowed != _buy_allowed:
+        log.warning(f"[BUY_GATE] 状态变化：buy_allowed={new_allowed} (bp={bp:.2f}, threshold={MIN_BUYING_POWER})")
+    else:
+        log.info(f"[BUY_GATE] buy_allowed={new_allowed} (bp={bp:.2f}, threshold={MIN_BUYING_POWER})")
+    _buy_allowed = new_allowed
+    return _buy_allowed
+
+
+# =========================
+# 12.2) load_rows：允许买 vs 禁买（禁买时只扫可卖持仓）
+# =========================
+def load_rows(conn, buy_allowed: bool):
     """
-    ✅优化：只拉“可能需要动作”的行
-    - 要卖：is_bought=1 AND can_sell=1
-    - 要买：can_buy=1 AND is_bought<>1
+    buy_allowed=True ：卖 + 买
+    buy_allowed=False：只卖（is_bought=1 AND can_sell=1）
     """
-    sql = f"""
-    SELECT stock_code, stock_type, is_bought, can_sell, can_buy
-    FROM {TABLE}
-    WHERE stock_type IN ('A','B','C','D','E')
-      AND (
-            (is_bought=1 AND can_sell=1)
-         OR (can_buy=1 AND (is_bought IS NULL OR is_bought<>1))
-      )
-    """
+    if buy_allowed:
+        sql = f"""
+        SELECT stock_code, stock_type, is_bought, can_sell, can_buy
+        FROM {TABLE}
+        WHERE stock_type IN ('A','B','C','D','E')
+          AND (
+                (is_bought=1 AND can_sell=1)
+             OR (can_buy=1 AND (is_bought IS NULL OR is_bought<>1))
+          )
+        """
+    else:
+        sql = f"""
+        SELECT stock_code, stock_type, is_bought, can_sell, can_buy
+        FROM {TABLE}
+        WHERE stock_type IN ('A','B','C','D','E')
+          AND is_bought=1 AND can_sell=1
+        """
     with conn.cursor() as cur:
         cur.execute(sql)
         return cur.fetchall()
+
 
 # =========================
 # 13) 策略分发
@@ -266,43 +397,52 @@ def safe_call(fn, *args, **kwargs):
         traceback.print_exc()
         return None
 
-def dispatch_one(code, stype, is_bought, can_sell, can_buy):
+def dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed: bool):
+    """
+    buy_allowed=False 时：不允许触发任何 buy，只允许 sell
+    buy_allowed=True 时：维持原逻辑
+    """
     if stype == "A":
         if is_bought == 1 and can_sell == 1:
             safe_call(strategy_A_sell, code)
-        elif can_buy == 1:
+        elif buy_allowed and can_buy == 1:
             safe_call(strategy_A_buy, code)
+            refresh_buy_gate(force=True)
 
     elif stype == "B":
         if is_bought == 1 and can_sell == 1:
             safe_call(strategy_B_sell, code)
-        elif can_buy == 1:
+        elif buy_allowed and can_buy == 1:
             safe_call(strategy_B_buy, code)
+            refresh_buy_gate(force=True)
 
     elif stype == "C":
         if is_bought == 1 and can_sell == 1:
             safe_call(strategy_C_sell, code)
-        elif can_buy == 1:
+        elif buy_allowed and can_buy == 1:
             safe_call(strategy_C_buy, code)
+            refresh_buy_gate(force=True)
 
     elif stype == "D":
         if is_bought == 1 and can_sell == 1:
             safe_call(strategy_D_sell, code)
-        elif can_buy == 1:
+        elif buy_allowed and can_buy == 1:
             safe_call(strategy_D_buy, code)
+            refresh_buy_gate(force=True)
 
     elif stype == "E":
         if is_bought == 1 and can_sell == 1:
             safe_call(strategy_E_sell, code)
-        elif can_buy == 1:
+        elif buy_allowed and can_buy == 1:
             safe_call(strategy_E_buy, code)
+            refresh_buy_gate(force=True)
 
-def one_round(conn):
+def one_round(conn, buy_allowed: bool):
     conn = ensure_conn_alive(conn)
-    rows = load_rows(conn) or []
+    rows = load_rows(conn, buy_allowed) or []
 
     if not rows:
-        log.info("本轮 rows=0")
+        log.info(f"本轮 rows=0 (buy_allowed={buy_allowed})")
         return conn
 
     for row in rows:
@@ -318,12 +458,11 @@ def one_round(conn):
         if not code or stype not in ("A", "B", "C", "D", "E"):
             continue
 
-        dispatch_one(code, stype, is_bought, can_sell, can_buy)
-
-        # ✅ 每个 symbol 之间的 sleep 加一点抖动，降低固定频率
+        dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed)
         t.sleep(SLEEP_BETWEEN_SYMBOLS + random.uniform(0, 0.08))
 
     return conn
+
 
 # =========================
 # 14) 主循环
@@ -333,24 +472,27 @@ def main_loop():
     log.info(f"pid={os.getpid()} pid_file={PID_FILE}")
     log.info(f"sys.executable={sys.executable}")
     log.info(f"TZ={LA_TZ_NAME} DB={DB.get('host')}:{DB.get('port')} user={DB.get('user')} db={DB.get('database')} table={TABLE}")
+    log.info(f"BUY_GATE: MIN_BUYING_POWER={MIN_BUYING_POWER} refresh={BUYPOWER_REFRESH_SECS}s")
 
     conn = None
 
+    # 启动先刷新一次购买力
+    refresh_buy_gate(force=True)
+
     while not _STOP:
         try:
-            # 如果你要只在交易时段跑，就打开下面注释
             # if not is_trading_time():
-            #     log.info("非交易时段，休眠 60s...（仅 06:30~13:00 PT 运行）")
-            #     t.sleep(60)
+            #     log.info("非交易时段，休眠 600s...")
+            #     t.sleep(600)
             #     continue
 
             if conn is None:
                 conn = get_conn()
                 log.info("DB 已连接")
 
-            conn = one_round(conn)
+            buy_allowed = refresh_buy_gate(force=False)
+            conn = one_round(conn, buy_allowed)
 
-            # ✅ 每轮 sleep + jitter
             sleep_s = SLEEP_BETWEEN_ROUNDS + random.uniform(0, ROUND_JITTER_MAX)
             t.sleep(sleep_s)
 
