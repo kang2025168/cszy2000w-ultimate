@@ -32,37 +32,29 @@ if TRADE_ENV not in ("paper", "live"):
 print(f"===== 当前运行环境: {TRADE_ENV} =====", flush=True)
 
 # =========================
-# 2) ✅ 方法A：把 PAPER/LIVE 的 key 注入到通用变量名（必须在 import strategy 之前）
-#    - strategy_b.py 读取的是 APCA_API_KEY_ID / APCA_API_SECRET_KEY / ALPACA_BASE_URL
+# ✅ 强制注入：把 PAPER/LIVE 的 key 写进通用变量名（必须在 import strategy 之前）
 # =========================
 if TRADE_ENV == "paper":
-    os.environ.setdefault("ALPACA_BASE_URL", os.getenv("PAPER_ALPACA_BASE_URL", "https://paper-api.alpaca.markets"))
-    os.environ.setdefault("APCA_API_KEY_ID", os.getenv("PAPER_APCA_API_KEY_ID", "").strip())
-    os.environ.setdefault("APCA_API_SECRET_KEY", os.getenv("PAPER_APCA_API_SECRET_KEY", "").strip())
+    os.environ["ALPACA_BASE_URL"] = os.getenv("PAPER_ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    os.environ["APCA_API_KEY_ID"] = os.getenv("PAPER_APCA_API_KEY_ID", "")
+    os.environ["APCA_API_SECRET_KEY"] = os.getenv("PAPER_APCA_API_SECRET_KEY", "")
 else:
-    os.environ.setdefault("ALPACA_BASE_URL", os.getenv("LIVE_ALPACA_BASE_URL", "https://api.alpaca.markets"))
-    os.environ.setdefault("APCA_API_KEY_ID", os.getenv("LIVE_APCA_API_KEY_ID", "").strip())
-    os.environ.setdefault("APCA_API_SECRET_KEY", os.getenv("LIVE_APCA_API_SECRET_KEY", "").strip())
+    os.environ["ALPACA_BASE_URL"] = os.getenv("LIVE_ALPACA_BASE_URL", "https://api.alpaca.markets")
+    os.environ["APCA_API_KEY_ID"] = os.getenv("LIVE_APCA_API_KEY_ID", "")
+    os.environ["APCA_API_SECRET_KEY"] = os.getenv("LIVE_APCA_API_SECRET_KEY", "")
 
-# 再给旧变量名一份别名（兼容老代码）
-os.environ.setdefault("ALPACA_KEY", os.environ.get("APCA_API_KEY_ID", ""))
-os.environ.setdefault("ALPACA_SECRET", os.environ.get("APCA_API_SECRET_KEY", ""))
+# 兼容老变量名（同样强制覆盖）
+os.environ["ALPACA_KEY"] = os.environ.get("APCA_API_KEY_ID", "")
+os.environ["ALPACA_SECRET"] = os.environ.get("APCA_API_SECRET_KEY", "")
 
 print(f"[ENV] key_prefix={os.environ.get('APCA_API_KEY_ID','')[:5]} env={TRADE_ENV}", flush=True)
 
-# ✅ 基本保护：key 不能为空
-if not os.environ.get("APCA_API_KEY_ID") or not os.environ.get("APCA_API_SECRET_KEY"):
-    raise RuntimeError("❌ Alpaca key/secret 为空：请检查 .env 里的 PAPER_/LIVE_ APCA key/secret 是否正确注入容器")
-
-# =========================
-# 3) ✅ 现在再 import strategy（这样 strategy_b 才能读到正确 env）
-# =========================
-from app.strategy_a import *  # noqa
-from app.strategy_b import *  # noqa
-from app.strategy_c import *  # noqa
-from app.strategy_d import *  # noqa
-from app.strategy_e import *  # noqa
-
+# ✅ 现在再 import strategy
+from app.strategy_a import *
+from app.strategy_b import *
+from app.strategy_c import *
+from app.strategy_d import *
+from app.strategy_e import *
 # =========================
 # 4) 强制 stdout/stderr UTF-8
 # =========================
