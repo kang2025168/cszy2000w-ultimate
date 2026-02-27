@@ -388,10 +388,10 @@ def main_loop():
 
     while not _STOP:
         try:
-            # if not is_trading_time():
-            #     log.info("非交易时段，休眠 600s...")
-            #     t.sleep(60)
-            #     continue
+            if not is_trading_time():
+                log.info("非交易时段，休眠 600s...")
+                t.sleep(60)
+                continue
 
             if conn is None:
                 conn = get_conn()
