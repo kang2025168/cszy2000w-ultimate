@@ -37,26 +37,20 @@ services:
       TZ: America/Los_Angeles
 
       # ✅ 关键：运行环境统一（兼容你代码里 TRADE_ENV/ALPACA_MODE 两套）
+      # 只用 ALPACA_MODE 控制（paper/live）
       TRADE_ENV: ${ALPACA_MODE}
 
-      # ✅ 关键：强制 alpaca-py 标准变量永远正确（paper / live 用各自的）
-      # 说明：Compose 不能做 if/else，所以用两套变量同时注入，
-      # 代码里按 TRADE_ENV 选择 PAPER_ / LIVE_ 即可；同时我们也给 APCA_* 一套默认值（按当前 ALPACA_MODE）
+      # ✅ 同时注入 PAPER/LIVE 两套账号（由主程序按 TRADE_ENV 选择注入到 APCA_API_*）
       PAPER_APCA_API_KEY_ID: ${PAPER_APCA_API_KEY_ID}
       PAPER_APCA_API_SECRET_KEY: ${PAPER_APCA_API_SECRET_KEY}
+      PAPER_ALPACA_BASE_URL: ${PAPER_ALPACA_BASE_URL}
+
       LIVE_APCA_API_KEY_ID: ${LIVE_APCA_API_KEY_ID}
       LIVE_APCA_API_SECRET_KEY: ${LIVE_APCA_API_SECRET_KEY}
-
-      PAPER_ALPACA_BASE_URL: ${PAPER_ALPACA_BASE_URL}
       LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
 
-      # ✅ 兜底：很多库/旧代码直接读 APCA_API_* 或 ALPACA_KEY/SECRET
-      # 这里把它们“跟随当前模式”固定为 paper 或 live（用 .env 里 ALPACA_MODE 控制）
-      APCA_API_KEY_ID: ${PAPER_APCA_API_KEY_ID}
-      APCA_API_SECRET_KEY: ${PAPER_APCA_API_SECRET_KEY}
-      ALPACA_KEY: ${PAPER_APCA_API_KEY_ID}
-      ALPACA_SECRET: ${PAPER_APCA_API_SECRET_KEY}
-      ALPACA_BASE_URL: ${PAPER_ALPACA_BASE_URL}
+      # ✅ 注意：这里不要再写死 APCA_API_KEY_ID / ALPACA_KEY 等通用变量
+      # 否则会把你永远锁死在 paper key（你现在遇到的就是这个问题）
 
     volumes:
       - ./app:/app/app

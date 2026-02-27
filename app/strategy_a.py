@@ -29,8 +29,10 @@ def get_trade_env() -> str:
     v = (os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper").strip().lower()
     return "live" if v == "live" else "paper"
 
+
 def is_after_hours_test_enabled() -> bool:
     return (os.getenv("ALLOW_AFTER_HOURS_TEST") or "0").strip() == "1"
+
 
 def _env(*names: str, default: str = "") -> str:
     for n in names:
@@ -38,6 +40,10 @@ def _env(*names: str, default: str = "") -> str:
         if v is not None and str(v).strip() != "":
             return str(v).strip()
     return default
+
+
+# ✅ A 自己也做一层购买力门槛（双保险）
+A_MIN_BUYING_POWER = float(os.getenv("A_MIN_BUYING_POWER", os.getenv("MIN_BUYING_POWER", "900")))
 
 
 # =====================================================
@@ -192,14 +198,14 @@ class NonRetryableOrderError(Exception):
     """确定性错误：不应重试（例如 not tradable）"""
 
 def safe_get_account(client):
+    """
+    ✅ 关键：账户信息拿不到就返回 None，不要抛异常、更不要给假 buying_power
+    """
     try:
         return client.get_account()
     except Exception as e:
-        msg = str(e)
-        if "ACCOUNT_CLOSED_PENDING" in msg:
-            print("[警告] Alpaca account 状态 ACCOUNT_CLOSED_PENDING，跳过账户校验，继续下单", flush=True)
-            return None
-        raise
+        print(f"[账户获取失败] {e}", flush=True)
+        return None
 
 def _is_not_tradable_error(e: Exception) -> bool:
     msg = str(e).lower()
@@ -248,10 +254,8 @@ class Broker:
             except Exception as e:
                 if _is_non_retryable_error(e):
                     raise NonRetryableOrderError(str(e))
-
                 if i == max_retry:
                     raise
-
                 sleep_s = min(base_sleep * (2 ** (i - 1)) + random.uniform(0, 0.6), 10.0)
                 print(f"[下单重试] 第{i}次，等待 {sleep_s:.2f}s，错误={e}", flush=True)
                 t.sleep(sleep_s)
@@ -461,7 +465,7 @@ def strategy_A_sell(stock_code: str):
 
 
 # =====================================================
-#                 A 策略：买入（保持你原逻辑）
+#                 A 策略：买入（修复购买力绕过）
 # =====================================================
 def strategy_A_buy(stock_code: str):
     stock_code = (stock_code or "").strip().upper()
@@ -497,7 +501,17 @@ def strategy_A_buy(stock_code: str):
             broker = get_broker()
             acct = safe_get_account(broker.client)
 
-            buying_power = 100000.0 if acct is None else float(acct.buying_power)
+            # ✅ 关键：拿不到账户就不买（不要给 100000 这种假值）
+            if acct is None:
+                print(f"[A BUY] {stock_code} 跳过：账户信息获取失败", flush=True)
+                return
+
+            buying_power = float(getattr(acct, "buying_power", 0.0) or 0.0)
+
+            # ✅ A 自己也做一层购买力门槛（双保险）
+            if buying_power < float(A_MIN_BUYING_POWER):
+                print(f"[A BUY] {stock_code} 跳过：buying_power={buying_power:.2f} < {A_MIN_BUYING_POWER}", flush=True)
+                return
 
             usable = buying_power * 0.1
             cash = usable * weight
@@ -524,7 +538,6 @@ def strategy_A_buy(stock_code: str):
             except NonRetryableOrderError as e:
                 print(f"[买入跳过-不可重试] {stock_code} {e}", flush=True)
                 rollback_intent(conn, stock_code, intent)
-
                 if "not tradable" in str(e).lower() or "42210000" in str(e).lower():
                     mark_not_tradable(conn, stock_code, reason=str(e))
                 return

@@ -321,55 +321,32 @@ def load_rows(conn, buy_allowed: bool):
 # =========================
 def safe_call(fn, *args, **kwargs):
     try:
-        return fn(*args, **kwargs)
+        return fn(*args, **kwargs)  # ✅ 把返回值传回去
     except Exception as e:
         log.error(f"[策略异常] {getattr(fn, '__name__', str(fn))} args={args} err={e}")
         traceback.print_exc()
         return None
+def dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed: bool) -> bool:
+    traded = False
 
-def dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed: bool):
-    if stype == "A":
+    if stype == "B":
         if is_bought == 1 and can_sell == 1:
-            safe_call(strategy_A_sell, code)
+            r = safe_call(strategy_B_sell, code)
+            traded = (r is True)
         elif buy_allowed and can_buy == 1:
-            safe_call(strategy_A_buy, code)
-            refresh_buy_gate(force=True)
+            r = safe_call(strategy_B_buy, code)
+            traded = (r is True)
 
-    elif stype == "B":
-        if is_bought == 1 and can_sell == 1:
-            safe_call(strategy_B_sell, code)
-        elif buy_allowed and can_buy == 1:
-            safe_call(strategy_B_buy, code)
-            refresh_buy_gate(force=True)
-
-    elif stype == "C":
-        if is_bought == 1 and can_sell == 1:
-            safe_call(strategy_C_sell, code)
-        elif buy_allowed and can_buy == 1:
-            safe_call(strategy_C_buy, code)
-            refresh_buy_gate(force=True)
-
-    elif stype == "D":
-        if is_bought == 1 and can_sell == 1:
-            safe_call(strategy_D_sell, code)
-        elif buy_allowed and can_buy == 1:
-            safe_call(strategy_D_buy, code)
-            refresh_buy_gate(force=True)
-
-    elif stype == "E":
-        if is_bought == 1 and can_sell == 1:
-            safe_call(strategy_E_sell, code)
-        elif buy_allowed and can_buy == 1:
-            safe_call(strategy_E_buy, code)
-            refresh_buy_gate(force=True)
-
+    else:
+        ...
+    return traded
 def one_round(conn, buy_allowed: bool):
     conn = ensure_conn_alive(conn)
     rows = load_rows(conn, buy_allowed) or []
 
     if not rows:
         log.info(f"本轮 rows=0 (buy_allowed={buy_allowed})")
-        return conn
+        return conn, False
 
     for row in rows:
         if _STOP:
@@ -384,11 +361,17 @@ def one_round(conn, buy_allowed: bool):
         if not code or stype not in ("A", "B", "C", "D", "E"):
             continue
 
-        dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed)
+        traded = dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed)
+
+        if traded:
+            t.sleep(float(os.getenv("AFTER_TRADE_SLEEP_SEC", "2")))
+            refresh_buy_gate(force=True)
+            log.info(f"[ROUND] traded_once=True break_round last={stype}:{code}")
+            return conn, True
+
         t.sleep(SLEEP_BETWEEN_SYMBOLS + random.uniform(0, 0.08))
 
-    return conn
-
+    return conn, False
 # =========================
 # 17) 主循环
 # =========================
@@ -405,20 +388,24 @@ def main_loop():
 
     while not _STOP:
         try:
-            if not is_trading_time():
-                log.info("非交易时段，休眠 600s...")
-                t.sleep(60)
-                continue
+            # if not is_trading_time():
+            #     log.info("非交易时段，休眠 600s...")
+            #     t.sleep(60)
+            #     continue
 
             if conn is None:
                 conn = get_conn()
                 log.info("DB 已连接")
 
             buy_allowed = refresh_buy_gate(force=False)
-            conn = one_round(conn, buy_allowed)
+            conn, traded_once = one_round(conn, buy_allowed)
 
-            sleep_s = SLEEP_BETWEEN_ROUNDS + random.uniform(0, ROUND_JITTER_MAX)
-            t.sleep(sleep_s)
+            if traded_once:
+                # 成交后立刻进入下一轮（重新读DB、重新扫）
+                t.sleep(float(os.getenv("AFTER_ROUND_TRADE_SLEEP_SEC", "0.5")))
+            else:
+                sleep_s = SLEEP_BETWEEN_ROUNDS + random.uniform(0, ROUND_JITTER_MAX)
+                t.sleep(sleep_s)
 
         except Exception as e:
             log.error(f"[主循环异常] {e}")

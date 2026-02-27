@@ -1,30 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 app/strategy_b.py
-
-策略B（买卖逻辑）——按你昨晚的 10 阶段结构化退出
-
-✅ BUY：
-- snapshot 实时价（默认 IEX）做条件判断
-- 下单：优先 notional；不支持分数股则 fallback qty
-- 写库：is_bought=1、qty、cost_price（尽量用 filled_avg_price）、stop_loss_price（初始假突破止损）
-- take_profit_price 字段用作 “last_stage” 存档（0/1/2/.../10），防止循环重复加仓/卖出
-
-✅ SELL（十阶段）：
-1) 建仓后：若跌破 stop_loss_price（min(trigger_price, cost*0.95)）→ 全部止损
-2) 涨到 +5%：stop_loss_price = cost
-3) 涨到 +10%：stop_loss_price = cost*1.05，同时加仓 50%
-4) 涨到 +15%：stop_loss_price = cost*1.10
-5) 涨到 +20%：stop_loss_price = cost*1.15，同时加仓 50%
-6) 涨到 +25%：stop_loss_price = cost*1.20
-7) 涨到 +30%：stop_loss_price = cost*1.25，同时卖出 30%
-8) 涨到 +35%：stop_loss_price = cost*1.30
-9) 涨到 +40%：stop_loss_price = cost*1.35，同时卖出 40%
-10) 当日收盘价 < 前三天收盘价的最低值：清仓剩余全部
-
-依赖表：
-- stock_operations（你给的字段齐全）
-- stock_prices_pool（历史K线，至少：symbol/date/close）
+策略B（买卖逻辑）——10 阶段结构化退出
 """
 
 import os
@@ -54,10 +31,10 @@ DB = dict(
 )
 
 # =========================
-# 策略参数（可 env 配置）
+# 参数
 # =========================
-B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.05"))              # 买入触发：当日涨幅>5%
-B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "1"))     # 测试用
+B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.05"))
+B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "900"))
 
 B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "900"))
 B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "900"))
@@ -66,28 +43,28 @@ B_COOLDOWN_MINUTES = int(os.getenv("B_COOLDOWN_MINUTES", "30"))
 B_BP_USE_RATIO = float(os.getenv("B_BP_USE_RATIO", "0.95"))
 B_ALLOW_EXTENDED = int(os.getenv("B_ALLOW_EXTENDED", "0"))
 B_DEBUG = int(os.getenv("B_DEBUG", "0"))
-
 HTTP_TIMEOUT = float(os.getenv("B_HTTP_TIMEOUT", "6"))
 
-# Alpaca snapshot
-ALPACA_DATA_BASE_URL = os.getenv("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets").rstrip("/")
-B_DATA_FEED = os.getenv("B_DATA_FEED", "iex").strip().lower()  # 默认 iex
+B_BP_USE_CASH = int(os.getenv("B_BP_USE_CASH", "0"))  # 0=buying_power,1=cash
 
-# 交易环境
+# 买入后同步 position
+B_POS_WAIT_SEC = int(os.getenv("B_POS_WAIT_SEC", "20"))
+B_POS_RETRY = int(os.getenv("B_POS_RETRY", "2"))
+
+ALPACA_DATA_BASE_URL = os.getenv("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets").rstrip("/")
+B_DATA_FEED = os.getenv("B_DATA_FEED", "iex").strip().lower()
+
 TRADE_ENV = (os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper").strip().lower()
 APCA_API_KEY_ID = os.getenv("APCA_API_KEY_ID", "") or os.getenv("ALPACA_KEY", "")
 APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY", "") or os.getenv("ALPACA_SECRET", "")
 
-# intent 字段长度保护
 MAX_INTENT_LEN = int(os.getenv("B_INTENT_MAXLEN", "70"))
 
-# snapshot 限频
 SNAPSHOT_MIN_INTERVAL = float(os.getenv("B_SNAPSHOT_MIN_INTERVAL", "0.35"))
 SNAPSHOT_CACHE_SEC = int(os.getenv("B_SNAPSHOT_CACHE_SEC", "2"))
 _snapshot_last_ts = 0.0
 _snapshot_cache = {}  # code -> (ts, price, prev_close, feed)
 
-# filled_avg_price 轮询（买入/加仓）
 FILL_POLL_TIMES = int(os.getenv("B_FILL_POLL_TIMES", "5"))
 FILL_POLL_SLEEP = float(os.getenv("B_FILL_POLL_SLEEP", "0.4"))
 
@@ -185,10 +162,13 @@ def _get_trading_client():
 
 def _get_buying_power(trading_client) -> float:
     acct = trading_client.get_account()
-    bp = getattr(acct, "buying_power", None)
-    if bp is None:
-        bp = getattr(acct, "cash", None)
-    return float(bp or 0.0)
+    if B_BP_USE_CASH == 1:
+        v = getattr(acct, "cash", None)
+        return float(v or 0.0)
+    v = getattr(acct, "buying_power", None)
+    if v is None:
+        v = getattr(acct, "cash", None)
+    return float(v or 0.0)
 
 
 def _is_cooldown(last_order_time, last_order_side) -> bool:
@@ -198,20 +178,6 @@ def _is_cooldown(last_order_time, last_order_side) -> bool:
         return (datetime.now() - last_order_time) < timedelta(minutes=B_COOLDOWN_MINUTES)
     except Exception:
         return False
-
-
-def _submit_market_notional(trading_client, code: str, notional: float):
-    from alpaca.trading.requests import MarketOrderRequest
-    from alpaca.trading.enums import OrderSide, TimeInForce
-
-    req = MarketOrderRequest(
-        symbol=code,
-        notional=round(float(notional), 2),
-        side=OrderSide.BUY,
-        time_in_force=TimeInForce.DAY,
-        extended_hours=bool(B_ALLOW_EXTENDED),
-    )
-    return trading_client.submit_order(order_data=req)
 
 
 def _submit_market_qty(trading_client, code: str, qty: int, side: str):
@@ -229,9 +195,6 @@ def _submit_market_qty(trading_client, code: str, qty: int, side: str):
 
 
 def _poll_filled_avg_price(trading_client, order_id: str):
-    """
-    尝试拿真实成交均价 filled_avg_price（拿不到就返回 None）
-    """
     if not order_id:
         return None
     for _ in range(max(FILL_POLL_TIMES, 1)):
@@ -244,6 +207,32 @@ def _poll_filled_avg_price(trading_client, order_id: str):
             pass
         time.sleep(FILL_POLL_SLEEP)
     return None
+
+
+def _try_get_position_avg_qty(trading_client, code: str):
+    try:
+        pos = trading_client.get_open_position(code)
+        if not pos:
+            return None, None
+        avg = getattr(pos, "avg_entry_price", None)
+        qty = getattr(pos, "qty", None)
+        avg_f = float(avg) if avg is not None and str(avg).strip() != "" else None
+        qty_i = int(float(qty)) if qty is not None and str(qty).strip() != "" else None
+        if qty_i is not None and qty_i <= 0:
+            qty_i = None
+        return avg_f, qty_i
+    except Exception:
+        return None, None
+
+
+def _wait_and_get_position_fill(trading_client, code: str):
+    for i in range(max(B_POS_RETRY, 1)):
+        time.sleep(B_POS_WAIT_SEC)
+        avg, qty = _try_get_position_avg_qty(trading_client, code)
+        if avg is not None and qty is not None:
+            return float(avg), int(qty)
+        _d(f"[DEBUG] {code} position not ready (try={i+1}/{B_POS_RETRY})")
+    return None, None
 
 
 def _load_one_b_row(conn, code: str):
@@ -263,9 +252,6 @@ def _load_one_b_row(conn, code: str):
 
 
 def _get_recent_closes(conn, code: str, n: int = 4):
-    """
-    返回最近 n 天 close（按 date DESC）
-    """
     sql = f"""
     SELECT `close`
     FROM `{PRICES_TABLE}`
@@ -286,9 +272,6 @@ def _get_recent_closes(conn, code: str, n: int = 4):
 
 
 def _update_ops_fields(conn, code: str, **kwargs):
-    """
-    只更新传入字段
-    """
     if not kwargs:
         return
     cols = []
@@ -302,16 +285,15 @@ def _update_ops_fields(conn, code: str, **kwargs):
         cur.execute(sql, tuple(vals))
 
 
-def _sell_qty(conn, code: str, qty: int, reason: str):
+def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
     qty = int(qty or 0)
     if qty <= 0:
-        return None
+        return False
 
     tc = _get_trading_client()
     order = _submit_market_qty(tc, code, qty, side="sell")
     order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
 
-    # DB：qty 扣减；如果扣完则清空持仓状态
     sql = f"""
     UPDATE `{OPS_TABLE}`
     SET
@@ -323,7 +305,6 @@ def _sell_qty(conn, code: str, qty: int, reason: str):
         is_bought = IF(qty - %s > 0, 1, 0),
         can_sell  = IF(qty - %s > 0, 1, 0),
         can_buy   = IF(qty - %s > 0, 0, 1),
-        -- 清仓后把止损/阶段归零，避免下次误触
         stop_loss_price = IF(qty - %s > 0, stop_loss_price, NULL),
         take_profit_price = IF(qty - %s > 0, take_profit_price, NULL)
     WHERE stock_code=%s AND stock_type='B';
@@ -341,26 +322,21 @@ def _sell_qty(conn, code: str, qty: int, reason: str):
         )
 
     print(f"[B SELL] {code} ✅ qty={qty} reason={reason} order_id={order_id}", flush=True)
-    return str(order_id or "")
+    return True
 
 
-def _buy_add_qty(conn, code: str, add_qty: int, reason: str, snap_price: float):
-    """
-    加仓：市价按 qty 买，更新 qty + cost_price(加权均价)
-    """
+def _buy_add_qty(conn, code: str, add_qty: int, reason: str, snap_price: float) -> bool:
     add_qty = int(add_qty or 0)
     if add_qty <= 0:
-        return None
+        return False
 
     tc = _get_trading_client()
     order = _submit_market_qty(tc, code, add_qty, side="buy")
     order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
 
-    # 成交均价尽量取 filled_avg_price
     filled_avg = _poll_filled_avg_price(tc, str(order_id or ""))
     fill_price = float(filled_avg) if filled_avg else float(snap_price)
 
-    # 取现有 qty/cost 做加权
     row = _load_one_b_row(conn, code) or {}
     old_qty = int(row.get("qty") or 0)
     old_cost = float(row.get("cost_price") or 0.0)
@@ -398,13 +374,13 @@ def _buy_add_qty(conn, code: str, add_qty: int, reason: str, snap_price: float):
         )
 
     print(f"[B ADD] {code} ✅ add_qty={add_qty} fill≈{fill_price:.2f} new_qty={new_qty} order_id={order_id}", flush=True)
-    return str(order_id or "")
+    return True
 
 
 # =========================
-# 对外暴露：BUY
+# BUY
 # =========================
-def strategy_B_buy(code: str):
+def strategy_B_buy(code: str) -> bool:
     code = (code or "").strip().upper()
     print(f"[B BUY] {code}", flush=True)
 
@@ -413,76 +389,66 @@ def strategy_B_buy(code: str):
         conn = _connect()
         row = _load_one_b_row(conn, code)
         if not row:
-            _d(f"[DEBUG] {code} not found")
-            return
+            return False
 
         if int(row.get("can_buy") or 0) != 1:
-            return
+            return False
         if int(row.get("is_bought") or 0) == 1:
-            return
+            return False
 
         trigger = float(row.get("trigger_price") or 0)
         if trigger <= 0:
-            return
+            return False
 
         if _is_cooldown(row.get("last_order_time"), row.get("last_order_side")):
-            return
+            return False
 
-        # 实时价
         price, prev_close, feed = get_snapshot_realtime(code)
         up_pct = (price - prev_close) / prev_close if prev_close and prev_close > 0 else 0.0
 
         if not (price > trigger):
-            return
+            return False
         if not (up_pct > B_MIN_UP_PCT):
-            return
+            return False
 
         tc = _get_trading_client()
         buying_power = _get_buying_power(tc)
-        if buying_power < B_MIN_BUYING_POWER:
-            return
+
+        if buying_power < float(B_TARGET_NOTIONAL_USD):
+            return False
+        if buying_power < float(B_MIN_BUYING_POWER):
+            return False
 
         max_use = buying_power * B_BP_USE_RATIO
-        target = min(B_TARGET_NOTIONAL_USD, B_MAX_NOTIONAL_USD, max_use)
-        if target <= 0:
-            return
+        target = min(float(B_TARGET_NOTIONAL_USD), float(B_MAX_NOTIONAL_USD), float(max_use))
+        if target < float(B_TARGET_NOTIONAL_USD):
+            return False
 
-        intent = f"B:BUY rt={price:.2f} trg={trigger:.2f} up={up_pct*100:.2f}% feed={feed}"
+        qty = int(math.floor(float(target) / float(price))) if price > 0 else 0
+        if qty <= 0:
+            return False
 
-        order = None
-        used_qty = 0
-        used_notional = float(target)
+        used_notional = float(qty) * float(price)
+        intent = f"B:BUY qty={qty} est={used_notional:.2f} rt={price:.2f} trg={trigger:.2f} up={up_pct*100:.2f}% feed={feed}"
 
-        # 先 notional；失败则 fallback qty
-        try:
-            order = _submit_market_notional(tc, code, target)
-            used_qty = 0
-        except Exception as e:
-            msg = str(e)
-            if ("not fractionable" in msg) or ("40310000" in msg):
-                qty = int(math.floor(float(target) / float(price))) if price > 0 else 0
-                qty = max(qty, 1)
-                order = _submit_market_qty(tc, code, qty, side="buy")
-                used_qty = qty
-                used_notional = float(qty) * float(price)
-                intent += f" (qty={qty})"
-            else:
-                raise
-
+        order = _submit_market_qty(tc, code, qty, side="buy")
         order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
 
-        # ✅ 成本价：尽量抓 filled_avg_price，抓不到就用 snapshot 价
+        pos_cost, pos_qty = _wait_and_get_position_fill(tc, code)
         filled_avg = _poll_filled_avg_price(tc, str(order_id or ""))
-        cost_price = float(filled_avg) if filled_avg else float(price)
 
-        # ✅ 初始止损：min(trigger_price, cost_price*0.95)
+        if pos_cost is not None and pos_qty is not None:
+            cost_price = float(pos_cost)
+            qty_to_write = int(pos_qty)
+        elif filled_avg is not None:
+            cost_price = float(filled_avg)
+            qty_to_write = int(qty)
+        else:
+            cost_price = float(price)
+            qty_to_write = int(qty)
+
         init_sl = min(float(trigger), float(cost_price) * 0.95)
-
-        # ✅ 初始阶段：0（用 take_profit_price 存 last_stage）
         last_stage = 0
-
-        # qty 写库：notional 下单时，我们先写 1（你表默认 qty=1），避免 0；后续你若要严格一致，可再做一次 position sync
-        qty_to_write = int(used_qty) if used_qty > 0 else int(row.get("qty") or 1) or 1
 
         sql = f"""
         UPDATE `{OPS_TABLE}`
@@ -493,7 +459,7 @@ def strategy_B_buy(code: str):
             close_price=%s,
             stop_loss_price=%s,
             take_profit_price=%s,
-            can_sell=1,
+            can_sell=0,
             can_buy=0,
             last_order_side='buy',
             last_order_intent=%s,
@@ -517,12 +483,15 @@ def strategy_B_buy(code: str):
                 ),
             )
 
-        print(f"[B BUY] {code} ✅ order_id={order_id} cost≈{cost_price:.2f} sl={init_sl:.2f}", flush=True)
+        print(
+            f"[B BUY] {code} ✅ order_id={order_id} qty={qty_to_write} cost≈{cost_price:.2f} sl={init_sl:.2f} bp={buying_power:.2f}",
+            flush=True,
+        )
+        return True
 
     except Exception as e:
         print(f"[B BUY] {code} ❌ error: {e}", flush=True)
         traceback.print_exc()
-        # 失败也写一下 last_order，便于排查
         try:
             if conn:
                 _update_ops_fields(
@@ -534,6 +503,7 @@ def strategy_B_buy(code: str):
                 )
         except Exception:
             pass
+        return False
     finally:
         try:
             if conn:
@@ -543,71 +513,64 @@ def strategy_B_buy(code: str):
 
 
 # =========================
-# 对外暴露：SELL（按你昨晚 10 阶段）
+# SELL
 # =========================
-def strategy_B_sell(code: str):
+def strategy_B_sell(code: str) -> bool:
     code = (code or "").strip().upper()
     print(f"[B SELL] {code}", flush=True)
 
     conn = None
+    traded = False
     try:
         conn = _connect()
         row = _load_one_b_row(conn, code)
         if not row:
-            return
+            return False
 
         if int(row.get("is_bought") or 0) != 1:
-            return
+            return False
         if int(row.get("can_sell") or 0) != 1:
-            return
+            return False
 
         qty = int(row.get("qty") or 0)
         cost = float(row.get("cost_price") or 0.0)
         trigger = float(row.get("trigger_price") or 0.0)
         sl = float(row.get("stop_loss_price") or 0.0)
 
-        # last_stage 存在 take_profit_price（不新增字段）
         try:
             last_stage = int(float(row.get("take_profit_price") or 0))
         except Exception:
             last_stage = 0
 
         if qty <= 0 or cost <= 0:
-            return
+            return False
 
-        # 实时价
         price, prev_close, feed = get_snapshot_realtime(code)
         up_pct = (price - cost) / cost if cost > 0 else 0.0
 
-        # ===== 第 1 层：假突破止损 / 任何阶段止损 =====
+        # 1) 止损：全卖
         if sl and sl > 0 and price <= sl:
             reason = f"STOP price={price:.2f} <= sl={sl:.2f}"
-            _sell_qty(conn, code, qty, reason)
-            return
+            traded = _sell_qty(conn, code, qty, reason) or traded
+            return traded
 
-        # ===== 阶段表（你的规则）=====
-        # stage: 1..9 对应 5%..40%
-        # stage 10：收盘反转清仓（最后做）
         stage_rules = [
-            (1, 0.05, 1.00, None, None),   # +5%  sl=cost
-            (2, 0.10, 1.05, 0.50, None),   # +10% sl=cost*1.05 + 加仓50%
-            (3, 0.15, 1.10, None, None),   # +15% sl=cost*1.10
-            (4, 0.20, 1.15, 0.50, None),   # +20% sl=cost*1.15 + 加仓50%
-            (5, 0.25, 1.20, None, None),   # +25% sl=cost*1.20
-            (6, 0.30, 1.25, None, 0.30),   # +30% sl=cost*1.25 + 卖出30%
-            (7, 0.35, 1.30, None, None),   # +35% sl=cost*1.30
-            (8, 0.40, 1.35, None, 0.40),   # +40% sl=cost*1.35 + 卖出40%
+            (1, 0.05, 1.00, None, None),
+            (2, 0.10, 1.05, 0.50, None),
+            (3, 0.15, 1.10, None, None),
+            (4, 0.20, 1.15, 0.50, None),
+            (5, 0.25, 1.20, None, None),
+            (6, 0.30, 1.25, None, 0.30),
+            (7, 0.35, 1.30, None, None),
+            (8, 0.40, 1.35, None, 0.40),
         ]
 
-        # ===== 逐阶段推进（只执行一次：stage > last_stage 才动作）=====
         for stage, pct, sl_mult, add_ratio, sell_ratio in stage_rules:
             if up_pct >= pct and stage > last_stage:
-                # 先抬止损（以 cost 为基准）
                 new_sl = cost * float(sl_mult)
                 if new_sl > (sl or 0):
                     sl = new_sl
 
-                # 写 stop_loss_price + last_stage（take_profit_price）
                 _update_ops_fields(
                     conn,
                     code,
@@ -617,52 +580,48 @@ def strategy_B_sell(code: str):
                 )
                 last_stage = stage
 
-                # 加仓
                 if add_ratio is not None:
                     add_qty = int(math.floor(qty * float(add_ratio)))
                     add_qty = max(add_qty, 1)
                     reason = f"STAGE{stage}_ADD{int(add_ratio*100)} price={price:.2f}"
-                    _buy_add_qty(conn, code, add_qty, reason, snap_price=price)
+                    traded = _buy_add_qty(conn, code, add_qty, reason, snap_price=price) or traded
 
-                    # 重新读一次（qty/cost 变了）
                     row2 = _load_one_b_row(conn, code) or {}
                     qty = int(row2.get("qty") or qty)
                     cost = float(row2.get("cost_price") or cost)
                     sl = float(row2.get("stop_loss_price") or sl)
 
-                # 分批止盈卖出
                 if sell_ratio is not None:
                     sell_qty = int(math.floor(qty * float(sell_ratio)))
                     sell_qty = max(sell_qty, 1)
                     reason = f"STAGE{stage}_SELL{int(sell_ratio*100)} price={price:.2f}"
-                    _sell_qty(conn, code, sell_qty, reason)
+                    traded = _sell_qty(conn, code, sell_qty, reason) or traded
 
-                    # 重新读一次（qty 变了）
                     row3 = _load_one_b_row(conn, code) or {}
                     qty = int(row3.get("qty") or qty)
 
-        # ===== 第 10 阶段：结构性退出（收盘反转清仓）=====
-        # “当日收盘价低于前三天收盘价中的最低价，清仓剩余部分”
-        # 在自动交易里用：最新一根 close（prices_pool 最新日期） vs 前三天 close 最低
-        closes = _get_recent_closes(conn, code, n=4)  # [c0, c1, c2, c3]
+        # 10) 收盘结构退出：清仓
+        closes = _get_recent_closes(conn, code, n=4)
         if len(closes) >= 4:
             c0, c1, c2, c3 = closes[0], closes[1], closes[2], closes[3]
             min3 = min(c1, c2, c3)
-            if c0 > 0 and min3 > 0 and c0 < min3:
-                if qty > 0:
-                    reason = f"STAGE10_EXIT close0={c0:.2f} < min3={min3:.2f}"
-                    _sell_qty(conn, code, qty, reason)
-                return
+            if c0 > 0 and min3 > 0 and c0 < min3 and qty > 0:
+                reason = f"STAGE10_EXIT close0={c0:.2f} < min3={min3:.2f}"
+                traded = _sell_qty(conn, code, qty, reason) or traded
+                return traded
 
-        # 最后再补一层保护：如果 stop_loss_price 为空（异常情况），就按 min(trigger, cost*0.95) 初始化一次
+        # 补一次 init SL
         if (sl is None) or (float(sl or 0) <= 0):
             init_sl = min(float(trigger or 0), float(cost) * 0.95) if cost > 0 else 0
             if init_sl > 0:
                 _update_ops_fields(conn, code, stop_loss_price=round(float(init_sl), 2))
 
+        return traded
+
     except Exception as e:
         print(f"[B SELL] {code} ❌ error: {e}", flush=True)
         traceback.print_exc()
+        return False
     finally:
         try:
             if conn:
