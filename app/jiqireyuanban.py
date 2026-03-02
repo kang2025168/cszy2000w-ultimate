@@ -294,34 +294,28 @@ def refresh_buy_gate(force: bool = False) -> bool:
 # =========================
 # 15) load_rows：允许买 vs 禁买（禁买时只扫可卖持仓）
 # =========================
-def load_rows(conn, mode: str):
-    """
-    mode:
-        sell  -> 只加载可卖
-        buy   -> 只加载可买
-    """
-
-    if mode == "sell":
+def load_rows(conn, buy_allowed: bool):
+    if buy_allowed:
+        sql = f"""
+        SELECT stock_code, stock_type, is_bought, can_sell, can_buy
+        FROM {TABLE}
+        WHERE stock_type IN ('A','B','C','D','E')
+          AND (
+                (is_bought=1 AND can_sell=1)
+             OR (can_buy=1 AND (is_bought IS NULL OR is_bought<>1))
+          )
+        """
+    else:
         sql = f"""
         SELECT stock_code, stock_type, is_bought, can_sell, can_buy
         FROM {TABLE}
         WHERE stock_type IN ('A','B','C','D','E')
           AND is_bought=1 AND can_sell=1
         """
-
-    elif mode == "buy":
-        sql = f"""
-        SELECT stock_code, stock_type, is_bought, can_sell, can_buy
-        FROM {TABLE}
-        WHERE stock_type IN ('A','B','C','D','E')
-          AND can_buy=1 AND (is_bought IS NULL OR is_bought<>1)
-        """
-    else:
-        return []
-
     with conn.cursor() as cur:
         cur.execute(sql)
         return cur.fetchall()
+
 # =========================
 # 16) 策略分发
 # =========================
@@ -346,13 +340,13 @@ def dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed: bool) -
     else:
         ...
     return traded
-def one_round(conn):
+def one_round(conn, buy_allowed: bool):
     conn = ensure_conn_alive(conn)
+    rows = load_rows(conn, buy_allowed) or []
 
-    # ===============================
-    # 1️⃣ SELL PHASE（卖优先）
-    # ===============================
-    rows = load_rows(conn, mode="sell") or []
+    if not rows:
+        log.info(f"本轮 rows=0 (buy_allowed={buy_allowed})")
+        return conn, False
 
     for row in rows:
         if _STOP:
@@ -362,52 +356,23 @@ def one_round(conn):
         stype = (row.get("stock_type") or "").strip().upper()
         is_bought = int(row.get("is_bought") or 0)
         can_sell  = int(row.get("can_sell") or 0)
+        can_buy   = int(row.get("can_buy") or 0)
 
-        if not code or stype not in ("A","B","C","D","E"):
+        if not code or stype not in ("A", "B", "C", "D", "E"):
             continue
 
-        traded = dispatch_one(code, stype, is_bought, can_sell, 0, True)
+        traded = dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed)
 
         if traded:
             t.sleep(float(os.getenv("AFTER_TRADE_SLEEP_SEC", "2")))
             refresh_buy_gate(force=True)
-            log.info(f"[ROUND] SELL break_round last={stype}:{code}")
+            log.info(f"[ROUND] traded_once=True break_round last={stype}:{code}")
             return conn, True
 
         t.sleep(SLEEP_BETWEEN_SYMBOLS + random.uniform(0, 0.08))
 
-    # ===============================
-    # 2️⃣ BUY PHASE
-    # ===============================
-    buy_allowed = refresh_buy_gate(force=False)
-
-    if not buy_allowed:
-        return conn, False
-
-    rows = load_rows(conn, mode="buy") or []
-
-    for row in rows:
-        if _STOP:
-            break
-
-        code = (row.get("stock_code") or "").strip().upper()
-        stype = (row.get("stock_type") or "").strip().upper()
-        can_buy = int(row.get("can_buy") or 0)
-
-        if not code or stype not in ("A","B","C","D","E"):
-            continue
-
-        traded = dispatch_one(code, stype, 0, 0, can_buy, True)
-
-        if traded:
-            t.sleep(float(os.getenv("AFTER_TRADE_SLEEP_SEC", "2")))
-            refresh_buy_gate(force=True)
-            log.info(f"[ROUND] BUY break_round last={stype}:{code}")
-            return conn, True
-
-        t.sleep(SLEEP_BETWEEN_SYMBOLS + random.uniform(0, 0.08))
-
-    return conn, False# =========================
+    return conn, False
+# =========================
 # 17) 主循环
 # =========================
 def main_loop():
@@ -432,7 +397,8 @@ def main_loop():
                 conn = get_conn()
                 log.info("DB 已连接")
 
-            conn, traded_once = one_round(conn)
+            buy_allowed = refresh_buy_gate(force=False)
+            conn, traded_once = one_round(conn, buy_allowed)
 
             if traded_once:
                 # 成交后立刻进入下一轮（重新读DB、重新扫）
