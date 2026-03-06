@@ -365,67 +365,223 @@ def _rotate_indices(n: int, start: int):
     start = start % n
     return list(range(start, n)) + list(range(0, start))
 
-def one_round(conn):
-    conn = ensure_conn_alive(conn)
 
+def get_market_gate(conn) -> int:
+    sql = f"""
+    SELECT entry_open
+    FROM `{TABLE}`
+    WHERE stock_code='QQQ' AND stock_type='N'
+    LIMIT 1;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        row = cur.fetchone() or {}
+
+    try:
+        return int(float(row.get("entry_open") or 0))
+    except Exception:
+        return 0
+
+# def one_round(conn):
+#     conn = ensure_conn_alive(conn)
+#
+#     traded_any = False  # 本轮是否发生过任何成交（卖/买）
+#
+#     # ===============================
+#     # 1) SELL PHASE（卖：全扫一遍，不 break）
+#     # ===============================
+#     sell_rows = load_rows(conn, mode="sell") or []
+#     for row in sell_rows:
+#         if _STOP:
+#             break
+#
+#         code = (row.get("stock_code") or "").strip().upper()
+#         stype = (row.get("stock_type") or "").strip().upper()
+#         is_bought = int(row.get("is_bought") or 0)
+#         can_sell  = int(row.get("can_sell") or 0)
+#
+#         if not code or stype not in ("A","B","C","D","E"):
+#             continue
+#
+#         traded = dispatch_one(code, stype, is_bought, can_sell, 0, True)
+#         if traded:
+#             traded_any = True
+#             # 给账户/状态一点时间
+#             t.sleep(float(os.getenv("AFTER_TRADE_SLEEP_SEC", "2")))
+#             refresh_buy_gate(force=True)
+#
+#         t.sleep(SLEEP_BETWEEN_SYMBOLS + random.uniform(0, 0.08))
+#
+#     # ===============================
+#     # 2) BUY PHASE（买：全扫一遍；buy_gate 不允许则整段跳过）
+#     # ===============================
+#     buy_allowed = refresh_buy_gate(force=False)
+#     if not buy_allowed:
+#         log.info("[ROUND] BUY skipped (buy_allowed=False)")
+#         return conn, traded_any
+#
+#     buy_rows = load_rows(conn, mode="buy") or []
+#     for row in buy_rows:
+#         if _STOP:
+#             break
+#
+#         code = (row.get("stock_code") or "").strip().upper()
+#         stype = (row.get("stock_type") or "").strip().upper()
+#         can_buy = int(row.get("can_buy") or 0)
+#
+#         if not code or stype not in ("A","B","C","D","E"):
+#             continue
+#
+#         traded = dispatch_one(code, stype, 0, 0, can_buy, True)
+#         if traded:
+#             traded_any = True
+#             t.sleep(float(os.getenv("AFTER_TRADE_SLEEP_SEC", "2")))
+#             refresh_buy_gate(force=True)
+#
+#         t.sleep(SLEEP_BETWEEN_SYMBOLS + random.uniform(0, 0.08))
+#
+#     return conn, traded_any# =========================
+
+def one_round(conn, buy_allowed):
+    global _BUY_CURSOR, _SELL_CURSOR
+
+    conn = ensure_conn_alive(conn)
     traded_any = False  # 本轮是否发生过任何成交（卖/买）
 
     # ===============================
-    # 1) SELL PHASE（卖：全扫一遍，不 break）
+    # 1) SELL PHASE（卖：全扫一遍，但从游标开始）
     # ===============================
     sell_rows = load_rows(conn, mode="sell") or []
-    for row in sell_rows:
-        if _STOP:
-            break
+    sell_n = len(sell_rows)
 
-        code = (row.get("stock_code") or "").strip().upper()
-        stype = (row.get("stock_type") or "").strip().upper()
-        is_bought = int(row.get("is_bought") or 0)
-        can_sell  = int(row.get("can_sell") or 0)
+    if sell_n > 0:
+        sell_order = _rotate_indices(sell_n, _SELL_CURSOR)
+        last_sell_hit_idx = None
 
-        if not code or stype not in ("A","B","C","D","E"):
-            continue
+        for idx in sell_order:
+            if _STOP:
+                break
 
-        traded = dispatch_one(code, stype, is_bought, can_sell, 0, True)
-        if traded:
-            traded_any = True
-            # 给账户/状态一点时间
-            t.sleep(float(os.getenv("AFTER_TRADE_SLEEP_SEC", "2")))
-            refresh_buy_gate(force=True)
+            row = sell_rows[idx]
+            code = (row.get("stock_code") or "").strip().upper()
+            stype = (row.get("stock_type") or "").strip().upper()
+            is_bought = int(row.get("is_bought") or 0)
+            can_sell  = int(row.get("can_sell") or 0)
 
-        t.sleep(SLEEP_BETWEEN_SYMBOLS + random.uniform(0, 0.08))
+            if not code or stype not in ("A", "B", "C", "D", "E"):
+                continue
+
+            traded = dispatch_one(code, stype, is_bought, can_sell, 0, True)
+            if traded:
+                traded_any = True
+                last_sell_hit_idx = idx
+                t.sleep(float(os.getenv("AFTER_TRADE_SLEEP_SEC", "2")))
+                refresh_buy_gate(force=True)
+
+            t.sleep(SLEEP_BETWEEN_SYMBOLS + random.uniform(0, 0.08))
+
+        # ✅ 如果本轮卖出阶段有成交，下轮从“最后一只成交股票的下一只”开始
+        if last_sell_hit_idx is not None and sell_n > 0:
+            _SELL_CURSOR = (last_sell_hit_idx + 1) % sell_n
+    else:
+        _SELL_CURSOR = 0
 
     # ===============================
-    # 2) BUY PHASE（买：全扫一遍；buy_gate 不允许则整段跳过）
+    # 2) BUY PHASE（买：全扫一遍，但从游标开始）
     # ===============================
-    buy_allowed = refresh_buy_gate(force=False)
     if not buy_allowed:
-        log.info("[ROUND] BUY skipped (buy_allowed=False)")
+        log.info("[ROUND] BUY skipped (gate closed)")
         return conn, traded_any
 
     buy_rows = load_rows(conn, mode="buy") or []
-    for row in buy_rows:
-        if _STOP:
-            break
+    buy_n = len(buy_rows)
 
-        code = (row.get("stock_code") or "").strip().upper()
-        stype = (row.get("stock_type") or "").strip().upper()
-        can_buy = int(row.get("can_buy") or 0)
+    if buy_n > 0:
+        buy_order = _rotate_indices(buy_n, _BUY_CURSOR)
+        last_buy_hit_idx = None
 
-        if not code or stype not in ("A","B","C","D","E"):
-            continue
+        for idx in buy_order:
+            if _STOP:
+                break
 
-        traded = dispatch_one(code, stype, 0, 0, can_buy, True)
-        if traded:
-            traded_any = True
-            t.sleep(float(os.getenv("AFTER_TRADE_SLEEP_SEC", "2")))
-            refresh_buy_gate(force=True)
+            row = buy_rows[idx]
+            code = (row.get("stock_code") or "").strip().upper()
+            stype = (row.get("stock_type") or "").strip().upper()
+            can_buy = int(row.get("can_buy") or 0)
 
-        t.sleep(SLEEP_BETWEEN_SYMBOLS + random.uniform(0, 0.08))
+            if not code or stype not in ("A", "B", "C", "D", "E"):
+                continue
 
-    return conn, traded_any# =========================
-# 17) 主循环
+            traded = dispatch_one(code, stype, 0, 0, can_buy, True)
+            if traded:
+                traded_any = True
+                last_buy_hit_idx = idx
+                t.sleep(float(os.getenv("AFTER_TRADE_SLEEP_SEC", "2")))
+                refresh_buy_gate(force=True)
+
+            t.sleep(SLEEP_BETWEEN_SYMBOLS + random.uniform(0, 0.08))
+
+        # ✅ 如果本轮买入阶段有成交，下轮从“最后一只成交股票的下一只”开始
+        if last_buy_hit_idx is not None and buy_n > 0:
+            _BUY_CURSOR = (last_buy_hit_idx + 1) % buy_n
+    else:
+        _BUY_CURSOR = 0
+
+    return conn, traded_any# 17) 主循环
 # =========================
+# def main_loop():
+#     log.info(f"===== 稳定主循环启动 ===== env={TRADE_ENV}")
+#     log.info(f"pid={os.getpid()} pid_file={PID_FILE}")
+#     log.info(f"sys.executable={sys.executable}")
+#     log.info(f"TZ={LA_TZ_NAME} DB={DB.get('host')}:{DB.get('port')} user={DB.get('user')} db={DB.get('database')} table={TABLE}")
+#     log.info(f"BUY_GATE: MIN_BUYING_POWER={MIN_BUYING_POWER} refresh={BUYPOWER_REFRESH_SECS}s")
+#
+#     conn = None
+#     refresh_buy_gate(force=True)
+#
+#     while not _STOP:
+#         try:
+#             if not is_trading_time():
+#                 log.info("非交易时段，休眠 60s...")
+#                 t.sleep(60)
+#                 continue
+#
+#             if conn is None:
+#                 conn = get_conn()
+#                 log.info("DB 已连接")
+#
+#             conn, traded_once = one_round(conn)
+#
+#             if traded_once:
+#                 t.sleep(float(os.getenv("AFTER_ROUND_TRADE_SLEEP_SEC", "0.5")))
+#             else:
+#                 sleep_s = SLEEP_BETWEEN_ROUNDS + random.uniform(0, ROUND_JITTER_MAX)
+#                 t.sleep(sleep_s)
+#
+#         except Exception as e:
+#             log.error(f"[主循环异常] {e}")
+#             traceback.print_exc()
+#
+#             backoff = random.randint(ERROR_BACKOFF_MIN, ERROR_BACKOFF_MAX)
+#             log.warning(f"退避 {backoff}s 后继续...")
+#             t.sleep(backoff)
+#
+#             try:
+#                 if conn:
+#                     conn.close()
+#             except Exception:
+#                 pass
+#             conn = None
+#
+#     try:
+#         if conn:
+#             conn.close()
+#     except Exception:
+#         pass
+#
+#     log.info("===== 已安全退出 =====")
+
+
 def main_loop():
     log.info(f"===== 稳定主循环启动 ===== env={TRADE_ENV}")
     log.info(f"pid={os.getpid()} pid_file={PID_FILE}")
@@ -438,16 +594,35 @@ def main_loop():
 
     while not _STOP:
         try:
-            if not is_trading_time():
-                log.info("非交易时段，休眠 60s...")
-                t.sleep(60)
-                continue
+            # if not is_trading_time():
+            #     log.info("非交易时段，休眠 60s...")
+            #     t.sleep(60)
+            #     continue
 
             if conn is None:
                 conn = get_conn()
                 log.info("DB 已连接")
 
-            conn, traded_once = one_round(conn)
+            conn = ensure_conn_alive(conn)
+
+            # 1) 原来的资金开关
+            bp_buy_allowed = refresh_buy_gate(force=False)
+
+            # 2) 新增：大盘总开关
+            market_gate = get_market_gate(conn)
+            market_buy_allowed = (market_gate == 1)
+
+            # 3) 最终买入开关：资金允许 且 大盘允许
+            buy_allowed = bp_buy_allowed and market_buy_allowed
+
+            if not market_buy_allowed:
+                log.info("大盘趋势不行，禁止买入，仅允许卖出...")
+            elif not bp_buy_allowed:
+                log.info("账户资金不足，禁止买入，仅允许卖出...")
+            else:
+                log.info("买入条件允许：资金开关=1，大盘开关=1")
+
+            conn, traded_once = one_round(conn, buy_allowed)
 
             if traded_once:
                 t.sleep(float(os.getenv("AFTER_ROUND_TRADE_SLEEP_SEC", "0.5")))
@@ -477,6 +652,5 @@ def main_loop():
         pass
 
     log.info("===== 已安全退出 =====")
-
 if __name__ == "__main__":
     main_loop()
