@@ -34,10 +34,10 @@ DB = dict(
 # 参数
 # =========================
 B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.05"))
-B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "1500"))
+B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "900"))
 
-B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "1500"))
-B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "1500"))
+B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "900"))
+B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "900"))
 
 B_COOLDOWN_MINUTES = int(os.getenv("B_COOLDOWN_MINUTES", "30"))
 B_BP_USE_RATIO = float(os.getenv("B_BP_USE_RATIO", "0.95"))
@@ -45,7 +45,7 @@ B_ALLOW_EXTENDED = int(os.getenv("B_ALLOW_EXTENDED", "0"))
 B_DEBUG = int(os.getenv("B_DEBUG", "0"))
 HTTP_TIMEOUT = float(os.getenv("B_HTTP_TIMEOUT", "6"))
 
-B_BP_USE_CASH = int(os.getenv("B_BP_USE_CASH", "1"))  # 0=buying_power,1=cash
+B_BP_USE_CASH = int(os.getenv("B_BP_USE_CASH", "0"))  # 0=buying_power,1=cash
 
 # 买入后同步 position
 B_POS_WAIT_SEC = int(os.getenv("B_POS_WAIT_SEC", "20"))
