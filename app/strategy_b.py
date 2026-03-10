@@ -33,14 +33,14 @@ DB = dict(
 # =========================
 # 参数
 # =========================
-B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.05"))
-B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "900"))
+B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.03"))
+B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "1800"))
 
-B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "900"))
-B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "900"))
+B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "1800"))
+B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "1800"))
 
 B_COOLDOWN_MINUTES = int(os.getenv("B_COOLDOWN_MINUTES", "30"))
-B_BP_USE_RATIO = float(os.getenv("B_BP_USE_RATIO", "0.95"))
+B_BP_USE_RATIO = float(os.getenv("B_BP_USE_RATIO", "0.98"))
 B_ALLOW_EXTENDED = int(os.getenv("B_ALLOW_EXTENDED", "0"))
 B_DEBUG = int(os.getenv("B_DEBUG", "0"))
 HTTP_TIMEOUT = float(os.getenv("B_HTTP_TIMEOUT", "6"))
@@ -447,7 +447,7 @@ def strategy_B_buy(code: str) -> bool:
             cost_price = float(price)
             qty_to_write = int(qty)
 
-        init_sl = min(float(trigger), float(cost_price) * 0.95)
+        init_sl = max(float(trigger), float(cost_price) * 0.98)
         last_stage = 0
 
         sql = f"""
@@ -459,7 +459,7 @@ def strategy_B_buy(code: str) -> bool:
             close_price=%s,
             stop_loss_price=%s,
             take_profit_price=%s,
-            can_sell=0,
+            can_sell=1,
             can_buy=0,
             last_order_side='buy',
             last_order_intent=%s,
@@ -555,14 +555,14 @@ def strategy_B_sell(code: str) -> bool:
             return traded
 
         stage_rules = [
-            (1, 0.05, 1.00, None, None),
-            (2, 0.10, 1.05, 0.50, None),
-            (3, 0.15, 1.10, None, None),
-            (4, 0.20, 1.15, 0.50, None),
-            (5, 0.25, 1.20, None, None),
-            (6, 0.30, 1.25, None, 0.30),
-            (7, 0.35, 1.30, None, None),
-            (8, 0.40, 1.35, None, 0.40),
+            (1, 0.05, 1.03, None, None),
+            (2, 0.10, 1.08, 0.50, None),
+            (3, 0.15, 1.13, None, None),
+            (4, 0.20, 1.18, 0.50, None),
+            (5, 0.25, 1.23, None, None),
+            (6, 0.30, 1.28, None, 0.30),
+            (7, 0.35, 1.33, None, None),
+            (8, 0.40, 1.38, None, 0.40),
         ]
 
         for stage, pct, sl_mult, add_ratio, sell_ratio in stage_rules:
