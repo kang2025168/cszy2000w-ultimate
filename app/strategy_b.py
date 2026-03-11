@@ -459,7 +459,7 @@ def strategy_B_buy(code: str) -> bool:
             close_price=%s,
             stop_loss_price=%s,
             take_profit_price=%s,
-            can_sell=1,
+            can_sell=0,
             can_buy=0,
             last_order_side='buy',
             last_order_intent=%s,
