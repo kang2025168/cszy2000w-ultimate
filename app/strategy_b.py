@@ -304,7 +304,7 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
         last_order_time=NOW(),
         is_bought = IF(qty - %s > 0, 1, 0),
         can_sell  = IF(qty - %s > 0, 0, 0),
-        can_buy   = 0,
+        can_buy   = IF(qty - %s > 0, 0, 1),
         stop_loss_price = IF(qty - %s > 0, stop_loss_price, NULL),
         take_profit_price = IF(qty - %s > 0, take_profit_price, NULL)
     WHERE stock_code=%s AND stock_type='B';
