@@ -223,7 +223,21 @@ def _try_get_position_avg_qty(trading_client, code: str):
         return avg_f, qty_i
     except Exception:
         return None, None
+def _get_real_position_qty(trading_client, code: str):
+    try:
+        pos = trading_client.get_open_position(code)
+        if not pos:
+            return 0
 
+        qty = getattr(pos, "qty", None)
+        if qty is None or str(qty).strip() == "":
+            return 0
+
+        return max(int(float(qty)), 0)
+
+    except Exception as e:
+        print(f"[B SELL] {code} get_open_position error: {e}", flush=True)
+        return None
 
 def _wait_and_get_position_fill(trading_client, code: str):
     for i in range(max(B_POS_RETRY, 1)):
@@ -291,22 +305,62 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
         return False
 
     tc = _get_trading_client()
+
+    real_qty = _get_real_position_qty(tc, code)
+    if real_qty is None:
+        print(f"[B SELL] {code} skip: failed to query Alpaca real position, reason={reason}", flush=True)
+        return False
+
+    if real_qty == 0:
+        print(f"[B SELL] {code} skip: no real Alpaca position, db_qty={qty}, reason={reason}", flush=True)
+
+        _update_ops_fields(
+            conn,
+            code,
+            qty=0,
+            is_bought=0,
+            can_sell=0,
+            can_buy=0,
+            stop_loss_price=None,
+            take_profit_price=None,
+            last_order_side="sell",
+            last_order_intent=_intent_short(f"B:SELL_SKIP no_real_pos {reason}"),
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return False
+
+    if qty > real_qty:
+        print(f"[B SELL] {code} adjust sell qty: req_qty={qty} -> real_qty={real_qty}", flush=True)
+        qty = real_qty
+
+    row = _load_one_b_row(conn, code) or {}
+    # db_qty_before = int(row.get("qty") or 0)
+    old_sl = row.get("stop_loss_price")
+    old_tp = row.get("take_profit_price")
+
     order = _submit_market_qty(tc, code, qty, side="sell")
     order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
+
+    remaining_qty = max(real_qty - qty, 0)
+    new_is_bought = 1 if remaining_qty > 0 else 0
+    new_can_sell = 1 if remaining_qty > 0 else 0
+    new_can_buy = 0
+    new_stop_loss = old_sl if remaining_qty > 0 else None
+    new_take_profit = old_tp if remaining_qty > 0 else None
 
     sql = f"""
     UPDATE `{OPS_TABLE}`
     SET
-        qty = GREATEST(qty - %s, 0),
+        qty=%s,
         last_order_side='sell',
         last_order_intent=%s,
         last_order_id=%s,
         last_order_time=NOW(),
-        is_bought = IF(qty - %s > 0, 1, 0),
-        can_sell  = IF(qty - %s > 0, 0, 0),
-        can_buy   = IF(qty - %s > 0, 0, 1),
-        stop_loss_price = IF(qty - %s > 0, stop_loss_price, NULL),
-        take_profit_price = IF(qty - %s > 0, take_profit_price, NULL)
+        is_bought=%s,
+        can_sell=%s,
+        can_buy=%s,
+        stop_loss_price=%s,
+        take_profit_price=%s
     WHERE stock_code=%s AND stock_type='B';
     """
 
@@ -314,17 +368,23 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
         cur.execute(
             sql,
             (
-                qty,
+                int(remaining_qty),
                 _intent_short(reason),
                 str(order_id or ""),
-                qty, qty, qty, qty, qty,
+                int(new_is_bought),
+                int(new_can_sell),
+                int(new_can_buy),
+                new_stop_loss,
+                new_take_profit,
                 code,
             ),
         )
 
-    print(f"[B SELL] {code} ✅ qty={qty} reason={reason} order_id={order_id}", flush=True)
+    print(
+        f"[B SELL] {code} ✅ qty={qty} remain={remaining_qty} reason={reason} order_id={order_id}",
+        flush=True,
+    )
     return True
-
 
 def _buy_add_qty(conn, code: str, add_qty: int, reason: str, snap_price: float) -> bool:
     add_qty = int(add_qty or 0)
