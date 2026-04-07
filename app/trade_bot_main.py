@@ -168,7 +168,7 @@ ERROR_BACKOFF_MIN     = int(os.getenv("ERROR_BACKOFF_MIN", "3"))
 ERROR_BACKOFF_MAX     = int(os.getenv("ERROR_BACKOFF_MAX", "15"))
 ROUND_JITTER_MAX      = float(os.getenv("ROUND_JITTER_MAX", "1.2"))
 
-MIN_BUYING_POWER = float(os.getenv("MIN_BUYING_POWER", "900"))
+MIN_BUYING_POWER = float(os.getenv("MIN_BUYING_POWER", "2000"))
 BUYPOWER_REFRESH_SECS = int(os.getenv("BUYPOWER_REFRESH_SECS", "300"))
 
 # =========================
@@ -595,7 +595,7 @@ def main_loop():
     while not _STOP:
         try:
             if not is_trading_time():
-                log.info("非交易时段，休眠 60s...")
+                # log.info("非交易时段，休眠 60s...")
                 t.sleep(60)
                 continue
 
