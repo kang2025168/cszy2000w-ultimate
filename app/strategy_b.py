@@ -33,7 +33,7 @@ DB = dict(
 # =========================
 # 参数
 # =========================
-B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.05"))
+B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.03"))
 B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "2100"))
 
 B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "2100"))
