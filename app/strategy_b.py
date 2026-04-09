@@ -499,6 +499,23 @@ def _buy_add_qty(conn, code: str, add_qty: int, reason: str, snap_price: float) 
 # =========================
 # BUY
 # =========================
+def _get_prev_close_from_db(conn, code: str):
+    sql = f"""
+    SELECT `close`
+    FROM `{PRICES_TABLE}`
+    WHERE `symbol`=%s
+    ORDER BY `date` DESC
+    LIMIT 1
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (code,))
+        row = cur.fetchone() or {}
+    try:
+        return float(row.get("close") or 0.0)
+    except Exception:
+        return 0.0
+
+
 def strategy_B_buy(code: str) -> bool:
     code = (code or "").strip().upper()
     print(f"[B BUY] {code}", flush=True)
@@ -540,8 +557,10 @@ def strategy_B_buy(code: str) -> bool:
         price = float(snap.get("last_price") or 0.0)
         bid = float(snap.get("bid") or 0.0)
         ask = float(snap.get("ask") or 0.0)
-        prev_close = float(snap.get("prev_close") or 0.0)
         feed = snap.get("feed")
+
+        # ✅ 改这里：上一交易日收盘价从本地数据库取，不用 Alpaca snapshot 的 prevDailyBar
+        prev_close = _get_prev_close_from_db(conn, code)
 
         print(
             f"[B BUY] {code} quote bid={bid:.2f} ask={ask:.2f} last={price:.2f} "
@@ -661,15 +680,15 @@ def strategy_B_buy(code: str) -> bool:
             cur.execute(
                 sql,
                 (
-                    int(qty_to_write),                 # qty
-                    int(base_qty),                     # base_qty
-                    round(float(cost_price), 2),      # cost_price
-                    round(float(cost_price), 2),      # close_price
-                    round(float(init_sl), 2),         # stop_loss_price
-                    float(last_stage),                # take_profit_price (兼容旧字段)
-                    int(last_stage),                  # b_stage
-                    _intent_short(intent),            # last_order_intent
-                    str(order_id or ""),              # last_order_id
+                    int(qty_to_write),
+                    int(base_qty),
+                    round(float(cost_price), 2),
+                    round(float(cost_price), 2),
+                    round(float(init_sl), 2),
+                    float(last_stage),
+                    int(last_stage),
+                    _intent_short(intent),
+                    str(order_id or ""),
                     code,
                 ),
             )
@@ -702,7 +721,6 @@ def strategy_B_buy(code: str) -> bool:
                 conn.close()
         except Exception:
             pass
-
 
 # =========================
 # SELL
