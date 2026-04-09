@@ -633,7 +633,7 @@ def strategy_B_buy(code: str) -> bool:
             cost_price = float(price)
             qty_to_write = int(qty)
 
-        init_sl = max(float(trigger), float(cost_price) * 0.98)
+        init_sl = max(float(trigger), float(cost_price) * 0.97)
         last_stage = 0
         base_qty = int(qty_to_write)
 
@@ -743,16 +743,16 @@ def strategy_B_sell(code: str) -> bool:
     # 例：
     # 浮盈 19% -> 锁到 15%
     # 浮盈 29% -> 锁到 25%
-    TRAIL_BACKOFF_PCT = 0.02
+    TRAIL_BACKOFF_PCT = 0.04
 
     # 浮盈至少达到 10% 后才启动这个动态锁盈
-    DYNAMIC_TRAIL_START_PCT = 0.05
+    DYNAMIC_TRAIL_START_PCT = 0.08
 
     BLOCK_SAME_DAY_SELL_AFTER_BUY = True
 
     STAGE_RULES = [
-        (1, 0.05, 1.01, None, None),
-        (2, 0.10, 1.06, 0.20, None),   # 主加仓（20%）
+        (1, 0.03, 1.01, None, None),
+        (2, 0.08, 1.06, 0.20, None),   # 主加仓（20%）
         (3, 0.15, 1.10, 0.10, None),   # 小补仓（10%）
         (4, 0.20, 1.15, None, 0.20),
         (5, 0.30, 1.25, None, 0.20),
@@ -946,7 +946,7 @@ def strategy_B_sell(code: str) -> bool:
         # 1) 先补初始止损（仅当 sl 未设置）
         # =======================================================
         if sl <= 0:
-            init_sl = min(float(trigger or 0), float(cost) * 0.98) if cost > 0 else 0
+            init_sl = min(float(trigger or 0), float(cost) * 0.97) if cost > 0 else 0
             if init_sl > 0:
                 sl = round(float(init_sl), 2)
                 try:
