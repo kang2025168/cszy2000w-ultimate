@@ -168,7 +168,7 @@ ERROR_BACKOFF_MIN     = int(os.getenv("ERROR_BACKOFF_MIN", "3"))
 ERROR_BACKOFF_MAX     = int(os.getenv("ERROR_BACKOFF_MAX", "15"))
 ROUND_JITTER_MAX      = float(os.getenv("ROUND_JITTER_MAX", "1.2"))
 
-MIN_BUYING_POWER = float(os.getenv("MIN_BUYING_POWER", "2000"))
+MIN_BUYING_POWER = float(os.getenv("MIN_BUYING_POWER", "2500"))
 BUYPOWER_REFRESH_SECS = int(os.getenv("BUYPOWER_REFRESH_SECS", "300"))
 
 # =========================

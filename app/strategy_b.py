@@ -34,10 +34,10 @@ DB = dict(
 # 参数
 # =========================
 B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.05"))
-B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "2000"))
+B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "2500"))
 
-B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "2000"))
-B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "2000"))
+B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "2500"))
+B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "2500"))
 
 B_COOLDOWN_MINUTES = int(os.getenv("B_COOLDOWN_MINUTES", "30"))
 B_BP_USE_RATIO = float(os.getenv("B_BP_USE_RATIO", "0.98"))
@@ -743,10 +743,10 @@ def strategy_B_sell(code: str) -> bool:
     # 例：
     # 浮盈 19% -> 锁到 15%
     # 浮盈 29% -> 锁到 25%
-    TRAIL_BACKOFF_PCT = 0.04
+    TRAIL_BACKOFF_PCT = 0.02
 
     # 浮盈至少达到 10% 后才启动这个动态锁盈
-    DYNAMIC_TRAIL_START_PCT = 0.10
+    DYNAMIC_TRAIL_START_PCT = 0.05
 
     BLOCK_SAME_DAY_SELL_AFTER_BUY = True
 
