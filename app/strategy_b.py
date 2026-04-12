@@ -256,7 +256,8 @@ def _load_one_b_row(conn, code: str):
            cost_price, stop_loss_price, take_profit_price,
            b_stage, base_qty,
            qty, is_bought, can_buy, can_sell,
-           last_order_time, last_order_side, last_order_id
+           last_order_time, last_order_side, last_order_id,
+           b_stop_pending_since, b_stop_pending_sl
     FROM `{OPS_TABLE}`
     WHERE stock_code=%s AND stock_type='B'
     LIMIT 1;
@@ -264,6 +265,7 @@ def _load_one_b_row(conn, code: str):
     with conn.cursor() as cur:
         cur.execute(sql, (code,))
         return cur.fetchone()
+
 
 def _get_recent_closes(conn, code: str, n: int = 4):
     sql = f"""
@@ -517,8 +519,15 @@ def _get_prev_close_from_db(conn, code: str):
 
 
 def strategy_B_buy(code: str) -> bool:
+    import math
+    import traceback
+    from datetime import datetime
+
     code = (code or "").strip().upper()
     print(f"[B BUY] {code}", flush=True)
+
+    # 新增：涨幅超过这个值就不追了
+    B_MAX_BUY_UP_PCT = 0.10
 
     conn = None
     try:
@@ -559,7 +568,7 @@ def strategy_B_buy(code: str) -> bool:
         ask = float(snap.get("ask") or 0.0)
         feed = snap.get("feed")
 
-        # ✅ 改这里：上一交易日收盘价从本地数据库取，不用 Alpaca snapshot 的 prevDailyBar
+        # 上一交易日收盘价从本地数据库取
         prev_close = _get_prev_close_from_db(conn, code)
 
         print(
@@ -570,6 +579,11 @@ def strategy_B_buy(code: str) -> bool:
 
         up_pct = (price - prev_close) / prev_close if prev_close and prev_close > 0 else 0.0
         need_price = prev_close * (1.0 + float(B_MIN_UP_PCT)) if prev_close and prev_close > 0 else 0.0
+        max_buy_price = prev_close * (1.0 + float(B_MAX_BUY_UP_PCT)) if prev_close and prev_close > 0 else 0.0
+
+        if price <= 0:
+            print(f"[B BUY] {code} skip: invalid price={price:.2f}", flush=True)
+            return False
 
         if not (price > trigger):
             print(
@@ -582,6 +596,15 @@ def strategy_B_buy(code: str) -> bool:
             print(
                 f"[B BUY] {code} skip: up_pct={up_pct*100:.2f}% <= min_up={B_MIN_UP_PCT*100:.2f}% "
                 f"(need>{need_price:.2f})",
+                flush=True,
+            )
+            return False
+
+        # 新增：如果涨幅已经超过 10%，禁止追高买入
+        if up_pct >= B_MAX_BUY_UP_PCT:
+            print(
+                f"[B BUY] {code} skip: up_pct={up_pct*100:.2f}% >= max_buy_up={B_MAX_BUY_UP_PCT*100:.2f}% "
+                f"(max_buy_price<={max_buy_price:.2f})",
                 flush=True,
             )
             return False
@@ -667,6 +690,8 @@ def strategy_B_buy(code: str) -> bool:
             stop_loss_price=%s,
             take_profit_price=%s,
             b_stage=%s,
+            b_stop_pending_since=NULL,
+            b_stop_pending_sl=NULL,
             can_sell=1,
             can_buy=0,
             last_order_side='buy',
@@ -722,6 +747,8 @@ def strategy_B_buy(code: str) -> bool:
         except Exception:
             pass
 
+
+
 # =========================
 # SELL
 # =========================
@@ -731,21 +758,25 @@ def strategy_B_sell(code: str) -> bool:
     """
     策略B：持仓后的动态管理（止损 / 分层加仓 / 分层减仓 / 结构退出）
 
-    本版最终逻辑：
-    1) 不改变现有主逻辑框架
-    2) 先补初始止损，再动态止损，再硬止损
-    3) 卖出前 same-day buy lock 读取最新 row
-    4) 日志精简，只保留关键日志
-    5) 动态止损采用“固定利润回撤 4 个百分点”
-       例如：
-       - 浮盈 19% -> 动态止损约 15%
-       - 浮盈 29% -> 动态止损约 25%
-    6) 止损只上移，不下移
+    新增逻辑：
+    1) same-day buy lock 不再绝对禁止卖出：
+       - 当天买入后，若亏损 <= -8%，允许当天卖
+       - 当天买入后，若盈利 >= +30%，允许当天卖
+
+    2) 闪崩保护（防洗出）：
+       - 当浮盈 >= +25% 且价格跌破止损价，不立即卖
+       - 先进入 10 分钟观察期
+       - 10 分钟内若价格重新回到止损价之上，则取消卖出
+       - 若 10 分钟后仍低于止损价，则卖出
+
+    说明：
+    - 闪崩保护状态落库到 stock_operations：
+      b_stop_pending_since, b_stop_pending_sl
     """
 
     import math
     import traceback
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     code = (code or "").strip().upper()
     print(f"[B SELL] {code}", flush=True)
@@ -758,20 +789,23 @@ def strategy_B_sell(code: str) -> bool:
     ENABLE_STRUCTURE_EXIT_STAGE = 6
 
     # 动态止损：固定利润回撤 4 个百分点
-    # 例：
-    # 浮盈 19% -> 锁到 15%
-    # 浮盈 29% -> 锁到 25%
     TRAIL_BACKOFF_PCT = 0.04
-
-    # 浮盈至少达到 10% 后才启动这个动态锁盈
     DYNAMIC_TRAIL_START_PCT = 0.08
 
     BLOCK_SAME_DAY_SELL_AFTER_BUY = True
 
+    # 新增：same-day lock 例外
+    SAME_DAY_FORCE_SELL_LOSS_PCT = -0.08   # 当天买入后亏损达到 -8% 可卖
+    SAME_DAY_FORCE_SELL_WIN_PCT = 0.30     # 当天买入后盈利达到 +30% 可卖
+
+    # 新增：闪崩保护
+    FLASH_CRASH_PROTECT_START_PCT = 0.25   # 浮盈 >= 25% 才启用
+    FLASH_CRASH_WAIT_MINUTES = 10          # 等待 10 分钟
+
     STAGE_RULES = [
         (1, 0.03, 1.01, None, None),
-        (2, 0.08, 1.06, 0.20, None),   # 主加仓（20%）
-        (3, 0.15, 1.10, 0.10, None),   # 小补仓（10%）
+        (2, 0.08, 1.06, 0.20, None),
+        (3, 0.15, 1.10, 0.10, None),
         (4, 0.20, 1.15, None, 0.20),
         (5, 0.30, 1.25, None, 0.20),
         (6, 0.40, 1.35, None, 0.20),
@@ -860,6 +894,32 @@ def strategy_B_sell(code: str) -> bool:
         now_ = datetime.now()
         return last_time.date() == now_.date()
 
+    def _allow_sell_even_same_day(row_, up_pct_):
+        """
+        当天买入 normally 不让卖；
+        但以下两种情况允许突破 same-day lock：
+        1) 亏损 <= -8%
+        2) 盈利 >= +30%
+        """
+        if not _is_same_day_buy_lock(row_):
+            return True
+
+        if up_pct_ <= SAME_DAY_FORCE_SELL_LOSS_PCT:
+            print(
+                f"[B SELL] {code} same-day lock overridden by loss {up_pct_:.2%}",
+                flush=True
+            )
+            return True
+
+        if up_pct_ >= SAME_DAY_FORCE_SELL_WIN_PCT:
+            print(
+                f"[B SELL] {code} same-day lock overridden by big win {up_pct_:.2%}",
+                flush=True
+            )
+            return True
+
+        return False
+
     def _latest_row_for_lock(conn_, fallback_row):
         try:
             return _load_one_b_row(conn_, code) or fallback_row
@@ -867,22 +927,6 @@ def strategy_B_sell(code: str) -> bool:
             return fallback_row
 
     def _calc_dynamic_trail_sl(cost_, price_, sl_old_):
-        """
-        动态止损（最终版）：
-        固定利润回撤 4 个百分点，而不是按比例锁利润。
-
-        例如：
-        cost=100
-        price=119 (浮盈19%)
-        -> trail_sl = 119 - 4 = 115  （锁到 +15%）
-
-        price=129 (浮盈29%)
-        -> trail_sl = 129 - 4 = 125  （锁到 +25%）
-
-        注意：
-        - 只在浮盈 >= DYNAMIC_TRAIL_START_PCT 后启用
-        - 返回值最终仍然会和 sl_old 比较，只上移不下移
-        """
         cost_ = _safe_float(cost_, 0.0)
         price_ = _safe_float(price_, 0.0)
         sl_old_ = _safe_float(sl_old_, 0.0)
@@ -898,6 +942,41 @@ def strategy_B_sell(code: str) -> bool:
         trail_sl = price_ - cost_ * float(TRAIL_BACKOFF_PCT)
         final_sl = max(sl_old_, trail_sl)
         return round(final_sl, 2)
+
+    def _get_pending_stop_info(row_):
+        pending_since = _parse_dt(row_.get("b_stop_pending_since"))
+        pending_sl = _safe_float(row_.get("b_stop_pending_sl"), 0.0)
+        return pending_since, pending_sl
+
+    def _set_pending_stop(conn_, code_, sl_):
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            _update_ops_fields(
+                conn_,
+                code_,
+                b_stop_pending_since=now_str,
+                b_stop_pending_sl=round(float(sl_), 2),
+                updated_at=now_str,
+            )
+            return True
+        except Exception as e:
+            print(f"[B SELL] {code_} set pending stop failed: {e}", flush=True)
+            return False
+
+    def _clear_pending_stop(conn_, code_):
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            _update_ops_fields(
+                conn_,
+                code_,
+                b_stop_pending_since=None,
+                b_stop_pending_sl=None,
+                updated_at=now_str,
+            )
+            return True
+        except Exception as e:
+            print(f"[B SELL] {code_} clear pending stop failed: {e}", flush=True)
+            return False
 
     conn = None
     traded = False
@@ -964,7 +1043,7 @@ def strategy_B_sell(code: str) -> bool:
         # 1) 先补初始止损（仅当 sl 未设置）
         # =======================================================
         if sl <= 0:
-            init_sl = min(float(trigger or 0), float(cost) * 0.97) if cost > 0 else 0
+            init_sl = max(float(trigger or 0), float(cost) * 0.97) if cost > 0 else 0
             if init_sl > 0:
                 sl = round(float(init_sl), 2)
                 try:
@@ -991,14 +1070,96 @@ def strategy_B_sell(code: str) -> bool:
                     print(f"[B SELL] {code} dynamic trail write failed: {e}", flush=True)
 
         # =======================================================
-        # 3) 硬止损：价格 <= 当前止损价，直接全卖
-        #    但如果今天刚买/加仓，则跳过卖出
+        # 3) 处理“闪崩保护”中的等待状态
+        #    仅用于：浮盈 >= 25% 且曾跌破止损价
+        # =======================================================
+        row_now = _latest_row_for_lock(conn, row)
+        pending_since, pending_sl = _get_pending_stop_info(row_now)
+
+        if pending_since and pending_sl > 0:
+            # 如果已经重新站回 pending_sl 之上，取消等待
+            if price > pending_sl:
+                _clear_pending_stop(conn, code)
+                print(
+                    f"[B SELL] {code} pending stop canceled: price={price:.2f} > pending_sl={pending_sl:.2f}",
+                    flush=True
+                )
+            else:
+                elapsed_sec = (datetime.now() - pending_since).total_seconds()
+                wait_sec = FLASH_CRASH_WAIT_MINUTES * 60
+
+                if elapsed_sec < wait_sec:
+                    left_sec = int(wait_sec - elapsed_sec)
+                    print(
+                        f"[B SELL] {code} pending stop waiting: price={price:.2f} <= pending_sl={pending_sl:.2f}, left={left_sec}s",
+                        flush=True
+                    )
+                    return False
+
+                # 到时仍未站回，则卖出
+                reason = (
+                    f"PENDING_STOP_TIMEOUT price={price:.2f} <= pending_sl={pending_sl:.2f} "
+                    f"waited={FLASH_CRASH_WAIT_MINUTES}m"
+                )
+                print(f"[B SELL] {code} pending stop timeout sell qty={qty} reason={reason}", flush=True)
+                traded = _sell_qty(conn, code, qty, reason) or traded
+                if traded:
+                    _clear_pending_stop(conn, code)
+                return traded
+
+        # =======================================================
+        # 4) 硬止损：价格 <= 当前止损价
         # =======================================================
         if sl > 0 and price <= sl:
-            row_now = _latest_row_for_lock(conn, row)
-            if _is_same_day_buy_lock(row_now):
+            row_now = _latest_row_for_lock(conn, row_now)
+
+            # 4.1 浮盈 >= 25%：启用 10 分钟闪崩保护
+            if up_pct >= FLASH_CRASH_PROTECT_START_PCT:
+                pending_since2, pending_sl2 = _get_pending_stop_info(row_now)
+
+                if not pending_since2:
+                    _set_pending_stop(conn, code, sl)
+                    print(
+                        f"[B SELL] {code} start pending stop: price={price:.2f} <= sl={sl:.2f}, up_pct={up_pct:.2%}",
+                        flush=True
+                    )
+                    return False
+
+                # 理论上前面已经处理过 pending，这里只是兜底
+                elapsed_sec = (datetime.now() - pending_since2).total_seconds()
+                wait_sec = FLASH_CRASH_WAIT_MINUTES * 60
+
+                if price > pending_sl2:
+                    _clear_pending_stop(conn, code)
+                    print(
+                        f"[B SELL] {code} pending recovered in hard stop block: price={price:.2f} > pending_sl={pending_sl2:.2f}",
+                        flush=True
+                    )
+                    return False
+
+                if elapsed_sec < wait_sec:
+                    left_sec = int(wait_sec - elapsed_sec)
+                    print(
+                        f"[B SELL] {code} still pending stop: left={left_sec}s price={price:.2f} pending_sl={pending_sl2:.2f}",
+                        flush=True
+                    )
+                    return False
+
+                reason = (
+                    f"PENDING_STOP_TIMEOUT price={price:.2f} <= pending_sl={pending_sl2:.2f} "
+                    f"waited={FLASH_CRASH_WAIT_MINUTES}m"
+                )
+                print(f"[B SELL] {code} timeout hard stop sell qty={qty} reason={reason}", flush=True)
+                traded = _sell_qty(conn, code, qty, reason) or traded
+                if traded:
+                    _clear_pending_stop(conn, code)
+                return traded
+
+            # 4.2 非闪崩保护情况：仍然要遵守 same-day lock，
+            #     但 -8% / +30% 两种情况允许突破
+            if not _allow_sell_even_same_day(row_now, up_pct):
                 print(
-                    f"[B SELL] {code} same-day buy lock: price={price:.2f} <= sl={sl:.2f}",
+                    f"[B SELL] {code} same-day buy lock: price={price:.2f} <= sl={sl:.2f} up_pct={up_pct:.2%}",
                     flush=True
                 )
                 return False
@@ -1008,8 +1169,13 @@ def strategy_B_sell(code: str) -> bool:
             traded = _sell_qty(conn, code, qty, reason) or traded
             return traded
 
+        else:
+            # 当前已经不在止损线以下，顺手清理一下 pending 状态
+            if pending_since:
+                _clear_pending_stop(conn, code)
+
         # =======================================================
-        # 4) 一次轮询只检查“下一层”
+        # 5) 一次轮询只检查“下一层”
         # =======================================================
         next_stage = last_stage + 1
         target_rule = None
@@ -1029,7 +1195,7 @@ def strategy_B_sell(code: str) -> bool:
                 )
 
                 # -------------------------------------------------------
-                # 4.1 加仓层
+                # 5.1 加仓层
                 # -------------------------------------------------------
                 if add_ratio is not None and add_ratio > 0:
                     raw_add_qty = int(math.floor(qty * float(add_ratio)))
@@ -1082,13 +1248,14 @@ def strategy_B_sell(code: str) -> bool:
                         return traded
 
                 # -------------------------------------------------------
-                # 4.2 减仓层
+                # 5.2 减仓层
                 # -------------------------------------------------------
                 if sell_ratio is not None and sell_ratio > 0:
                     row_now = _latest_row_for_lock(conn, row)
-                    if _is_same_day_buy_lock(row_now):
+
+                    if not _allow_sell_even_same_day(row_now, up_pct):
                         print(
-                            f"[B SELL] {code} same-day buy lock: stage={stage} sell skipped",
+                            f"[B SELL] {code} same-day buy lock: stage={stage} sell skipped up_pct={up_pct:.2%}",
                             flush=True
                         )
                         return False
@@ -1122,7 +1289,7 @@ def strategy_B_sell(code: str) -> bool:
                     return traded
 
                 # -------------------------------------------------------
-                # 4.3 纯抬止损层
+                # 5.3 纯抬止损层
                 # -------------------------------------------------------
                 sl_old = float(sl or 0)
                 stage_sl = round(float(cost) * float(sl_mult), 2)
@@ -1138,7 +1305,7 @@ def strategy_B_sell(code: str) -> bool:
                 return traded
 
         # =======================================================
-        # 5) 结构退出（只在较高阶段后启用）
+        # 6) 结构退出（只在较高阶段后启用）
         # =======================================================
         if last_stage >= ENABLE_STRUCTURE_EXIT_STAGE:
             closes = _get_recent_closes(conn, code, n=4)
@@ -1153,8 +1320,9 @@ def strategy_B_sell(code: str) -> bool:
 
                 if c0 > 0 and min3 > 0 and c0 < min3 and qty > 0:
                     row_now = _latest_row_for_lock(conn, row)
-                    if _is_same_day_buy_lock(row_now):
-                        print(f"[B SELL] {code} same-day buy lock: structure exit skipped", flush=True)
+
+                    if not _allow_sell_even_same_day(row_now, up_pct):
+                        print(f"[B SELL] {code} same-day buy lock: structure exit skipped up_pct={up_pct:.2%}", flush=True)
                         return False
 
                     reason = f"STRUCT_EXIT close0={c0:.2f} < min3={min3:.2f}"
