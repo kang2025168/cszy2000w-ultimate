@@ -789,24 +789,24 @@ def strategy_B_sell(code: str) -> bool:
     ENABLE_STRUCTURE_EXIT_STAGE = 6
 
     # 动态止损：固定利润回撤 4 个百分点
-    TRAIL_BACKOFF_PCT = 0.04
+    TRAIL_BACKOFF_PCT = 0.03
     DYNAMIC_TRAIL_START_PCT = 0.08
 
     BLOCK_SAME_DAY_SELL_AFTER_BUY = True
 
     # 新增：same-day lock 例外
-    SAME_DAY_FORCE_SELL_LOSS_PCT = -0.08   # 当天买入后亏损达到 -8% 可卖
+    SAME_DAY_FORCE_SELL_LOSS_PCT = -0.05   # 当天买入后亏损达到 -8% 可卖
     SAME_DAY_FORCE_SELL_WIN_PCT = 0.30     # 当天买入后盈利达到 +30% 可卖
 
     # 新增：闪崩保护
-    FLASH_CRASH_PROTECT_START_PCT = 0.25   # 浮盈 >= 25% 才启用
+    FLASH_CRASH_PROTECT_START_PCT = 0.08   # 浮盈 >= 25% 才启用
     FLASH_CRASH_WAIT_MINUTES = 10          # 等待 10 分钟
 
     STAGE_RULES = [
         (1, 0.03, 1.01, None, None),
-        (2, 0.08, 1.06, 0.20, None),
-        (3, 0.15, 1.10, 0.10, None),
-        (4, 0.20, 1.15, None, 0.20),
+        (2, 0.08, 1.06, None, None),
+        (3, 0.15, 1.10, None, None),
+        (4, 0.20, 1.15, None, None),
         (5, 0.30, 1.25, None, 0.20),
         (6, 0.40, 1.35, None, 0.20),
         (7, 0.50, 1.45, None, 0.15),
