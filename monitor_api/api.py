@@ -97,12 +97,20 @@ def safe_int(v, default=0):
     except Exception:
         return default
 
+# ─── Alpaca Trading Client（单例）────────────────────────────────────
+_tc = None
+def get_tc():
+    global _tc
+    if _tc is None:
+        from alpaca.trading.client import TradingClient
+        _tc = TradingClient(APCA_KEY, APCA_SECRET, paper=(TRADE_ENV == "paper"))
+    return _tc
+
 # ─── Alpaca 账户信息 ───────────────────────────────────────────────────
 @cached("alpaca_account", ttl=15)
 def get_alpaca_account():
     try:
-        from alpaca.trading.client import TradingClient
-        tc = TradingClient(APCA_KEY, APCA_SECRET, paper=(TRADE_ENV == "paper"))
+        tc = get_tc()
         acct = tc.get_account()
         bp = safe_float(getattr(acct, "buying_power", None))
         cash = safe_float(getattr(acct, "cash", None))
@@ -116,7 +124,34 @@ def get_alpaca_account():
             "bp_ok": bp >= MIN_BUYING_POWER,
         }
     except Exception as e:
+        traceback.print_exc()
         return {"error": str(e), "buying_power": 0, "bp_ok": False}
+
+# ─── Alpaca 真实持仓 ───────────────────────────────────────────────────
+@cached("alpaca_positions", ttl=10)
+def get_alpaca_positions():
+    """直接从 Alpaca 拉所有持仓，返回 dict: code -> position info"""
+    try:
+        tc = get_tc()
+        positions = tc.get_all_positions()
+        result = {}
+        for p in positions:
+            code = (getattr(p, "symbol", "") or "").strip().upper()
+            if not code:
+                continue
+            result[code] = {
+                "qty": safe_int(getattr(p, "qty", 0)),
+                "cost": safe_float(getattr(p, "avg_entry_price", 0)),
+                "price": safe_float(getattr(p, "current_price", 0)),
+                "market_value": safe_float(getattr(p, "market_value", 0)),
+                "unrealized_pl": safe_float(getattr(p, "unrealized_pl", 0)),
+                "unrealized_plpc": safe_float(getattr(p, "unrealized_plpc", 0)) * 100,
+                "side": str(getattr(p, "side", "") or ""),
+            }
+        return result
+    except Exception as e:
+        traceback.print_exc()
+        return {"__error__": str(e)}
 
 # ─── API 路由 ──────────────────────────────────────────────────────────
 
@@ -158,45 +193,51 @@ def api_status():
 
 @app.route("/api/holdings")
 def api_holdings():
-    """持仓列表（is_bought=1）+ 实时价格"""
+    """
+    持仓列表：Alpaca 真实持仓为主（qty/cost/price/pnl），
+    数据库为辅（止损价、阶段、last_order_intent 等）
+    """
     try:
+        # 1) 从 Alpaca 拉真实持仓
+        alpaca_pos = get_alpaca_positions()
+        if "__error__" in alpaca_pos:
+            return jsonify({"error": alpaca_pos["__error__"]}), 500
+
+        # 2) 从数据库拉辅助信息（所有 B/A/C/D/E 类型，不限 is_bought）
         conn = get_conn()
         with conn.cursor() as cur:
             cur.execute(f"""
                 SELECT stock_code, stock_type,
-                       qty, cost_price, close_price,
-                       stop_loss_price, take_profit_price, b_stage,
-                       base_qty, trigger_price,
+                       stop_loss_price, b_stage, base_qty,
                        last_order_time, last_order_side, last_order_intent,
-                       b_stop_pending_since, b_stop_pending_sl
+                       b_stop_pending_since, b_stop_pending_sl,
+                       trigger_price
                 FROM `{OPS_TABLE}`
-                WHERE is_bought=1 AND can_sell=1
-                  AND stock_type IN ('A','B','C','D','E')
-                ORDER BY stock_type, stock_code
+                WHERE stock_type IN ('A','B','C','D','E')
             """)
-            rows = cur.fetchall() or []
+            db_rows = cur.fetchall() or []
         conn.close()
 
+        db_map = {}
+        for r in db_rows:
+            code = (r.get("stock_code") or "").strip().upper()
+            db_map[code] = r
+
         result = []
-        for r in rows:
-            code  = (r.get("stock_code") or "").strip().upper()
-            stype = (r.get("stock_type") or "").strip().upper()
-            qty   = safe_int(r.get("qty"))
-            cost  = safe_float(r.get("cost_price"))
-            sl    = safe_float(r.get("stop_loss_price"))
-            stage = safe_int(r.get("b_stage") or r.get("take_profit_price"))
-            base_qty = safe_int(r.get("base_qty"))
+        for code, pos in alpaca_pos.items():
+            db = db_map.get(code, {})
+            qty  = pos["qty"]
+            cost = pos["cost"]
+            price = pos["price"]
+            sl   = safe_float(db.get("stop_loss_price"))
+            stage = safe_int(db.get("b_stage"))
+            base_qty = safe_int(db.get("base_qty"))
+            pending = bool(db.get("b_stop_pending_since"))
 
-            # 尝试拉实时价（如果 Alpaca key 可用）
-            price = safe_float(r.get("close_price"))  # 兜底用 close_price
-            try:
-                price = _get_snapshot_price(code)
-            except Exception:
-                pass
-
-            up_pct = (price - cost) / cost * 100 if cost > 0 and price > 0 else 0
+            up_pct = pos["unrealized_plpc"]  # Alpaca 直接给，已是百分比
             dist_to_sl = (price - sl) / price * 100 if price > 0 and sl > 0 else 0
-            pending = bool(r.get("b_stop_pending_since"))
+
+            stype = (db.get("stock_type") or "B").strip().upper()
 
             result.append({
                 "code": code,
@@ -205,15 +246,20 @@ def api_holdings():
                 "base_qty": base_qty,
                 "cost": round(cost, 2),
                 "price": round(price, 2),
+                "market_value": round(pos["market_value"], 2),
+                "unrealized_pl": round(pos["unrealized_pl"], 2),
                 "sl": round(sl, 2),
                 "stage": stage,
                 "up_pct": round(up_pct, 2),
                 "dist_to_sl_pct": round(dist_to_sl, 2),
                 "pending_stop": pending,
-                "last_order_time": str(r.get("last_order_time") or ""),
-                "last_order_side": r.get("last_order_side") or "",
-                "last_order_intent": r.get("last_order_intent") or "",
+                "last_order_time": str(db.get("last_order_time") or ""),
+                "last_order_side": db.get("last_order_side") or "",
+                "last_order_intent": db.get("last_order_intent") or "",
             })
+
+        # 按浮盈降序排列
+        result.sort(key=lambda x: x["up_pct"], reverse=True)
         return jsonify(result)
     except Exception as e:
         traceback.print_exc()
