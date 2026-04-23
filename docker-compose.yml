@@ -85,8 +85,8 @@ services:
       # Alpaca keys（monitor 只读账户，用 paper/live 对应的 key）
       # 改成 ${LIVE_APCA_API_KEY_ID} 看 live 账户
 
-      APCA_API_KEY_ID: ${LIVE_APCA_API_KEY_ID}
-      APCA_API_SECRET_KEY: ${LIVE_APCA_API_SECRET_KEY}
+      APCA_API_KEY_ID: AKEEAJC3G6P5RTQTZ7L2CATYTY
+      APCA_API_SECRET_KEY: 77ywJFbyhXGyQE85Z9by3ivfbgury5p1Kee4HoqjX5Nm
 
       ALPACA_DATA_BASE_URL: https://data.alpaca.markets
       B_DATA_FEED: iex
