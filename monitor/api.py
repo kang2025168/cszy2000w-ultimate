@@ -197,7 +197,7 @@ tr:hover td{background:#161d2d;}
 <div class="sec">持仓列表</div>
 <div class="tw"><table><thead><tr><th>股票</th><th>数量</th><th>成本</th><th>现价</th><th>浮盈%</th><th>止损</th><th>距止损</th><th>阶段</th></tr></thead><tbody id="hb"><tr><td colspan="8" class="lm">—</td></tr></tbody></table></div>
 <div class="sec">待买入队列</div>
-<div class="tw"><table><thead><tr><th>股票</th><th>类型</th><th>触发价</th><th>最后操作</th></tr></thead><tbody id="bb"><tr><td colspan="4" class="lm">—</td></tr></tbody></table></div>
+<div class="tw"><table><thead><tr><th>股票</th><th>类型</th><th>触发价</th><th>现价</th><th>当日涨幅</th><th>压力位日期</th><th>最后操作</th></tr></thead><tbody id="bb"><tr><td colspan="7" class="lm">—</td></tr></tbody></table></div>
 <div class="footer">自动刷新 30s &nbsp;|&nbsp; <span id="fenv">—</span></div>
 
 <script>
@@ -287,14 +287,21 @@ function renderQueue(rows){
   const qm=document.getElementById('qm');
   if(qm)qm.innerHTML=`<div class="ml">待买入</div><div class="mv ca">${Array.isArray(rows)?rows.length:'—'}</div><div class="ms">队列中</div>`;
   document.getElementById('bb').innerHTML=!Array.isArray(rows)
-    ?'<tr><td colspan="4" class="lm" style="color:#f87171">加载失败</td></tr>'
-    :rows.length===0?'<tr><td colspan="4" class="lm">暂无队列</td></tr>'
-    :rows.map(b=>`<tr>
-      <td><span class="tk">${b.code}</span></td>
-      <td>${b.type}</td>
-      <td>${b.trigger>0?'$'+Number(b.trigger).toFixed(2):'—'}</td>
-      <td style="color:#475569">${b.last_order_side||'—'} ${ft(b.last_order_time)}</td>
-    </tr>`).join('');
+    ?'<tr><td colspan="7" class="lm" style="color:#f87171">加载失败</td></tr>'
+    :rows.length===0?'<tr><td colspan="7" class="lm">暂无队列</td></tr>'
+    :rows.map(b=>{
+      const upCls=b.up_pct>0?'pp':b.up_pct<0?'pn':'pf';
+      const priceVsTrigger=b.price>0&&b.trigger>0?(b.price>=b.trigger?'cg':'cr'):'';
+      return`<tr>
+        <td><span class="tk">${b.code}</span></td>
+        <td>${b.type}</td>
+        <td>$${Number(b.trigger).toFixed(2)}</td>
+        <td class="${priceVsTrigger}">${b.price>0?'$'+Number(b.price).toFixed(2):'—'}</td>
+        <td class="${upCls}">${b.up_pct!==undefined?fp(b.up_pct):'—'}</td>
+        <td style="color:#64748b;font-size:11px;">${b.entry_date||'—'}</td>
+        <td style="color:#475569;font-size:10px;">${b.last_order_side||'—'} ${ft(b.last_order_time)}</td>
+      </tr>`;
+    }).join('');
 }
 
 load();
@@ -394,7 +401,9 @@ def api_buy_queue():
         conn = get_conn()
         with conn.cursor() as cur:
             cur.execute(f"""
-                SELECT stock_code, stock_type, trigger_price, last_order_time, last_order_side
+                SELECT stock_code, stock_type, trigger_price,
+                       close_price, entry_date,
+                       last_order_time, last_order_side
                 FROM `{OPS_TABLE}`
                 WHERE can_buy=1 AND (is_bought IS NULL OR is_bought<>1)
                   AND stock_type IN ('A','B','C','D','E')
@@ -402,13 +411,53 @@ def api_buy_queue():
             """)
             rows = cur.fetchall() or []
         conn.close()
-        return jsonify([{
-            "code": (r.get("stock_code") or "").strip().upper(),
-            "type": (r.get("stock_type") or "").strip().upper(),
-            "trigger": round(safe_float(r.get("trigger_price")), 2),
-            "last_order_time": str(r.get("last_order_time") or ""),
-            "last_order_side": r.get("last_order_side") or "",
-        } for r in rows])
+
+        result = []
+        for r in rows:
+            code = (r.get("stock_code") or "").strip().upper()
+            trigger = round(safe_float(r.get("trigger_price")), 2)
+            db_close = safe_float(r.get("close_price"))
+
+            price = 0.0
+            try:
+                snap_r = req.get(
+                    f"https://data.alpaca.markets/v2/stocks/{code}/snapshot",
+                    headers=alpaca_headers(),
+                    params={"feed": os.getenv("B_DATA_FEED", "iex")},
+                    timeout=5,
+                )
+                if snap_r.status_code == 200:
+                    js = snap_r.json()
+                    lt = js.get("latestTrade") or {}
+                    if lt.get("p"):
+                        price = safe_float(lt["p"])
+                    if price == 0:
+                        lq = js.get("latestQuote") or {}
+                        bid = safe_float(lq.get("bp"))
+                        ask = safe_float(lq.get("ap"))
+                        if bid > 0 and ask > 0:
+                            price = (bid + ask) / 2
+                    pb = js.get("prevDailyBar") or {}
+                    if pb.get("c"):
+                        db_close = safe_float(pb["c"])
+            except Exception:
+                pass
+
+            up_pct = (price - db_close) / db_close * 100 if db_close > 0 and price > 0 else 0.0
+            entry_date = r.get("entry_date")
+            entry_date_str = str(entry_date)[:10] if entry_date else "—"
+
+            result.append({
+                "code": code,
+                "type": (r.get("stock_type") or "").strip().upper(),
+                "trigger": trigger,
+                "price": round(price, 2),
+                "up_pct": round(up_pct, 2),
+                "entry_date": entry_date_str,
+                "last_order_time": str(r.get("last_order_time") or ""),
+                "last_order_side": r.get("last_order_side") or "",
+            })
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
