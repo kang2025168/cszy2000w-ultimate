@@ -263,6 +263,13 @@ def _get_real_position_qty(trading_client, code: str):
         return max(int(float(qty)), 0)
 
     except Exception as e:
+        msg = str(e)
+
+        # ✅ Alpaca: position does not exist，当作真实持仓=0
+        if "position does not exist" in msg or "40410000" in msg:
+            print(f"[B SELL] {code} real position=0: Alpaca position does not exist", flush=True)
+            return 0
+
         print(f"[B SELL] {code} get_open_position error: {e}", flush=True)
         return None
 
@@ -400,6 +407,8 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
             take_profit_price=None,
             b_stage=0,
             base_qty=0,
+            b_stop_pending_since=None,
+            b_stop_pending_sl=None,
             last_order_side="sell",
             last_order_intent=_intent_short(f"B:SELL_SKIP no_real_pos {reason}"),
             last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
