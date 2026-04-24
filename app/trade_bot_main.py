@@ -127,7 +127,7 @@ from app.strategy_a_pick import *  # noqa
 LA_TZ_NAME = os.getenv("TZ", "America/Los_Angeles")
 LA_TZ = ZoneInfo(LA_TZ_NAME) if ZoneInfo else None
 
-MARKET_OPEN = dt_time(6, 40)
+MARKET_OPEN = dt_time(6, 30)
 MARKET_CLOSE = dt_time(13, 0)
 
 def now_la():
@@ -595,7 +595,7 @@ def main_loop():
     while not _STOP:
         try:
             if not is_trading_time():
-                # log.info("非交易时段，休眠 60s...")
+                log.info("非交易时段，休眠 60s...")
                 t.sleep(60)
                 continue
 

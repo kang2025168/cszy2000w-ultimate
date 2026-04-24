@@ -103,27 +103,9 @@ def _sleep_for_rate_limit():
     _snapshot_last_ts = time.time()
 
 
-# ✅ 优化：加重试逻辑，网络抖动自动重试 3 次
-def _snapshot_http(code: str, feed: str, retries: int = 3, backoff: float = 1.5):
+def _snapshot_http(code: str, feed: str):
     url = f"{ALPACA_DATA_BASE_URL}/v2/stocks/{code}/snapshot"
-    last_err = None
-    for attempt in range(retries):
-        try:
-            return requests.get(
-                url,
-                headers=_alpaca_headers(),
-                params={"feed": feed},
-                timeout=HTTP_TIMEOUT,
-            )
-        except (requests.exceptions.ConnectTimeout,
-                requests.exceptions.ReadTimeout,
-                requests.exceptions.ConnectionError) as e:
-            last_err = e
-            if attempt < retries - 1:
-                wait = backoff * (attempt + 1)
-                print(f"[B SNAP] {code} timeout attempt={attempt+1}/{retries} wait={wait:.1f}s err={e}", flush=True)
-                time.sleep(wait)
-    raise last_err
+    return requests.get(url, headers=_alpaca_headers(), params={"feed": feed}, timeout=HTTP_TIMEOUT)
 
 
 def _parse_snapshot(js: dict):
@@ -172,17 +154,10 @@ def get_snapshot_realtime(code: str):
     raise RuntimeError(f"snapshot http {r.status_code}: {r.text[:200]}")
 
 
-# ✅ 优化：TradingClient 单例，不再每次新建
-_trading_client = None
-
 def _get_trading_client():
-    global _trading_client
-    if _trading_client is not None:
-        return _trading_client
     from alpaca.trading.client import TradingClient
     paper = (TRADE_ENV != "live")
-    _trading_client = TradingClient(APCA_API_KEY_ID, APCA_API_SECRET_KEY, paper=paper)
-    return _trading_client
+    return TradingClient(APCA_API_KEY_ID, APCA_API_SECRET_KEY, paper=paper)
 
 
 def _get_buying_power(trading_client) -> float:
@@ -248,7 +223,6 @@ def _try_get_position_avg_qty(trading_client, code: str):
         return avg_f, qty_i
     except Exception:
         return None, None
-
 def _get_real_position_qty(trading_client, code: str):
     try:
         pos = trading_client.get_open_position(code)
@@ -821,11 +795,11 @@ def strategy_B_sell(code: str) -> bool:
     BLOCK_SAME_DAY_SELL_AFTER_BUY = True
 
     # 新增：same-day lock 例外
-    SAME_DAY_FORCE_SELL_LOSS_PCT = -0.05   # 当天买入后亏损达到 -5% 可卖
+    SAME_DAY_FORCE_SELL_LOSS_PCT = -0.05   # 当天买入后亏损达到 -8% 可卖
     SAME_DAY_FORCE_SELL_WIN_PCT = 0.30     # 当天买入后盈利达到 +30% 可卖
 
     # 新增：闪崩保护
-    FLASH_CRASH_PROTECT_START_PCT = 0.08   # 浮盈 >= 8% 才启用
+    FLASH_CRASH_PROTECT_START_PCT = 0.08   # 浮盈 >= 25% 才启用
     FLASH_CRASH_WAIT_MINUTES = 10          # 等待 10 分钟
 
     STAGE_RULES = [
@@ -924,7 +898,7 @@ def strategy_B_sell(code: str) -> bool:
         """
         当天买入 normally 不让卖；
         但以下两种情况允许突破 same-day lock：
-        1) 亏损 <= -5%
+        1) 亏损 <= -8%
         2) 盈利 >= +30%
         """
         if not _is_same_day_buy_lock(row_):
@@ -1096,12 +1070,14 @@ def strategy_B_sell(code: str) -> bool:
                     print(f"[B SELL] {code} dynamic trail write failed: {e}", flush=True)
 
         # =======================================================
-        # 3) 处理"闪崩保护"中的等待状态
+        # 3) 处理“闪崩保护”中的等待状态
+        #    仅用于：浮盈 >= 25% 且曾跌破止损价
         # =======================================================
         row_now = _latest_row_for_lock(conn, row)
         pending_since, pending_sl = _get_pending_stop_info(row_now)
 
         if pending_since and pending_sl > 0:
+            # 如果已经重新站回 pending_sl 之上，取消等待
             if price > pending_sl:
                 _clear_pending_stop(conn, code)
                 print(
@@ -1120,6 +1096,7 @@ def strategy_B_sell(code: str) -> bool:
                     )
                     return False
 
+                # 到时仍未站回，则卖出
                 reason = (
                     f"PENDING_STOP_TIMEOUT price={price:.2f} <= pending_sl={pending_sl:.2f} "
                     f"waited={FLASH_CRASH_WAIT_MINUTES}m"
@@ -1136,6 +1113,7 @@ def strategy_B_sell(code: str) -> bool:
         if sl > 0 and price <= sl:
             row_now = _latest_row_for_lock(conn, row_now)
 
+            # 4.1 浮盈 >= 25%：启用 10 分钟闪崩保护
             if up_pct >= FLASH_CRASH_PROTECT_START_PCT:
                 pending_since2, pending_sl2 = _get_pending_stop_info(row_now)
 
@@ -1147,6 +1125,7 @@ def strategy_B_sell(code: str) -> bool:
                     )
                     return False
 
+                # 理论上前面已经处理过 pending，这里只是兜底
                 elapsed_sec = (datetime.now() - pending_since2).total_seconds()
                 wait_sec = FLASH_CRASH_WAIT_MINUTES * 60
 
@@ -1176,6 +1155,8 @@ def strategy_B_sell(code: str) -> bool:
                     _clear_pending_stop(conn, code)
                 return traded
 
+            # 4.2 非闪崩保护情况：仍然要遵守 same-day lock，
+            #     但 -8% / +30% 两种情况允许突破
             if not _allow_sell_even_same_day(row_now, up_pct):
                 print(
                     f"[B SELL] {code} same-day buy lock: price={price:.2f} <= sl={sl:.2f} up_pct={up_pct:.2%}",
@@ -1189,11 +1170,12 @@ def strategy_B_sell(code: str) -> bool:
             return traded
 
         else:
+            # 当前已经不在止损线以下，顺手清理一下 pending 状态
             if pending_since:
                 _clear_pending_stop(conn, code)
 
         # =======================================================
-        # 5) 一次轮询只检查"下一层"
+        # 5) 一次轮询只检查“下一层”
         # =======================================================
         next_stage = last_stage + 1
         target_rule = None
@@ -1212,6 +1194,9 @@ def strategy_B_sell(code: str) -> bool:
                     flush=True
                 )
 
+                # -------------------------------------------------------
+                # 5.1 加仓层
+                # -------------------------------------------------------
                 if add_ratio is not None and add_ratio > 0:
                     raw_add_qty = int(math.floor(qty * float(add_ratio)))
                     raw_add_qty = max(raw_add_qty, MIN_ADD_QTY)
@@ -1223,7 +1208,13 @@ def strategy_B_sell(code: str) -> bool:
                         reason = f"STAGE{stage}_ADD{int(add_ratio * 100)} price={price:.2f} qty={add_qty}"
                         print(f"[B SELL] {code} add qty={add_qty} reason={reason}", flush=True)
 
-                        buy_ok = _buy_add_qty(conn, code, add_qty, reason, snap_price=price)
+                        buy_ok = _buy_add_qty(
+                            conn,
+                            code,
+                            add_qty,
+                            reason,
+                            snap_price=price
+                        )
                         traded = buy_ok or traded
 
                         row2 = _load_one_b_row(conn, code) or {}
@@ -1237,7 +1228,10 @@ def strategy_B_sell(code: str) -> bool:
 
                         _write_stage_and_sl(conn, code, stage, sl)
 
-                        print(f"[B SELL] {code} add_done qty={qty} cost={cost:.2f} sl={sl:.2f}", flush=True)
+                        print(
+                            f"[B SELL] {code} add_done qty={qty} cost={cost:.2f} sl={sl:.2f}",
+                            flush=True
+                        )
                         return traded
                     else:
                         sl_old = float(sl or 0)
@@ -1247,9 +1241,15 @@ def strategy_B_sell(code: str) -> bool:
 
                         _write_stage_and_sl(conn, code, stage, sl)
 
-                        print(f"[B SELL] {code} skip add max_total_qty reached, new_sl={sl:.2f}", flush=True)
+                        print(
+                            f"[B SELL] {code} skip add max_total_qty reached, new_sl={sl:.2f}",
+                            flush=True
+                        )
                         return traded
 
+                # -------------------------------------------------------
+                # 5.2 减仓层
+                # -------------------------------------------------------
                 if sell_ratio is not None and sell_ratio > 0:
                     row_now = _latest_row_for_lock(conn, row)
 
@@ -1282,9 +1282,15 @@ def strategy_B_sell(code: str) -> bool:
                     if qty > 0:
                         _write_stage_and_sl(conn, code, stage, sl)
 
-                    print(f"[B SELL] {code} sell_done left_qty={qty} cost={cost:.2f} sl={sl:.2f}", flush=True)
+                    print(
+                        f"[B SELL] {code} sell_done left_qty={qty} cost={cost:.2f} sl={sl:.2f}",
+                        flush=True
+                    )
                     return traded
 
+                # -------------------------------------------------------
+                # 5.3 纯抬止损层
+                # -------------------------------------------------------
                 sl_old = float(sl or 0)
                 stage_sl = round(float(cost) * float(sl_mult), 2)
                 dyn_sl = _calc_dynamic_trail_sl(cost, price, sl_old)
@@ -1292,7 +1298,10 @@ def strategy_B_sell(code: str) -> bool:
 
                 _write_stage_and_sl(conn, code, stage, sl)
 
-                print(f"[B SELL] {code} hold_only stage={stage} new_sl={sl:.2f}", flush=True)
+                print(
+                    f"[B SELL] {code} hold_only stage={stage} new_sl={sl:.2f}",
+                    flush=True
+                )
                 return traded
 
         # =======================================================
