@@ -346,13 +346,11 @@ def backtest_single(symbol: str, start_date=None, end_date=None,
                         break
 
                 if matched_pressure and _check_entry_signal(bars, i):
-                    # 次日买入（用次日 open 近似）
+                    # ✅ 修复：当天满足筛选条件，次日开盘直接买入，不再二次判断涨幅
                     if i + 1 < len(bars):
                         next_bar = bars[i + 1]
                         buy_price = next_bar["open"]
-                        # 验证次日涨幅条件（用昨收 vs 次日 open 近似）
-                        up_today = (buy_price - close) / close if close > 0 else 0
-                        if MIN_UP_PCT < up_today < MAX_BUY_UP_PCT and buy_price > matched_pressure:
+                        if buy_price > 0:
                             qty = int(math.floor(min(notional, cash) / buy_price))
                             if qty > 0:
                                 cost = buy_price
@@ -583,11 +581,11 @@ def backtest_market(start_date=None, end_date=None,
                             break
 
                     if matched_pressure and _check_entry_signal(bars, idx):
+                        # ✅ 修复：次日开盘直接买入
                         if idx + 1 < len(bars):
                             next_bar = bars[idx + 1]
                             buy_price = next_bar["open"]
-                            up_today = (buy_price - close) / close if close > 0 else 0
-                            if MIN_UP_PCT < up_today < MAX_BUY_UP_PCT and buy_price > matched_pressure:
+                            if buy_price > 0:
                                 qty = int(math.floor(min(notional, cash) / buy_price))
                                 if qty > 0:
                                     cost = buy_price
