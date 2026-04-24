@@ -1,0 +1,19 @@
+# 加到 docker-compose.yml 的 services 下
+  backtest:
+    build:
+      context: ./backtest
+      dockerfile: Dockerfile
+    container_name: cszy_backtest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      TZ: America/Los_Angeles
+      BACKTEST_PORT: 5051
+    ports:
+      - "5051:5051"
+    depends_on:
+      mysql:
+        condition: service_healthy

@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>策略B 回测</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'SF Mono',monospace;background:#0d1117;color:#e2e8f0;font-size:13px;}
+.layout{display:grid;grid-template-columns:280px 1fr;min-height:100vh;}
+.sidebar{background:#111827;padding:16px;border-right:1px solid #1e293b;overflow-y:auto;}
+.main{padding:16px;overflow-y:auto;}
+.logo{font-size:14px;font-weight:600;color:#f1f5f9;margin-bottom:20px;letter-spacing:.04em;}
+.logo span{color:#f59e0b;}
+
+.tab-btns{display:flex;gap:4px;margin-bottom:16px;}
+.tab-btn{flex:1;padding:6px;font-size:11px;cursor:pointer;font-family:inherit;border-radius:5px;border:1px solid #1e293b;background:#1e293b;color:#64748b;}
+.tab-btn.active{background:#1d4ed8;border-color:#1d4ed8;color:#fff;}
+
+.field{margin-bottom:12px;}
+.field label{display:block;font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;}
+.field input,.field select{width:100%;padding:7px 9px;background:#1e293b;border:1px solid #334155;color:#e2e8f0;border-radius:5px;font-family:inherit;font-size:12px;outline:none;}
+.field input:focus,.field select:focus{border-color:#3b82f6;}
+
+.run-btn{width:100%;padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;background:#1d4ed8;border:none;color:#fff;border-radius:6px;margin-top:4px;}
+.run-btn:hover{background:#2563eb;}
+.run-btn:disabled{background:#334155;color:#64748b;cursor:not-allowed;}
+
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px;}
+.stat{background:#1e293b;border-radius:6px;padding:10px;}
+.stat-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;}
+.stat-value{font-size:16px;font-weight:600;color:#f1f5f9;}
+.cg{color:#4ade80;} .cr{color:#f87171;} .ca{color:#fbbf24;}
+
+.err{font-size:11px;color:#fca5a5;background:#3b0f0f;padding:8px;border-radius:5px;margin-top:12px;display:none;}
+.loading{font-size:11px;color:#64748b;margin-top:12px;display:none;}
+
+/* 主区域 */
+.section-title{font-size:11px;font-weight:600;color:#64748b;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;}
+.chart-box{background:#111827;border:1px solid #1e293b;border-radius:8px;padding:4px;margin-bottom:14px;}
+#klineChart{height:380px;}
+#equityChart{height:200px;}
+
+.tw{border:1px solid #1e293b;border-radius:8px;overflow:hidden;margin-bottom:14px;overflow-x:auto;}
+table{width:100%;border-collapse:collapse;min-width:500px;}
+th{background:#161d2d;color:#64748b;font-weight:500;padding:7px 9px;text-align:left;font-size:10px;letter-spacing:.05em;text-transform:uppercase;border-bottom:1px solid #1e293b;}
+td{padding:7px 9px;border-bottom:1px solid #111827;color:#cbd5e1;font-size:12px;}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:#161d2d;}
+.buy-tag{color:#4ade80;font-weight:600;}
+.sell-tag{color:#f87171;font-weight:600;}
+.stop-tag{color:#f87171;}
+.stage-tag{color:#fbbf24;}
+
+.top-stocks{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;}
+.stock-chip{padding:4px 10px;border-radius:99px;font-size:11px;font-weight:600;}
+.chip-pos{background:#14391f;color:#4ade80;}
+.chip-neg{background:#3b0f0f;color:#f87171;}
+
+.empty{font-size:12px;color:#475569;padding:32px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- 侧边栏 -->
+<div class="sidebar">
+  <div class="logo">📈 策略B <span>回测</span></div>
+
+  <div class="tab-btns">
+    <button class="tab-btn active" id="tabSingle" onclick="switchTab('single')">单股</button>
+    <button class="tab-btn" id="tabMarket" onclick="switchTab('market')">全市场</button>
+  </div>
+
+  <!-- 单股参数 -->
+  <div id="panelSingle">
+    <div class="field">
+      <label>股票代码</label>
+      <input id="symbol" type="text" placeholder="如 AAPL" value="">
+    </div>
+    <div class="field">
+      <label>开始日期</label>
+      <input id="startDate" type="date" value="2024-01-01">
+    </div>
+    <div class="field">
+      <label>结束日期</label>
+      <input id="endDate" type="date" value="">
+    </div>
+    <div class="field">
+      <label>每笔金额 ($)</label>
+      <input id="notional" type="number" value="2100">
+    </div>
+  </div>
+
+  <!-- 全市场参数 -->
+  <div id="panelMarket" style="display:none;">
+    <div class="field">
+      <label>开始日期</label>
+      <input id="mStartDate" type="date" value="2024-01-01">
+    </div>
+    <div class="field">
+      <label>结束日期</label>
+      <input id="mEndDate" type="date" value="">
+    </div>
+    <div class="field">
+      <label>初始资金 ($)</label>
+      <input id="initCash" type="number" value="10000">
+    </div>
+    <div class="field">
+      <label>最大持仓数</label>
+      <input id="maxPos" type="number" value="5">
+    </div>
+    <div class="field">
+      <label>每笔金额 ($)</label>
+      <input id="mNotional" type="number" value="2100">
+    </div>
+  </div>
+
+  <button class="run-btn" id="runBtn" onclick="runBacktest()">▶ 运行回测</button>
+  <div class="err" id="errBox"></div>
+  <div class="loading" id="loadingBox">⏳ 回测运行中...</div>
+
+  <div class="stats-grid" id="statsGrid"></div>
+</div>
+
+<!-- 主区域 -->
+<div class="main">
+  <div id="mainContent">
+    <div class="empty">← 选择参数后点击「运行回测」</div>
+  </div>
+</div>
+
+</div>
+
+<script>
+let currentTab = 'single';
+let klineChartInst = null;
+let equityChartInst = null;
+
+// 设置默认结束日期为今天
+const today = new Date().toISOString().slice(0,10);
+document.getElementById('endDate').value = today;
+document.getElementById('mEndDate').value = today;
+
+function switchTab(tab){
+  currentTab = tab;
+  document.getElementById('tabSingle').className = 'tab-btn' + (tab==='single'?' active':'');
+  document.getElementById('tabMarket').className = 'tab-btn' + (tab==='market'?' active':'');
+  document.getElementById('panelSingle').style.display = tab==='single'?'':'none';
+  document.getElementById('panelMarket').style.display = tab==='market'?'':'none';
+}
+
+function showErr(msg){
+  const b=document.getElementById('errBox');
+  b.style.display=msg?'block':'none';
+  b.textContent=msg||'';
+}
+
+async function runBacktest(){
+  showErr('');
+  document.getElementById('loadingBox').style.display='block';
+  document.getElementById('runBtn').disabled=true;
+  document.getElementById('statsGrid').innerHTML='';
+  document.getElementById('mainContent').innerHTML='<div class="empty">⏳ 回测运行中，请稍候...</div>';
+
+  try{
+    let url, result;
+    if(currentTab==='single'){
+      const sym   = document.getElementById('symbol').value.trim().toUpperCase();
+      const start = document.getElementById('startDate').value;
+      const end   = document.getElementById('endDate').value;
+      const not   = document.getElementById('notional').value;
+      if(!sym){ showErr('请输入股票代码'); return; }
+      url = `/api/backtest/single?symbol=${sym}&start=${start}&end=${end}&notional=${not}`;
+      result = await fetch(url).then(r=>r.json());
+      if(result.error){ showErr(result.error); return; }
+      renderSingle(result);
+    } else {
+      const start = document.getElementById('mStartDate').value;
+      const end   = document.getElementById('mEndDate').value;
+      const cash  = document.getElementById('initCash').value;
+      const maxp  = document.getElementById('maxPos').value;
+      const not   = document.getElementById('mNotional').value;
+      url = `/api/backtest/market?start=${start}&end=${end}&cash=${cash}&max_pos=${maxp}&notional=${not}`;
+      result = await fetch(url).then(r=>r.json());
+      if(result.error){ showErr(result.error); return; }
+      renderMarket(result);
+    }
+  } catch(e){
+    showErr('请求失败：'+e.message);
+  } finally {
+    document.getElementById('loadingBox').style.display='none';
+    document.getElementById('runBtn').disabled=false;
+  }
+}
+
+// ─── 渲染统计 ────────────────────────────────────────────────────────
+function renderStats(s){
+  const ret = s.total_return;
+  const dd  = s.max_drawdown;
+  document.getElementById('statsGrid').innerHTML=`
+    <div class="stat"><div class="stat-label">总收益</div><div class="stat-value ${ret>=0?'cg':'cr'}">${ret>=0?'+':''}${ret}%</div></div>
+    <div class="stat"><div class="stat-label">最终净值</div><div class="stat-value">$${s.final_equity?.toLocaleString()}</div></div>
+    <div class="stat"><div class="stat-label">胜率</div><div class="stat-value ${s.win_rate>=50?'cg':'ca'}">${s.win_rate}%</div></div>
+    <div class="stat"><div class="stat-label">最大回撤</div><div class="stat-value ${dd<15?'cg':dd<30?'ca':'cr'}">${dd}%</div></div>
+    <div class="stat"><div class="stat-label">总交易次数</div><div class="stat-value">${s.total_trades}</div></div>
+    ${s.profit_factor!==undefined?`<div class="stat"><div class="stat-label">盈亏比</div><div class="stat-value ${s.profit_factor>=1.5?'cg':'ca'}">${s.profit_factor}</div></div>`:''}
+    ${s.symbols_tested!==undefined?`<div class="stat"><div class="stat-label">测试股票数</div><div class="stat-value">${s.symbols_tested}</div></div>`:''}
+  `;
+}
+
+// ─── 单股渲染 ────────────────────────────────────────────────────────
+function renderSingle(data){
+  renderStats(data.stats);
+  const sym = data.stats.symbol;
+
+  let html = `
+    <div class="section-title">K线图 — ${sym}</div>
+    <div class="chart-box"><div id="klineChart"></div></div>
+    <div class="section-title">收益曲线</div>
+    <div class="chart-box"><div id="equityChart"></div></div>
+    <div class="section-title">交易记录（${data.trades.length} 笔）</div>
+    <div class="tw"><table>
+      <thead><tr><th>日期</th><th>方向</th><th>价格</th><th>数量</th><th>原因</th><th>盈亏</th><th>盈亏%</th><th>止损</th></tr></thead>
+      <tbody>${data.trades.map(t=>`<tr>
+        <td>${t.date}</td>
+        <td>${t.type==='buy'?'<span class="buy-tag">买入</span>':'<span class="sell-tag">卖出</span>'}</td>
+        <td>$${Number(t.price).toFixed(2)}</td>
+        <td>${t.qty}</td>
+        <td style="color:#64748b;font-size:11px;">${t.reason}</td>
+        <td class="${t.pnl>0?'cg':t.pnl<0?'cr':''}">${t.pnl!==0?(t.pnl>0?'+':'')+t.pnl.toFixed(2):'—'}</td>
+        <td class="${t.pnl_pct>0?'cg':t.pnl_pct<0?'cr':''}">${t.pnl_pct!==0?(t.pnl_pct>0?'+':'')+t.pnl_pct.toFixed(2)+'%':'—'}</td>
+        <td style="color:#64748b;">${t.sl?'$'+Number(t.sl).toFixed(2):'—'}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+
+  document.getElementById('mainContent').innerHTML = html;
+
+  // K线图
+  setTimeout(()=>{
+    drawKline(data.bars, data.trades, 'klineChart');
+    drawEquity(data.equity_curve, 'equityChart');
+  }, 50);
+}
+
+// ─── 全市场渲染 ──────────────────────────────────────────────────────
+function renderMarket(data){
+  renderStats(data.stats);
+
+  const topHtml = data.top_stocks.map(s=>
+    `<span class="stock-chip ${s.pnl>=0?'chip-pos':'chip-neg'}">${s.symbol} ${s.pnl>=0?'+':''}$${s.pnl}</span>`
+  ).join('');
+
+  const sells = data.trades.filter(t=>t.type==='sell'&&t.reason!=='END_OF_BACKTEST');
+
+  let html = `
+    <div class="section-title">收益曲线</div>
+    <div class="chart-box"><div id="equityChart" style="height:280px;"></div></div>
+    <div class="section-title">贡献最大的股票</div>
+    <div class="top-stocks">${topHtml}</div>
+    <div class="section-title">交易记录（${sells.length} 笔已平仓）</div>
+    <div class="tw"><table>
+      <thead><tr><th>日期</th><th>股票</th><th>方向</th><th>价格</th><th>数量</th><th>原因</th><th>盈亏</th><th>盈亏%</th></tr></thead>
+      <tbody>${data.trades.slice(0,100).map(t=>`<tr>
+        <td>${t.date}</td>
+        <td style="font-weight:600;color:#f1f5f9;">${t.symbol}</td>
+        <td>${t.type==='buy'?'<span class="buy-tag">买</span>':'<span class="sell-tag">卖</span>'}</td>
+        <td>$${Number(t.price).toFixed(2)}</td>
+        <td>${t.qty}</td>
+        <td style="color:#64748b;font-size:11px;">${t.reason}</td>
+        <td class="${t.pnl>0?'cg':t.pnl<0?'cr':''}">${t.pnl!==0?(t.pnl>0?'+':'')+t.pnl.toFixed(2):'—'}</td>
+        <td class="${t.pnl_pct>0?'cg':t.pnl_pct<0?'cr':''}">${t.pnl_pct!==0?(t.pnl_pct>0?'+':'')+t.pnl_pct.toFixed(2)+'%':'—'}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+
+  document.getElementById('mainContent').innerHTML = html;
+  setTimeout(()=>{ drawEquity(data.equity_curve, 'equityChart'); }, 50);
+}
+
+// ─── K线图 ───────────────────────────────────────────────────────────
+function drawKline(bars, trades, containerId){
+  const el = document.getElementById(containerId);
+  if(!el) return;
+  if(klineChartInst){ try{klineChartInst.remove();}catch(e){} }
+
+  const chart = LightweightCharts.createChart(el, {
+    layout:{ background:{color:'#111827'}, textColor:'#64748b' },
+    grid:{ vertLines:{color:'#1e293b'}, horzLines:{color:'#1e293b'} },
+    crosshair:{ mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale:{ borderColor:'#1e293b' },
+    timeScale:{ borderColor:'#1e293b', timeVisible:true },
+    width: el.clientWidth,
+    height: el.clientHeight || 380,
+  });
+  klineChartInst = chart;
+
+  const candleSeries = chart.addCandlestickSeries({
+    upColor:'#4ade80', downColor:'#f87171',
+    borderUpColor:'#4ade80', borderDownColor:'#f87171',
+    wickUpColor:'#4ade80', wickDownColor:'#f87171',
+  });
+
+  candleSeries.setData(bars.map(b=>({
+    time: b.d,
+    open: b.open, high: b.high, low: b.low, close: b.close,
+  })));
+
+  // 买卖点标注
+  const markers = trades.map(t=>({
+    time: t.date,
+    position: t.type==='buy' ? 'belowBar' : 'aboveBar',
+    color: t.type==='buy' ? '#4ade80' : '#f87171',
+    shape: t.type==='buy' ? 'arrowUp' : 'arrowDown',
+    text: t.type==='buy' ? `B $${t.price}` : `S $${t.price}`,
+    size: 1,
+  }));
+  candleSeries.setMarkers(markers);
+
+  // 成交量
+  const volSeries = chart.addHistogramSeries({
+    color:'#1e293b', priceFormat:{type:'volume'},
+    priceScaleId:'vol', scaleMargins:{top:0.85, bottom:0},
+  });
+  volSeries.setData(bars.map(b=>({
+    time: b.d, value: b.volume,
+    color: b.close >= b.open ? '#4ade8033' : '#f8717133',
+  })));
+
+  chart.timeScale().fitContent();
+}
+
+// ─── 收益曲线 ────────────────────────────────────────────────────────
+function drawEquity(curve, containerId){
+  const el = document.getElementById(containerId);
+  if(!el) return;
+  if(equityChartInst){ try{equityChartInst.remove();}catch(e){} }
+
+  const chart = LightweightCharts.createChart(el, {
+    layout:{ background:{color:'#111827'}, textColor:'#64748b' },
+    grid:{ vertLines:{color:'#1e293b'}, horzLines:{color:'#1e293b'} },
+    rightPriceScale:{ borderColor:'#1e293b' },
+    timeScale:{ borderColor:'#1e293b' },
+    width: el.clientWidth,
+    height: el.clientHeight || 200,
+  });
+  equityChartInst = chart;
+
+  const lineSeries = chart.addAreaSeries({
+    lineColor:'#3b82f6', topColor:'#3b82f633',
+    bottomColor:'#3b82f600', lineWidth:2,
+  });
+  lineSeries.setData(curve.map(e=>({ time: e.d, value: e.equity })));
+  chart.timeScale().fitContent();
+}
+
+window.addEventListener('resize', ()=>{
+  if(klineChartInst){
+    const el = document.getElementById('klineChart');
+    if(el) klineChartInst.applyOptions({width: el.clientWidth});
+  }
+  if(equityChartInst){
+    const el = document.getElementById('equityChart');
+    if(el) equityChartInst.applyOptions({width: el.clientWidth});
+  }
+});
+</script>
+</body>
+</html>
