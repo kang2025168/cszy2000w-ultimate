@@ -62,58 +62,9 @@ services:
         condition: service_healthy
     command: ["bash", "-lc", "./scripts/run.sh strategy_a"]
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-# ─────────────────────────────────────────────────────────────
-# 把下面这段加到你现有的 docker-compose.yml 的 services: 下面
-# ─────────────────────────────────────────────────────────────
-
-  monitor:
-    build:
-      # 把 monitor_api/ 文件夹放到项目根目录改名为 monitor/
-      context: ./monitor
-      dockerfile: Dockerfile
-    container_name: cszy_monitor
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      DB_HOST: mysql
-      DB_PORT: 3306
-      TZ: America/Los_Angeles
-      TRADE_ENV: ${ALPACA_MODE}
-
-      # Alpaca keys（monitor 只读账户，用 paper/live 对应的 key）
-      # 改成 ${LIVE_APCA_API_KEY_ID} 看 live 账户
-
-      APCA_API_KEY_ID: AKEEAJC3G6P5RTQTZ7L2CATYTY
-      APCA_API_SECRET_KEY: 77ywJFbyhXGyQE85Z9by3ivfbgury5p1Kee4HoqjX5Nm
-
-      ALPACA_DATA_BASE_URL: https://data.alpaca.markets
-      B_DATA_FEED: iex
-      MONITOR_PORT: 5050
-      API_CACHE_TTL: 10         # Alpaca 账户缓存秒数
-
-    ports:
-      - "5050:5050"             # 浏览器访问 http://localhost:5050
-    depends_on:
-      mysql:
-        condition: service_healthy
-
-  backtest:
-      build:
-        context: ./backtest
-        dockerfile: Dockerfile
-      container_name: cszy_backtest
-      restart: unless-stopped
-      env_file:
-        - .env
-      environment:
-        DB_HOST: mysql
-        DB_PORT: 3306
-        TZ: America/Los_Angeles
-        BACKTEST_PORT: 5051
-      ports:
-        - "5051:5051"
-      depends_on:
-        mysql:
-          condition: service_healthy
