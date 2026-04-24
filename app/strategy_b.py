@@ -568,8 +568,6 @@ def strategy_B_buy(code: str) -> bool:
         last_order_side = row.get("last_order_side")
 
         entry_close = float(row.get("entry_close") or 0)
-
-        # ✅ 兜底：防止旧数据/SQL未取到 entry_close 导致全部 up_pct=0
         if entry_close <= 0:
             entry_close = float(row.get("close_price") or trigger or 0)
 
@@ -602,18 +600,29 @@ def strategy_B_buy(code: str) -> bool:
         ask = float(snap.get("ask") or 0.0)
         feed = snap.get("feed")
 
+        # ✅ 买入涨幅基准：昨日收盘价
+        prev_close = _get_prev_close_from_db(conn, code)
+
+        day_up_pct = (price - prev_close) / prev_close if prev_close > 0 else 0.0
+        entry_up_pct = (price - entry_close) / entry_close if entry_close > 0 else 0.0
+
+        need_price = prev_close * (1.0 + float(B_MIN_UP_PCT)) if prev_close > 0 else 0.0
+        max_buy_price = prev_close * (1.0 + float(B_MAX_BUY_UP_PCT)) if prev_close > 0 else 0.0
+
         print(
             f"[B BUY] {code} quote bid={bid:.2f} ask={ask:.2f} last={price:.2f} "
-            f"entry_close={entry_close:.2f} trigger={trigger:.2f} feed={feed}",
+            f"prev_close={prev_close:.2f} entry_close={entry_close:.2f} "
+            f"trigger={trigger:.2f} day_up={day_up_pct*100:.2f}% "
+            f"entry_up={entry_up_pct*100:.2f}% feed={feed}",
             flush=True,
         )
 
-        up_pct = (price - entry_close) / entry_close if entry_close > 0 else 0.0
-        need_price = entry_close * (1.0 + float(B_MIN_UP_PCT)) if entry_close > 0 else 0.0
-        max_buy_price = entry_close * (1.0 + float(B_MAX_BUY_UP_PCT)) if entry_close > 0 else 0.0
-
         if price <= 0:
             print(f"[B BUY] {code} skip: invalid price={price:.2f}", flush=True)
+            return False
+
+        if prev_close <= 0:
+            print(f"[B BUY] {code} skip: invalid prev_close={prev_close:.2f}", flush=True)
             return False
 
         if not (price > trigger):
@@ -623,17 +632,17 @@ def strategy_B_buy(code: str) -> bool:
             )
             return False
 
-        if not (up_pct > B_MIN_UP_PCT):
+        if not (day_up_pct > B_MIN_UP_PCT):
             print(
-                f"[B BUY] {code} skip: up_pct={up_pct*100:.2f}% <= min_up={B_MIN_UP_PCT*100:.2f}% "
+                f"[B BUY] {code} skip: day_up={day_up_pct*100:.2f}% <= min_up={B_MIN_UP_PCT*100:.2f}% "
                 f"(need>{need_price:.2f})",
                 flush=True,
             )
             return False
 
-        if up_pct >= B_MAX_BUY_UP_PCT:
+        if day_up_pct >= B_MAX_BUY_UP_PCT:
             print(
-                f"[B BUY] {code} skip: up_pct={up_pct*100:.2f}% >= max_buy_up={B_MAX_BUY_UP_PCT*100:.2f}% "
+                f"[B BUY] {code} skip: day_up={day_up_pct*100:.2f}% >= max_buy_up={B_MAX_BUY_UP_PCT*100:.2f}% "
                 f"(max_buy_price<={max_buy_price:.2f})",
                 flush=True,
             )
@@ -678,12 +687,14 @@ def strategy_B_buy(code: str) -> bool:
         intent = (
             f"B:BUY qty={qty} est={used_notional:.2f} "
             f"rt={price:.2f} bid={bid:.2f} ask={ask:.2f} "
-            f"trg={trigger:.2f} up={up_pct*100:.2f}% feed={feed} mode=market"
+            f"trg={trigger:.2f} day_up={day_up_pct*100:.2f}% "
+            f"entry_up={entry_up_pct*100:.2f}% feed={feed} mode=market"
         )
 
         print(
             f"[B BUY] {code} submit: qty={qty} est={used_notional:.2f} "
-            f"price={price:.2f} up_pct={up_pct*100:.2f}% bp={buying_power:.2f}",
+            f"price={price:.2f} day_up={day_up_pct*100:.2f}% "
+            f"entry_up={entry_up_pct*100:.2f}% bp={buying_power:.2f}",
             flush=True,
         )
 
@@ -705,6 +716,7 @@ def strategy_B_buy(code: str) -> bool:
             cost_price = float(price)
             qty_to_write = int(qty)
 
+        # ✅ 初始止损仍然用 entry_close 做底线
         init_sl = max(
             float(entry_close) if entry_close > 0 else 0,
             float(cost_price) * 0.97,
@@ -754,7 +766,8 @@ def strategy_B_buy(code: str) -> bool:
 
         print(
             f"[B BUY] {code} ✅ bought order_id={order_id} qty={qty_to_write} "
-            f"base_qty={base_qty} cost≈{cost_price:.2f} sl={init_sl:.2f} entry_close={entry_close:.2f}",
+            f"base_qty={base_qty} cost≈{cost_price:.2f} sl={init_sl:.2f} "
+            f"prev_close={prev_close:.2f} entry_close={entry_close:.2f} day_up={day_up_pct*100:.2f}%",
             flush=True,
         )
         return True
@@ -781,7 +794,6 @@ def strategy_B_buy(code: str) -> bool:
                 conn.close()
         except Exception:
             pass
-
 # =========================
 # SELL
 # =========================
