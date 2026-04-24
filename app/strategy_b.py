@@ -281,6 +281,7 @@ def _load_one_b_row(conn, code: str):
     SELECT stock_code, stock_type,
            trigger_price, close_price,
            cost_price, stop_loss_price, take_profit_price,
+           entry_open, entry_close, entry_date,
            b_stage, base_qty,
            qty, is_bought, can_buy, can_sell,
            last_order_time, last_order_side, last_order_id,
@@ -292,7 +293,6 @@ def _load_one_b_row(conn, code: str):
     with conn.cursor() as cur:
         cur.execute(sql, (code,))
         return cur.fetchone()
-
 
 def _get_recent_closes(conn, code: str, n: int = 4):
     sql = f"""
@@ -561,14 +561,17 @@ def strategy_B_buy(code: str) -> bool:
             print(f"[B BUY] {code} skip: no B row", flush=True)
             return False
 
-        can_buy       = int(row.get("can_buy") or 0)
-        is_bought     = int(row.get("is_bought") or 0)
-        trigger       = float(row.get("trigger_price") or 0)
+        can_buy = int(row.get("can_buy") or 0)
+        is_bought = int(row.get("is_bought") or 0)
+        trigger = float(row.get("trigger_price") or 0)
         last_order_time = row.get("last_order_time")
         last_order_side = row.get("last_order_side")
 
-        # ✅ 改1：从 DB 取 entry_close，作为涨幅基准和止损底线
         entry_close = float(row.get("entry_close") or 0)
+
+        # ✅ 兜底：防止旧数据/SQL未取到 entry_close 导致全部 up_pct=0
+        if entry_close <= 0:
+            entry_close = float(row.get("close_price") or trigger or 0)
 
         if can_buy != 1:
             print(f"[B BUY] {code} skip: can_buy={can_buy}", flush=True)
@@ -582,6 +585,10 @@ def strategy_B_buy(code: str) -> bool:
             print(f"[B BUY] {code} skip: invalid trigger={trigger:.2f}", flush=True)
             return False
 
+        if entry_close <= 0:
+            print(f"[B BUY] {code} skip: invalid entry_close={entry_close:.2f}", flush=True)
+            return False
+
         if _is_cooldown(last_order_time, last_order_side):
             print(
                 f"[B BUY] {code} skip: cooldown last_side={last_order_side} last_time={last_order_time}",
@@ -589,11 +596,11 @@ def strategy_B_buy(code: str) -> bool:
             )
             return False
 
-        snap  = get_snapshot_quote_realtime(code)
+        snap = get_snapshot_quote_realtime(code)
         price = float(snap.get("last_price") or 0.0)
-        bid   = float(snap.get("bid") or 0.0)
-        ask   = float(snap.get("ask") or 0.0)
-        feed  = snap.get("feed")
+        bid = float(snap.get("bid") or 0.0)
+        ask = float(snap.get("ask") or 0.0)
+        feed = snap.get("feed")
 
         print(
             f"[B BUY] {code} quote bid={bid:.2f} ask={ask:.2f} last={price:.2f} "
@@ -601,9 +608,8 @@ def strategy_B_buy(code: str) -> bool:
             flush=True,
         )
 
-        # ✅ 改1：涨幅基准用 entry_close，和筛选脚本的触发价基准一致
         up_pct = (price - entry_close) / entry_close if entry_close > 0 else 0.0
-        need_price    = entry_close * (1.0 + float(B_MIN_UP_PCT))    if entry_close > 0 else 0.0
+        need_price = entry_close * (1.0 + float(B_MIN_UP_PCT)) if entry_close > 0 else 0.0
         max_buy_price = entry_close * (1.0 + float(B_MAX_BUY_UP_PCT)) if entry_close > 0 else 0.0
 
         if price <= 0:
@@ -633,8 +639,8 @@ def strategy_B_buy(code: str) -> bool:
             )
             return False
 
-        tc            = _get_trading_client()
-        buying_power  = _get_buying_power(tc)
+        tc = _get_trading_client()
+        buying_power = _get_buying_power(tc)
 
         if buying_power < float(B_TARGET_NOTIONAL_USD):
             print(
@@ -651,7 +657,7 @@ def strategy_B_buy(code: str) -> bool:
             return False
 
         max_use = float(buying_power) * float(B_BP_USE_RATIO)
-        target  = min(float(B_TARGET_NOTIONAL_USD), float(B_MAX_NOTIONAL_USD), float(max_use))
+        target = min(float(B_TARGET_NOTIONAL_USD), float(B_MAX_NOTIONAL_USD), float(max_use))
 
         if target < float(B_TARGET_NOTIONAL_USD):
             print(
@@ -681,32 +687,31 @@ def strategy_B_buy(code: str) -> bool:
             flush=True,
         )
 
-        order    = _submit_market_qty(tc, code, qty, side="buy")
+        order = _submit_market_qty(tc, code, qty, side="buy")
         order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
 
         print(f"[B BUY] {code} order submitted: order_id={order_id}", flush=True)
 
         pos_cost, pos_qty = _wait_and_get_position_fill(tc, code)
-        filled_avg        = _poll_filled_avg_price(tc, str(order_id or ""))
+        filled_avg = _poll_filled_avg_price(tc, str(order_id or ""))
 
         if pos_cost is not None and pos_qty is not None and int(pos_qty) > 0:
-            cost_price   = float(pos_cost)
+            cost_price = float(pos_cost)
             qty_to_write = int(pos_qty)
         elif filled_avg is not None:
-            cost_price   = float(filled_avg)
+            cost_price = float(filled_avg)
             qty_to_write = int(qty)
         else:
-            cost_price   = float(price)
+            cost_price = float(price)
             qty_to_write = int(qty)
 
-        # ✅ 改3：止损底线用 entry_close，避免 trigger 跟随上移后止损离成本太近
         init_sl = max(
-            float(entry_close) if entry_close > 0 else 0,  # 入选日收盘价作为底线
-            float(cost_price) * 0.97,                       # 成本价 -3%
+            float(entry_close) if entry_close > 0 else 0,
+            float(cost_price) * 0.97,
         )
 
         last_stage = 0
-        base_qty   = int(qty_to_write)
+        base_qty = int(qty_to_write)
 
         sql = f"""
         UPDATE `{OPS_TABLE}`
@@ -769,13 +774,13 @@ def strategy_B_buy(code: str) -> bool:
         except Exception:
             pass
         return False
+
     finally:
         try:
             if conn:
                 conn.close()
         except Exception:
             pass
-
 
 # =========================
 # SELL
