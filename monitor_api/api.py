@@ -16,7 +16,7 @@ from datetime import datetime, time as dt_time
 
 import pymysql
 import pymysql.cursors
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, Response, request
 from flask_cors import CORS
 
 try:
@@ -627,3 +627,396 @@ if __name__ == "__main__":
     port = int(os.getenv("MONITOR_PORT", "5050"))
     print(f"[Monitor API] :{port} env={TRADE_ENV} url={ALPACA_TRADE_URL}", flush=True)
     app.run(host="0.0.0.0", port=port, debug=False)
+
+# ─── 分析页面路由 ──────────────────────────────────────────────────────
+ANALYSIS_HTML = r"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>交易分析</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'SF Mono',monospace;background:#0d1117;color:#e2e8f0;font-size:13px;padding:16px;}
+.top-bar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+.title{font-size:15px;font-weight:600;color:#f1f5f9;}
+.back-btn{font-size:11px;padding:4px 10px;cursor:pointer;font-family:inherit;background:#1e293b;border:1px solid #334155;color:#94a3b8;border-radius:5px;text-decoration:none;}
+.env{font-size:10px;padding:2px 7px;border-radius:4px;background:#3b0f0f;color:#f87171;font-weight:600;}
+.filter-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;}
+.filter-bar select,.filter-bar input{padding:6px 9px;background:#1e293b;border:1px solid #334155;color:#e2e8f0;border-radius:5px;font-family:inherit;font-size:12px;}
+.filter-bar button{padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit;background:#1d4ed8;border:none;color:#fff;border-radius:5px;}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:16px;}
+.metric{background:#1e293b;border-radius:8px;padding:12px 14px;}
+.ml{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;}
+.mv{font-size:20px;font-weight:600;color:#f1f5f9;}
+.ms{font-size:10px;color:#475569;margin-top:2px;}
+.cg{color:#4ade80;} .cr{color:#f87171;} .ca{color:#fbbf24;}
+.sec{font-size:10px;font-weight:600;color:#64748b;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;margin-top:4px;}
+.chart-box{background:#111827;border:1px solid #1e293b;border-radius:8px;padding:4px;margin-bottom:14px;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;}
+.tw{border:1px solid #1e293b;border-radius:8px;overflow:hidden;margin-bottom:14px;overflow-x:auto;}
+table{width:100%;border-collapse:collapse;min-width:600px;}
+th{background:#161d2d;color:#64748b;font-weight:500;padding:7px 9px;text-align:left;font-size:10px;letter-spacing:.05em;text-transform:uppercase;border-bottom:1px solid #1e293b;}
+td{padding:8px 9px;border-bottom:1px solid #111827;color:#cbd5e1;font-size:12px;}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:#161d2d;}
+.buy-tag{color:#4ade80;font-weight:600;}
+.sell-tag{color:#f87171;font-weight:600;}
+.bar-wrap{display:flex;align-items:center;gap:6px;}
+.bar-bg{flex:1;height:6px;background:#1e293b;border-radius:3px;overflow:hidden;min-width:60px;}
+.bar-fill{height:100%;border-radius:3px;}
+.bar-pos{background:#4ade80;}
+.bar-neg{background:#f87171;}
+.loading{text-align:center;padding:40px;color:#475569;font-size:13px;}
+.err{color:#f87171;background:#3b0f0f;padding:10px;border-radius:6px;margin-bottom:12px;display:none;}
+.sym-chip{display:inline-block;padding:3px 8px;border-radius:99px;font-size:11px;font-weight:600;margin:2px;}
+.chip-pos{background:#14391f;color:#4ade80;}
+.chip-neg{background:#3b0f0f;color:#f87171;}
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <a class="back-btn" href="/">← 返回监控</a>
+  <span class="title">交易分析</span>
+  <span class="env" id="envBadge">LIVE</span>
+  <span style="font-size:11px;color:#475569;" id="lastUpdate"></span>
+</div>
+<div class="err" id="err"></div>
+
+<div class="filter-bar">
+  <select id="period">
+    <option value="30">近30天</option>
+    <option value="90" selected>近90天</option>
+    <option value="180">近180天</option>
+    <option value="365">近1年</option>
+    <option value="0">全部</option>
+  </select>
+  <button onclick="load()">刷新</button>
+</div>
+
+<div id="content"><div class="loading">加载中...</div></div>
+
+<script>
+let equityChart = null;
+
+async function load(){
+  const days = document.getElementById('period').value;
+  document.getElementById('err').style.display='none';
+  document.getElementById('content').innerHTML='<div class="loading">⏳ 拉取 Alpaca 成交数据...</div>';
+  try{
+    const data = await fetch(`/api/analysis?days=${days}`).then(r=>r.json());
+    if(data.error){ showErr(data.error); return; }
+    render(data);
+    document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('zh-CN');
+  }catch(e){
+    showErr('请求失败：'+e.message);
+  }
+}
+
+function showErr(msg){
+  const e=document.getElementById('err');
+  e.style.display='block';
+  e.textContent=msg;
+  document.getElementById('content').innerHTML='';
+}
+
+function fp(v,d=2){return (v>=0?'+':'')+Number(v).toFixed(d)+'%';}
+function fm(v){return (v>=0?'+$':'-$')+Math.abs(v).toFixed(2);}
+function fd(s){return s?String(s).slice(0,16).replace('T',' '):'—';}
+
+function render(d){
+  const s = d.stats;
+  const html = `
+    <div class="metrics">
+      <div class="metric"><div class="ml">总盈亏</div><div class="mv ${s.total_pnl>=0?'cg':'cr'}">${fm(s.total_pnl)}</div><div class="ms">${fp(s.total_pnl_pct)} 总收益率</div></div>
+      <div class="metric"><div class="ml">胜率</div><div class="mv ${s.win_rate>=50?'cg':'ca'}">${s.win_rate}%</div><div class="ms">${s.win_count}胜 / ${s.loss_count}负</div></div>
+      <div class="metric"><div class="ml">平均盈利</div><div class="mv cg">${fm(s.avg_win)}</div><div class="ms">${fp(s.avg_win_pct)} 每笔</div></div>
+      <div class="metric"><div class="ml">平均亏损</div><div class="mv cr">${fm(s.avg_loss)}</div><div class="ms">${fp(s.avg_loss_pct)} 每笔</div></div>
+      <div class="metric"><div class="ml">盈亏比</div><div class="mv ${s.profit_factor>=1.5?'cg':'ca'}">${s.profit_factor}</div><div class="ms">盈/亏倍数</div></div>
+      <div class="metric"><div class="ml">总交易笔数</div><div class="mv">${s.total_trades}</div><div class="ms">已平仓</div></div>
+      <div class="metric"><div class="ml">最大单笔盈利</div><div class="mv cg">${fm(s.max_win)}</div><div class="ms">${s.max_win_sym}</div></div>
+      <div class="metric"><div class="ml">最大单笔亏损</div><div class="mv cr">${fm(s.max_loss)}</div><div class="ms">${s.max_loss_sym}</div></div>
+    </div>
+
+    <div class="sec">累计收益曲线</div>
+    <div class="chart-box"><div id="equityChart" style="height:220px;"></div></div>
+
+    <div class="grid2">
+      <div>
+        <div class="sec">盈利最多的股票</div>
+        <div>${d.top_winners.map(x=>`<span class="sym-chip chip-pos">${x.symbol} ${fm(x.pnl)}</span>`).join('')}</div>
+      </div>
+      <div>
+        <div class="sec">亏损最多的股票</div>
+        <div>${d.top_losers.map(x=>`<span class="sym-chip chip-neg">${x.symbol} ${fm(x.pnl)}</span>`).join('')}</div>
+      </div>
+    </div>
+
+    <div class="sec">按股票统计</div>
+    <div class="tw"><table>
+      <thead><tr><th>股票</th><th>交易次数</th><th>总盈亏</th><th>胜率</th><th>平均持仓天数</th><th>盈亏分布</th></tr></thead>
+      <tbody>${d.by_symbol.map(x=>{
+        const barW = Math.min(100, Math.abs(x.pnl)/Math.max(...d.by_symbol.map(s=>Math.abs(s.pnl)))*100);
+        return`<tr>
+          <td style="font-weight:600;color:#f1f5f9;">${x.symbol}</td>
+          <td>${x.count}</td>
+          <td class="${x.pnl>=0?'cg':'cr'}">${fm(x.pnl)}</td>
+          <td class="${x.win_rate>=50?'cg':'ca'}">${x.win_rate}%</td>
+          <td style="color:#64748b;">${x.avg_hold_days}天</td>
+          <td><div class="bar-wrap"><div class="bar-bg"><div class="bar-fill ${x.pnl>=0?'bar-pos':'bar-neg'}" style="width:${barW.toFixed(0)}%"></div></div></div></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+
+    <div class="sec">全部成交记录（${d.trades.length} 笔）</div>
+    <div class="tw"><table>
+      <thead><tr><th>时间</th><th>股票</th><th>方向</th><th>数量</th><th>成交价</th><th>盈亏</th><th>盈亏%</th><th>持仓天数</th></tr></thead>
+      <tbody>${d.trades.map(t=>`<tr>
+        <td style="color:#475569;">${fd(t.filled_at)}</td>
+        <td style="font-weight:600;color:#f1f5f9;">${t.symbol}</td>
+        <td>${t.side==='buy'?'<span class="buy-tag">买入</span>':'<span class="sell-tag">卖出</span>'}</td>
+        <td>${t.qty}</td>
+        <td>$${Number(t.fill_price).toFixed(2)}</td>
+        <td class="${(t.pnl||0)>=0?'cg':'cr'}">${t.pnl!==null?fm(t.pnl):'—'}</td>
+        <td class="${(t.pnl_pct||0)>=0?'cg':'cr'}">${t.pnl_pct!==null?fp(t.pnl_pct):'—'}</td>
+        <td style="color:#64748b;">${t.hold_days!==null?t.hold_days+'天':'—'}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>
+  `;
+  document.getElementById('content').innerHTML = html;
+
+  // 收益曲线
+  setTimeout(()=>{
+    const el = document.getElementById('equityChart');
+    if(!el||!d.equity_curve||d.equity_curve.length===0) return;
+    if(equityChart){ try{equityChart.remove();}catch(e){} }
+    const chart = LightweightCharts.createChart(el,{
+      layout:{background:{color:'#111827'},textColor:'#64748b'},
+      grid:{vertLines:{color:'#1e293b'},horzLines:{color:'#1e293b'}},
+      rightPriceScale:{borderColor:'#1e293b'},
+      timeScale:{borderColor:'#1e293b'},
+      width:el.clientWidth, height:220,
+    });
+    equityChart = chart;
+    const area = chart.addAreaSeries({
+      lineColor:'#3b82f6',topColor:'#3b82f633',bottomColor:'#3b82f600',lineWidth:2,
+    });
+    // 零线
+    const base = chart.addLineSeries({color:'#334155',lineWidth:1,lineStyle:2});
+    const startVal = d.equity_curve[0]?.value||0;
+    base.setData([
+      {time:d.equity_curve[0].time, value:0},
+      {time:d.equity_curve[d.equity_curve.length-1].time, value:0},
+    ]);
+    area.setData(d.equity_curve);
+    chart.timeScale().fitContent();
+  },50);
+}
+
+load();
+</script>
+</body>
+</html>"""
+
+@app.route("/analysis")
+def analysis_page():
+    return Response(ANALYSIS_HTML, mimetype="text/html")
+
+@app.route("/api/analysis")
+def api_analysis():
+    """
+    从 Alpaca 拉历史成交，配对买卖单，计算盈亏分析
+    """
+    try:
+        days = int(request.args.get("days", 90))
+
+        # 拉 Alpaca 历史成交
+        params = {"limit": 500, "direction": "desc"}
+        if days > 0:
+            from datetime import timedelta
+            since = (now_la() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            params["after"] = since
+
+        r = req.get(
+            f"{ALPACA_TRADE_URL}/v2/account/activities/FILL",
+            headers=alpaca_headers(),
+            params=params,
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return jsonify({"error": f"Alpaca HTTP {r.status_code}: {r.text[:200]}"}), 500
+
+        activities = r.json()
+        if not isinstance(activities, list):
+            return jsonify({"error": "Unexpected response format"}), 500
+
+        # 整理成交记录
+        fills = []
+        for a in activities:
+            sym       = (a.get("symbol") or "").strip().upper()
+            side      = (a.get("side") or "").lower()
+            qty       = safe_float(a.get("qty", 0))
+            price     = safe_float(a.get("price", 0))
+            filled_at = a.get("transaction_time") or a.get("date") or ""
+            if not sym or not side or qty <= 0 or price <= 0:
+                continue
+            fills.append({
+                "symbol":    sym,
+                "side":      side,
+                "qty":       qty,
+                "fill_price": price,
+                "filled_at": filled_at,
+                "pnl":       None,
+                "pnl_pct":   None,
+                "hold_days": None,
+            })
+
+        # 按股票配对买卖（FIFO）
+        buy_queues = {}  # symbol -> [(price, qty, filled_at)]
+        paired_trades = []
+
+        # 先按时间正序处理
+        fills_asc = sorted(fills, key=lambda x: x["filled_at"])
+        fills_desc = sorted(fills, key=lambda x: x["filled_at"], reverse=True)
+
+        for f in fills_asc:
+            sym   = f["symbol"]
+            side  = f["side"]
+            qty   = f["qty"]
+            price = f["fill_price"]
+            fat   = f["filled_at"]
+
+            if side == "buy":
+                buy_queues.setdefault(sym, []).append({
+                    "price": price, "qty": qty, "at": fat
+                })
+            elif side == "sell":
+                queue = buy_queues.get(sym, [])
+                remaining = qty
+                total_cost = 0
+                total_qty  = 0
+                buy_at     = fat
+
+                while remaining > 0 and queue:
+                    b = queue[0]
+                    use = min(b["qty"], remaining)
+                    total_cost += use * b["price"]
+                    total_qty  += use
+                    buy_at      = b["at"]
+                    b["qty"]   -= use
+                    remaining  -= use
+                    if b["qty"] <= 0:
+                        queue.pop(0)
+
+                if total_qty > 0:
+                    avg_cost = total_cost / total_qty
+                    pnl      = (price - avg_cost) * total_qty
+                    pnl_pct  = (price - avg_cost) / avg_cost * 100
+                    # 持仓天数
+                    try:
+                        buy_dt  = datetime.fromisoformat(buy_at.replace("Z",""))
+                        sell_dt = datetime.fromisoformat(fat.replace("Z",""))
+                        hold_days = (sell_dt - buy_dt).days
+                    except Exception:
+                        hold_days = None
+
+                    # 更新 fills 里对应 sell 的盈亏
+                    for fl in fills_desc:
+                        if fl["symbol"]==sym and fl["side"]=="sell" and fl["filled_at"]==fat and fl["pnl"] is None:
+                            fl["pnl"]       = round(pnl, 2)
+                            fl["pnl_pct"]   = round(pnl_pct, 2)
+                            fl["hold_days"] = hold_days
+                            break
+
+        # 统计
+        sell_fills = [f for f in fills if f["side"]=="sell" and f["pnl"] is not None]
+        win_fills  = [f for f in sell_fills if f["pnl"] > 0]
+        loss_fills = [f for f in sell_fills if f["pnl"] <= 0]
+
+        total_pnl  = sum(f["pnl"] for f in sell_fills)
+        win_count  = len(win_fills)
+        loss_count = len(loss_fills)
+        win_rate   = round(win_count / len(sell_fills) * 100, 1) if sell_fills else 0
+        avg_win    = sum(f["pnl"] for f in win_fills) / win_count if win_count else 0
+        avg_loss   = sum(f["pnl"] for f in loss_fills) / loss_count if loss_count else 0
+        avg_win_pct  = sum(f["pnl_pct"] for f in win_fills) / win_count if win_count else 0
+        avg_loss_pct = sum(f["pnl_pct"] for f in loss_fills) / loss_count if loss_count else 0
+        profit_factor = round(abs(avg_win / avg_loss), 2) if avg_loss != 0 else 0
+        max_win_f  = max(sell_fills, key=lambda x: x["pnl"]) if sell_fills else None
+        max_loss_f = min(sell_fills, key=lambda x: x["pnl"]) if sell_fills else None
+
+        # 估算总收益率（用总盈亏 / 初始资金近似）
+        acct = get_alpaca_account()
+        portfolio_val = acct.get("portfolio_value", 1) or 1
+        total_pnl_pct = round(total_pnl / portfolio_val * 100, 2)
+
+        # 按股票统计
+        sym_data = {}
+        for f in sell_fills:
+            sym = f["symbol"]
+            if sym not in sym_data:
+                sym_data[sym] = {"symbol": sym, "count": 0, "pnl": 0,
+                                 "wins": 0, "hold_days_list": []}
+            sym_data[sym]["count"] += 1
+            sym_data[sym]["pnl"]   += f["pnl"]
+            if f["pnl"] > 0:
+                sym_data[sym]["wins"] += 1
+            if f["hold_days"] is not None:
+                sym_data[sym]["hold_days_list"].append(f["hold_days"])
+
+        by_symbol = []
+        for sym, sd in sym_data.items():
+            avg_hold = round(sum(sd["hold_days_list"]) / len(sd["hold_days_list"]), 1) \
+                       if sd["hold_days_list"] else 0
+            by_symbol.append({
+                "symbol":        sym,
+                "count":         sd["count"],
+                "pnl":           round(sd["pnl"], 2),
+                "win_rate":      round(sd["wins"] / sd["count"] * 100, 1),
+                "avg_hold_days": avg_hold,
+            })
+        by_symbol.sort(key=lambda x: x["pnl"], reverse=True)
+
+        top_winners = sorted(by_symbol, key=lambda x: x["pnl"], reverse=True)[:5]
+        top_losers  = sorted(by_symbol, key=lambda x: x["pnl"])[:5]
+
+        # 收益曲线（按时间累计盈亏）
+        equity_curve = []
+        cumulative = 0
+        for f in sorted(sell_fills, key=lambda x: x["filled_at"]):
+            cumulative += f["pnl"]
+            date_str = f["filled_at"][:10]
+            if equity_curve and equity_curve[-1]["time"] == date_str:
+                equity_curve[-1]["value"] = round(cumulative, 2)
+            else:
+                equity_curve.append({"time": date_str, "value": round(cumulative, 2)})
+
+        return jsonify({
+            "stats": {
+                "total_pnl":     round(total_pnl, 2),
+                "total_pnl_pct": total_pnl_pct,
+                "win_rate":      win_rate,
+                "win_count":     win_count,
+                "loss_count":    loss_count,
+                "avg_win":       round(avg_win, 2),
+                "avg_loss":      round(avg_loss, 2),
+                "avg_win_pct":   round(avg_win_pct, 2),
+                "avg_loss_pct":  round(avg_loss_pct, 2),
+                "profit_factor": profit_factor,
+                "total_trades":  len(sell_fills),
+                "max_win":       round(max_win_f["pnl"], 2) if max_win_f else 0,
+                "max_win_sym":   max_win_f["symbol"] if max_win_f else "—",
+                "max_loss":      round(max_loss_f["pnl"], 2) if max_loss_f else 0,
+                "max_loss_sym":  max_loss_f["symbol"] if max_loss_f else "—",
+            },
+            "by_symbol":    by_symbol,
+            "top_winners":  top_winners,
+            "top_losers":   top_losers,
+            "equity_curve": equity_curve,
+            "trades":       sorted(fills, key=lambda x: x["filled_at"], reverse=True),
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
