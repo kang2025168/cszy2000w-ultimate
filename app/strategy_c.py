@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 app/strategy_c.py
-策略C候选筛选：从 stock_operations 所有 B 类股票中，筛选放量突破/加速上涨走势
+策略C候选筛选：
+从 stock_operations 所有 B 类股票中，筛选最近 N 个交易日内曾经出现
+放量突破 / 加速上涨 / 接近新高 的股票。
 
 只筛选，不买入，不写库。
 """
@@ -30,17 +32,24 @@ DB = dict(
 
 
 # =========================
-# 策略C筛选参数
+# 策略C参数
 # =========================
-LOOKBACK_DAYS = int(os.getenv("C_LOOKBACK_DAYS", "80"))
+LOOKBACK_DAYS = int(os.getenv("C_LOOKBACK_DAYS", "120"))
+
+# 最近几个交易日内曾经符合
+SCAN_RECENT_DAYS = int(os.getenv("C_SCAN_RECENT_DAYS", "5"))
 
 MIN_PRICE = float(os.getenv("C_MIN_PRICE", "3"))
 MAX_PRICE = float(os.getenv("C_MAX_PRICE", "300"))
 
-MIN_RET5 = float(os.getenv("C_MIN_RET5", "0.15"))          # 最近5日涨幅 > 15%
-MIN_RET10 = float(os.getenv("C_MIN_RET10", "0.20"))        # 最近10日涨幅 > 20%
-MIN_VOL_RATIO = float(os.getenv("C_MIN_VOL_RATIO", "2.0")) # 最新成交量 > 20日均量 x2
-MAX_DIST_HIGH20 = float(os.getenv("C_MAX_DIST_HIGH20", "0.05"))  # 距离20日新高不超过5%
+MIN_RET3 = float(os.getenv("C_MIN_RET3", "0.08"))
+MIN_RET5 = float(os.getenv("C_MIN_RET5", "0.12"))
+MIN_RET10 = float(os.getenv("C_MIN_RET10", "0.18"))
+
+MIN_VOL_RATIO = float(os.getenv("C_MIN_VOL_RATIO", "1.5"))
+
+MAX_DIST_HIGH20 = float(os.getenv("C_MAX_DIST_HIGH20", "0.08"))
+MAX_DIST_HIGH60 = float(os.getenv("C_MAX_DIST_HIGH60", "0.12"))
 
 TOP_N = int(os.getenv("C_TOP_N", "50"))
 
@@ -70,7 +79,49 @@ def load_b_symbols(conn):
     """
     with conn.cursor() as cur:
         cur.execute(sql)
-        return cur.fetchall() or []
+        rows = cur.fetchall() or []
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    df["stock_code"] = df["stock_code"].astype(str).str.upper().str.strip()
+    df = df[df["stock_code"] != ""].copy()
+    return df
+
+
+def debug_price_table(conn, symbols):
+    print(f"[C] 使用价格表: {PRICES_TABLE}")
+
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) AS n FROM `{PRICES_TABLE}`;")
+        total = cur.fetchone() or {}
+        print(f"[C] 价格表总行数: {int(total.get('n') or 0)}")
+
+    if not symbols:
+        return
+
+    sample = symbols[:10]
+    placeholders = ",".join(["%s"] * len(sample))
+
+    sql = f"""
+    SELECT symbol, COUNT(*) AS n, MAX(`date`) AS max_date
+    FROM `{PRICES_TABLE}`
+    WHERE UPPER(TRIM(symbol)) IN ({placeholders})
+    GROUP BY symbol
+    ORDER BY n DESC
+    LIMIT 20;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, sample)
+        rows = cur.fetchall() or []
+
+    print(f"[C] 抽样检查前10个B股票是否有价格数据: {sample}")
+    if rows:
+        for r in rows:
+            print(f"[C] price_match {r.get('symbol')} rows={r.get('n')} max_date={r.get('max_date')}")
+    else:
+        print("[C] 抽样没有匹配到价格数据，可能 stock_operations.stock_code 和 stock_prices_pool.symbol 不一致")
 
 
 def load_price_data(conn, symbols):
@@ -79,31 +130,34 @@ def load_price_data(conn, symbols):
 
     placeholders = ",".join(["%s"] * len(symbols))
 
-    # 注意：这里不要写 `date` <> ''，MySQL 严格模式会报 Incorrect DATE value
     sql = f"""
     SELECT
-        symbol,
-        `date`,
+        UPPER(TRIM(symbol)) AS symbol,
+        CAST(`date` AS CHAR) AS date_str,
         open,
         high,
         low,
         close,
         volume
     FROM `{PRICES_TABLE}`
-    WHERE symbol IN ({placeholders})
+    WHERE UPPER(TRIM(symbol)) IN ({placeholders})
       AND `date` IS NOT NULL
+      AND CAST(`date` AS CHAR) <> ''
+      AND CAST(`date` AS CHAR) <> 'date'
     ORDER BY symbol, `date`;
     """
 
-    df = pd.read_sql(sql, conn, params=list(symbols))
+    with conn.cursor() as cur:
+        cur.execute(sql, list(symbols))
+        rows = cur.fetchall() or []
+
+    df = pd.DataFrame(rows)
 
     if df.empty:
         return df
 
     df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
-
-    # Python 里清洗日期，坏数据直接变 NaT
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["date"] = pd.to_datetime(df["date_str"], errors="coerce")
 
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -119,160 +173,190 @@ def load_price_data(conn, symbols):
     df = df[df["date"] >= start_day].copy()
     df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
 
+    print(f"[C] 价格数据范围: {df['date'].min().date()} ~ {df['date'].max().date()} rows={len(df)}")
     return df
 
 
-def calc_one_symbol(symbol, g):
-    g = g.sort_values("date").copy()
-
-    if len(g) < 30:
+def calc_features_for_one_day(symbol, g, idx):
+    if idx < 30:
         return None
 
-    g["ma3"] = g["close"].rolling(3).mean()
-    g["ma5"] = g["close"].rolling(5).mean()
-    g["ma10"] = g["close"].rolling(10).mean()
-    g["ma20"] = g["close"].rolling(20).mean()
-    g["ma60"] = g["close"].rolling(60).mean()
-    g["vol20"] = g["volume"].rolling(20).mean()
-    g["high20"] = g["high"].rolling(20).max()
-    g["high60"] = g["high"].rolling(60).max()
+    sub = g.iloc[: idx + 1].copy()
 
-    last = g.iloc[-1]
-    prev1 = g.iloc[-2]
-    prev5 = g.iloc[-6] if len(g) >= 6 else None
-    prev10 = g.iloc[-11] if len(g) >= 11 else None
-    prev20 = g.iloc[-21] if len(g) >= 21 else None
+    last = sub.iloc[-1]
+    prev1 = sub.iloc[-2]
+    prev3 = sub.iloc[-4] if len(sub) >= 4 else None
+    prev5 = sub.iloc[-6] if len(sub) >= 6 else None
+    prev10 = sub.iloc[-11] if len(sub) >= 11 else None
+    prev20 = sub.iloc[-21] if len(sub) >= 21 else None
 
     close = float(last["close"])
+    high = float(last["high"])
+    low = float(last["low"])
     volume = float(last["volume"])
-    ma3 = float(last["ma3"]) if pd.notna(last["ma3"]) else 0
-    ma5 = float(last["ma5"]) if pd.notna(last["ma5"]) else 0
-    ma10 = float(last["ma10"]) if pd.notna(last["ma10"]) else 0
-    ma20 = float(last["ma20"]) if pd.notna(last["ma20"]) else 0
-    ma60 = float(last["ma60"]) if pd.notna(last["ma60"]) else 0
-    vol20 = float(last["vol20"]) if pd.notna(last["vol20"]) else 0
-    high20 = float(last["high20"]) if pd.notna(last["high20"]) else 0
-    high60 = float(last["high60"]) if pd.notna(last["high60"]) else 0
 
-    if close <= 0 or vol20 <= 0 or ma5 <= 0 or ma10 <= 0 or ma20 <= 0 or high20 <= 0:
+    ma3 = float(sub["close"].tail(3).mean())
+    ma5 = float(sub["close"].tail(5).mean())
+    ma10 = float(sub["close"].tail(10).mean())
+    ma20 = float(sub["close"].tail(20).mean())
+    ma60 = float(sub["close"].tail(60).mean()) if len(sub) >= 60 else 0
+
+    vol5 = float(sub["volume"].tail(5).mean())
+    vol20 = float(sub["volume"].tail(20).mean())
+
+    high20 = float(sub["high"].tail(20).max())
+    high60 = float(sub["high"].tail(60).max()) if len(sub) >= 60 else high20
+
+    if close <= 0 or ma5 <= 0 or ma10 <= 0 or ma20 <= 0 or vol20 <= 0 or high20 <= 0:
         return None
 
     ret1 = close / float(prev1["close"]) - 1 if float(prev1["close"]) > 0 else 0
+    ret3 = close / float(prev3["close"]) - 1 if prev3 is not None and float(prev3["close"]) > 0 else 0
     ret5 = close / float(prev5["close"]) - 1 if prev5 is not None and float(prev5["close"]) > 0 else 0
     ret10 = close / float(prev10["close"]) - 1 if prev10 is not None and float(prev10["close"]) > 0 else 0
     ret20 = close / float(prev20["close"]) - 1 if prev20 is not None and float(prev20["close"]) > 0 else 0
 
     vol_ratio = volume / vol20 if vol20 > 0 else 0
+    vol5_ratio = vol5 / vol20 if vol20 > 0 else 0
+
     dist_high20 = close / high20 - 1 if high20 > 0 else 0
     dist_high60 = close / high60 - 1 if high60 > 0 else 0
 
-    # 最近3天收盘是否抬高
-    closes_tail = list(g["close"].tail(3))
-    close_up_3 = len(closes_tail) == 3 and closes_tail[2] > closes_tail[1] > closes_tail[0]
+    closes3 = list(sub["close"].tail(3))
+    close_up_3 = len(closes3) == 3 and closes3[2] > closes3[1] > closes3[0]
 
-    # 均线多头排列
     ma_bull = ma5 > ma10 > ma20
-
-    # 突破状态
     above_ma20 = close > ma20
     near_high20 = dist_high20 >= -MAX_DIST_HIGH20
-    near_high60 = dist_high60 >= -0.08 if high60 > 0 else False
+    near_high60 = dist_high60 >= -MAX_DIST_HIGH60
 
-    # 加速状态
-    strong_ret5 = ret5 >= MIN_RET5
-    strong_ret10 = ret10 >= MIN_RET10
-    volume_breakout = vol_ratio >= MIN_VOL_RATIO
+    # 起飞形态1：短期强加速
+    strong_fast = (
+        ret3 >= MIN_RET3
+        and ret5 >= MIN_RET5
+        and vol_ratio >= MIN_VOL_RATIO
+        and near_high20
+        and above_ma20
+    )
 
-    # 评分：方便排序
+    # 起飞形态2：10日趋势很强
+    strong_trend = (
+        ret10 >= MIN_RET10
+        and vol5_ratio >= 1.2
+        and near_high20
+        and ma_bull
+        and above_ma20
+    )
+
+    # 起飞形态3：突破新高附近，成交量明显放大
+    breakout = (
+        near_high20
+        and near_high60
+        and vol_ratio >= MIN_VOL_RATIO
+        and ret5 >= 0.08
+        and close > ma5 > ma10
+    )
+
+    passed = strong_fast or strong_trend or breakout
+
+    if not passed:
+        return None
+
     score = 0
-    score += min(ret5 * 100, 30) * 2
-    score += min(ret10 * 100, 50) * 1.2
-    score += min(vol_ratio, 5) * 10
+    score += min(ret3 * 100, 25) * 2.0
+    score += min(ret5 * 100, 35) * 2.0
+    score += min(ret10 * 100, 60) * 1.2
+    score += min(vol_ratio, 6) * 10
+    score += min(vol5_ratio, 4) * 8
     score += 15 if ma_bull else 0
     score += 10 if close_up_3 else 0
     score += 10 if near_high20 else 0
     score += 8 if near_high60 else 0
-    score += 5 if close > ma3 > ma5 else 0
+    score += 8 if close > ma3 > ma5 else 0
 
-    passed = (
-        close >= MIN_PRICE
-        and close <= MAX_PRICE
-        and above_ma20
-        and ma_bull
-        and strong_ret5
-        and volume_breakout
-        and near_high20
-    )
-
-    # 稍微宽松一点：10日强趋势 + 接近新高 + 均线多头，也放进观察
-    watch_passed = (
-        close >= MIN_PRICE
-        and close <= MAX_PRICE
-        and above_ma20
-        and ma_bull
-        and strong_ret10
-        and vol_ratio >= 1.5
-        and near_high20
-    )
-
-    if not passed and not watch_passed:
-        return None
+    passed_type = "C_STRONG"
+    if breakout and not strong_fast:
+        passed_type = "C_BREAK"
+    elif strong_trend and not strong_fast:
+        passed_type = "C_TREND"
 
     return {
         "symbol": symbol,
-        "date": last["date"].strftime("%Y-%m-%d"),
+        "signal_date": last["date"].strftime("%Y-%m-%d"),
         "close": close,
+        "high": high,
+        "low": low,
         "volume": int(volume),
         "ret1_pct": ret1 * 100,
+        "ret3_pct": ret3 * 100,
         "ret5_pct": ret5 * 100,
         "ret10_pct": ret10 * 100,
         "ret20_pct": ret20 * 100,
+        "ma3": ma3,
         "ma5": ma5,
         "ma10": ma10,
         "ma20": ma20,
         "ma60": ma60,
         "vol20": vol20,
         "vol_ratio": vol_ratio,
+        "vol5_ratio": vol5_ratio,
         "high20": high20,
-        "dist_high20_pct": dist_high20 * 100,
         "high60": high60,
+        "dist_high20_pct": dist_high20 * 100,
         "dist_high60_pct": dist_high60 * 100,
         "ma_bull": int(ma_bull),
         "close_up_3": int(close_up_3),
-        "passed_type": "C_STRONG" if passed else "C_WATCH",
+        "strong_fast": int(strong_fast),
+        "strong_trend": int(strong_trend),
+        "breakout": int(breakout),
+        "passed_type": passed_type,
         "score": score,
     }
 
 
 def scan_candidates(conn):
-    rows = load_b_symbols(conn)
-    if not rows:
+    ops_df = load_b_symbols(conn)
+
+    if ops_df.empty:
         print("[C] no B symbols found in stock_operations")
         return pd.DataFrame()
 
-    ops_df = pd.DataFrame(rows)
-    ops_df["stock_code"] = ops_df["stock_code"].astype(str).str.upper().str.strip()
     symbols = sorted(ops_df["stock_code"].dropna().unique().tolist())
-
     print(f"[C] B股票池数量: {len(symbols)}")
+
+    debug_price_table(conn, symbols)
 
     price_df = load_price_data(conn, symbols)
     if price_df.empty:
         print("[C] no price data found")
         return pd.DataFrame()
 
-    result = []
-    for symbol, g in price_df.groupby("symbol"):
-        item = calc_one_symbol(symbol, g)
-        if item:
-            result.append(item)
+    all_hits = []
 
-    if not result:
+    for symbol, g in price_df.groupby("symbol"):
+        g = g.sort_values("date").reset_index(drop=True)
+
+        # 最近 N 个交易日里，只要某一天符合就选出来
+        start_idx = max(30, len(g) - SCAN_RECENT_DAYS)
+
+        for idx in range(start_idx, len(g)):
+            item = calc_features_for_one_day(symbol, g, idx)
+            if item:
+                all_hits.append(item)
+
+    if not all_hits:
         return pd.DataFrame()
 
-    out = pd.DataFrame(result)
+    hits = pd.DataFrame(all_hits)
 
-    out = out.merge(
+    # 同一股票最近5天可能多次命中，只保留 score 最高的一天
+    hits = hits.sort_values(
+        by=["symbol", "score", "signal_date"],
+        ascending=[True, False, False],
+    )
+    hits = hits.drop_duplicates(subset=["symbol"], keep="first")
+
+    out = hits.merge(
         ops_df,
         left_on="symbol",
         right_on="stock_code",
@@ -280,33 +364,35 @@ def scan_candidates(conn):
     )
 
     out = out.sort_values(
-        by=["passed_type", "score", "ret5_pct", "vol_ratio"],
-        ascending=[True, False, False, False],
-    )
+        by=["score", "ret5_pct", "ret10_pct", "vol_ratio"],
+        ascending=[False, False, False, False],
+    ).reset_index(drop=True)
 
     return out
 
 
 def print_result(df):
     if df.empty:
-        print("\n[C] 没有筛选出符合走势的股票")
+        print("\n[C] 最近几天没有筛选出符合走势的股票")
         return
 
-    print("\n" + "=" * 120)
-    print("策略C候选：从所有 B 类股票中筛选放量突破/加速上涨")
-    print("=" * 120)
+    print("\n" + "=" * 140)
+    print(f"策略C候选：最近 {SCAN_RECENT_DAYS} 个交易日内，从所有 B 类股票中筛选起飞走势")
+    print("=" * 140)
 
     show_cols = [
         "symbol",
         "passed_type",
         "score",
-        "date",
+        "signal_date",
         "close",
         "ret1_pct",
+        "ret3_pct",
         "ret5_pct",
         "ret10_pct",
         "ret20_pct",
         "vol_ratio",
+        "vol5_ratio",
         "dist_high20_pct",
         "dist_high60_pct",
         "ma5",
@@ -322,10 +408,12 @@ def print_result(df):
         "score",
         "close",
         "ret1_pct",
+        "ret3_pct",
         "ret5_pct",
         "ret10_pct",
         "ret20_pct",
         "vol_ratio",
+        "vol5_ratio",
         "dist_high20_pct",
         "dist_high60_pct",
         "ma5",
@@ -337,15 +425,18 @@ def print_result(df):
 
     print(df2[show_cols].head(TOP_N).to_string(index=False))
 
-    print("\n" + "=" * 120)
+    print("\n" + "=" * 140)
     print("简版名单")
-    print("=" * 120)
+    print("=" * 140)
+
     for _, r in df2.head(TOP_N).iterrows():
         print(
             f"{r['symbol']:6s} "
             f"{r['passed_type']:9s} "
+            f"date={r['signal_date']} "
             f"score={float(r['score']):6.2f} "
             f"close={float(r['close']):8.2f} "
+            f"ret3={float(r['ret3_pct']):7.2f}% "
             f"ret5={float(r['ret5_pct']):7.2f}% "
             f"ret10={float(r['ret10_pct']):7.2f}% "
             f"volx={float(r['vol_ratio']):5.2f} "
@@ -358,6 +449,12 @@ def print_result(df):
 def main():
     conn = None
     try:
+        print("=" * 100)
+        print("[C] strategy_c scan start")
+        print(f"[C] DB_HOST={DB['host']} DB_NAME={DB['database']} OPS_TABLE={OPS_TABLE} PRICES_TABLE={PRICES_TABLE}")
+        print(f"[C] LOOKBACK_DAYS={LOOKBACK_DAYS} SCAN_RECENT_DAYS={SCAN_RECENT_DAYS}")
+        print("=" * 100)
+
         conn = connect()
         df = scan_candidates(conn)
         print_result(df)
