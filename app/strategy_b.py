@@ -370,15 +370,121 @@ def _submit_limit_buy_qty(trading_client, code: str, qty: int, limit_price: floa
     from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
+    # 盘内用 IOC（吃不到立刻撤），盘前盘后只能用 DAY
+    tif = TimeInForce.DAY if B_ALLOW_EXTENDED else TimeInForce.IOC
+
     req = LimitOrderRequest(
         symbol=code,
         qty=int(qty),
         side=OrderSide.BUY,
         limit_price=round(float(limit_price), 2),
-        time_in_force=TimeInForce.DAY,
+        time_in_force=tif,
         extended_hours=bool(B_ALLOW_EXTENDED),
     )
     return trading_client.submit_order(order_data=req)
+
+def _cancel_open_buy_orders(tc, code: str) -> int:
+    """提交新买单前，取消该 symbol 下所有 open 的 buy 单。返回取消数量。"""
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus, OrderSide
+
+        open_orders = tc.get_orders(filter=GetOrdersRequest(
+            status=QueryOrderStatus.OPEN,
+            symbols=[code],
+            side=OrderSide.BUY,
+        )) or []
+
+        n = 0
+        for o in open_orders:
+            try:
+                tc.cancel_order_by_id(str(o.id))
+                n += 1
+                print(f"[B BUY] {code} canceled orphan buy {o.id}", flush=True)
+            except Exception as e:
+                print(f"[B BUY] {code} cancel orphan {o.id} failed: {e}", flush=True)
+        if n > 0:
+            # 给 Alpaca 一点时间消化 cancel
+            import time
+            time.sleep(0.4)
+        return n
+    except Exception as e:
+        print(f"[B BUY] {code} list orphan buys failed: {e}", flush=True)
+        return 0
+
+
+def _reconcile_fill(tc, code: str, order_id: str, wait_sec: float = 4.0):
+    """
+    确认订单成交结果。返回 (filled_qty, filled_avg_price)。
+
+    优先级：Alpaca 真实持仓 > 订单 filled_qty/filled_avg_price。
+    一旦订单进入终态（filled/canceled/expired/rejected）立即返回，不死等。
+    """
+    import time
+
+    deadline = time.time() + max(float(wait_sec), 0.5)
+    poll = 0.4
+
+    last_filled_qty = 0
+    last_filled_avg = 0.0
+
+    while time.time() < deadline:
+        # 优先看真实持仓（最准）
+        try:
+            pos = tc.get_open_position(code)
+            qty = int(float(getattr(pos, "qty", 0) or 0))
+            avg = float(getattr(pos, "avg_entry_price", 0) or 0)
+            if qty > 0 and avg > 0:
+                return qty, avg
+        except Exception:
+            pass  # position does not exist 是常态,不打印
+
+        # 再看订单状态;终态则立刻返回
+        try:
+            o = tc.get_order_by_id(str(order_id))
+            status = str(getattr(o, "status", "") or "").lower()
+            filled_qty = int(float(getattr(o, "filled_qty", 0) or 0))
+            filled_avg = float(getattr(o, "filled_avg_price", 0) or 0)
+
+            if filled_qty > 0 and filled_avg > 0:
+                last_filled_qty = filled_qty
+                last_filled_avg = filled_avg
+
+            if status in ("filled", "canceled", "cancelled", "expired", "rejected"):
+                return last_filled_qty, last_filled_avg
+        except Exception:
+            pass
+
+        time.sleep(poll)
+
+    # 超时:再尝试拿一次最新订单数据
+    try:
+        o = tc.get_order_by_id(str(order_id))
+        return (
+            int(float(getattr(o, "filled_qty", 0) or 0)),
+            float(getattr(o, "filled_avg_price", 0) or 0),
+        )
+    except Exception:
+        return last_filled_qty, last_filled_avg
+
+
+def _write_buy_cooldown(conn, code: str, order_id, reason: str):
+    """买单未成交，只写 cooldown，不写 is_bought。"""
+    from datetime import datetime
+    try:
+        _update_ops_fields(
+            conn,
+            code,
+            last_order_side="buy",
+            last_order_intent=_intent_short(f"B:BUY_{reason}"),
+            last_order_id=str(order_id or ""),
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    except Exception as e:
+        print(f"[B BUY] {code} write cooldown failed: {e}", flush=True)
+
+
+
 
 
 def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
@@ -388,6 +494,9 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
 
     tc = _get_trading_client()
 
+    # ============================================================
+    # 1) 真实持仓校验
+    # ============================================================
     real_qty = _get_real_position_qty(tc, code)
     if real_qty is None:
         print(f"[B SELL] {code} skip: failed to query Alpaca real position, reason={reason}", flush=True)
@@ -395,20 +504,12 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
 
     if real_qty == 0:
         print(f"[B SELL] {code} skip: no real Alpaca position, db_qty={qty}, reason={reason}", flush=True)
-
         _update_ops_fields(
-            conn,
-            code,
-            qty=0,
-            is_bought=0,
-            can_sell=0,
-            can_buy=0,
-            stop_loss_price=None,
-            take_profit_price=None,
-            b_stage=0,
-            base_qty=0,
-            b_stop_pending_since=None,
-            b_stop_pending_sl=None,
+            conn, code,
+            qty=0, is_bought=0, can_sell=0, can_buy=0,
+            stop_loss_price=None, take_profit_price=None,
+            b_stage=0, base_qty=0,
+            b_stop_pending_since=None, b_stop_pending_sl=None,
             last_order_side="sell",
             last_order_intent=_intent_short(f"B:SELL_SKIP no_real_pos {reason}"),
             last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -420,16 +521,72 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
         qty = real_qty
 
     row = _load_one_b_row(conn, code) or {}
-
     old_sl = row.get("stop_loss_price")
     old_tp = row.get("take_profit_price")
     old_b_stage = int(row.get("b_stage") or 0)
     old_base_qty = int(row.get("base_qty") or 0)
 
+    # ============================================================
+    # 2) 提交市价卖单
+    # ============================================================
     order = _submit_market_qty(tc, code, qty, side="sell")
     order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
+    order_status = str(getattr(order, "status", "") or "")
+    print(
+        f"[B SELL] {code} order submitted: id={order_id} status={order_status} req_qty={qty}",
+        flush=True,
+    )
 
-    remaining_qty = max(real_qty - qty, 0)
+    # ============================================================
+    # 3) 立即拒单 → 不动持仓状态,只写 cooldown
+    # ============================================================
+    if order_status.lower() in ("rejected", "expired"):
+        print(f"[B SELL] {code} immediate {order_status}, no position change", flush=True)
+        _update_ops_fields(
+            conn, code,
+            last_order_side="sell",
+            last_order_intent=_intent_short(f"B:SELL_REJECT {reason} status={order_status}"),
+            last_order_id=str(order_id or ""),
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return False
+
+    # ============================================================
+    # 4) 对账,拿真实卖出 qty
+    # ============================================================
+    sold_qty = _reconcile_sell_fill(tc, code, str(order_id), expected_real_qty=real_qty, wait_sec=4.0)
+
+    if sold_qty <= 0:
+        final_status = ""
+        try:
+            o = tc.get_order_by_id(str(order_id))
+            final_status = str(getattr(o, "status", "") or "")
+        except Exception:
+            pass
+        print(
+            f"[B SELL] {code} no sell fill: order_id={order_id} status={final_status} reason={reason}",
+            flush=True,
+        )
+        _update_ops_fields(
+            conn, code,
+            last_order_side="sell",
+            last_order_intent=_intent_short(f"B:SELL_NO_FILL {reason} status={final_status}"),
+            last_order_id=str(order_id or ""),
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return False
+
+    # 防御:卖出量不可能超过请求量
+    if sold_qty > qty:
+        sold_qty = qty
+
+    if sold_qty < qty:
+        print(f"[B SELL] {code} partial fill: req={qty} sold={sold_qty}", flush=True)
+
+    # ============================================================
+    # 5) 按真实成交量更新 DB
+    # ============================================================
+    remaining_qty = max(real_qty - sold_qty, 0)
     new_is_bought = 1 if remaining_qty > 0 else 0
     new_can_sell = 1 if remaining_qty > 0 else 0
     new_can_buy = 0
@@ -446,7 +603,7 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
         last_order_side='sell',
         last_order_intent=%s,
         last_order_id=%s,
-        last_order_time=NOW(),
+        last_order_time=%s,
         is_bought=%s,
         can_sell=%s,
         can_buy=%s,
@@ -456,14 +613,15 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
         base_qty=%s
     WHERE stock_code=%s AND stock_type='B';
     """
-
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with conn.cursor() as cur:
         cur.execute(
             sql,
             (
                 int(remaining_qty),
-                _intent_short(reason),
+                _intent_short(f"{reason} sold={sold_qty}"),
                 str(order_id or ""),
+                now_str,
                 int(new_is_bought),
                 int(new_can_sell),
                 int(new_can_buy),
@@ -476,34 +634,112 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
         )
 
     print(
-        f"[B SELL] {code} ✅ qty={qty} remain={remaining_qty} "
+        f"[B SELL] {code} ✅ sold={sold_qty} (req={qty}) remain={remaining_qty} "
         f"stage={new_b_stage} base_qty={new_base_qty} reason={reason} order_id={order_id}",
         flush=True,
     )
     return True
 
+
+
+
 def _buy_add_qty(conn, code: str, add_qty: int, reason: str, snap_price: float) -> bool:
+    """
+    加仓。snap_price 现在仅作日志参考,真实成本基从 Alpaca 拿(优先 position avg,
+    回退 order filled_avg_price)。
+    """
     add_qty = int(add_qty or 0)
     if add_qty <= 0:
         return False
 
     tc = _get_trading_client()
+
+    # ============================================================
+    # 1) 提交市价加仓单
+    # ============================================================
     order = _submit_market_qty(tc, code, add_qty, side="buy")
     order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
+    order_status = str(getattr(order, "status", "") or "")
+    print(
+        f"[B ADD] {code} order submitted: id={order_id} status={order_status} req_qty={add_qty}",
+        flush=True,
+    )
 
-    filled_avg = _poll_filled_avg_price(tc, str(order_id or ""))
-    fill_price = float(filled_avg) if filled_avg else float(snap_price)
+    # ============================================================
+    # 2) 立即拒单 → 不改 qty/cost
+    # ============================================================
+    if order_status.lower() in ("rejected", "expired"):
+        print(f"[B ADD] {code} immediate {order_status}, no qty/cost change", flush=True)
+        _update_ops_fields(
+            conn, code,
+            last_order_side="buy",
+            last_order_intent=_intent_short(f"B:ADD_REJECT {reason} status={order_status}"),
+            last_order_id=str(order_id or ""),
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return False
+
+    # ============================================================
+    # 3) 对账拿订单成交量和均价
+    # ============================================================
+    filled_qty, filled_avg = _reconcile_add_fill(tc, str(order_id), wait_sec=4.0)
+
+    if filled_qty <= 0 or filled_avg <= 0:
+        final_status = ""
+        try:
+            o = tc.get_order_by_id(str(order_id))
+            final_status = str(getattr(o, "status", "") or "")
+        except Exception:
+            pass
+        print(
+            f"[B ADD] {code} no fill: order_id={order_id} status={final_status} reason={reason}",
+            flush=True,
+        )
+        _update_ops_fields(
+            conn, code,
+            last_order_side="buy",
+            last_order_intent=_intent_short(f"B:ADD_NO_FILL {reason} status={final_status}"),
+            last_order_id=str(order_id or ""),
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return False
+
+    if filled_qty < add_qty:
+        print(f"[B ADD] {code} partial fill: req={add_qty} filled={filled_qty}", flush=True)
+
+    # ============================================================
+    # 4) 优先用 Alpaca position avg(最准),失败再手动算
+    # ============================================================
+    pos_avg = None
+    pos_total_qty = None
+    try:
+        pos = tc.get_open_position(code)
+        pos_avg = float(getattr(pos, "avg_entry_price", 0) or 0)
+        pos_total_qty = int(float(getattr(pos, "qty", 0) or 0))
+    except Exception:
+        pass
 
     row = _load_one_b_row(conn, code) or {}
     old_qty = int(row.get("qty") or 0)
     old_cost = float(row.get("cost_price") or 0.0)
 
-    new_qty = old_qty + add_qty
-    if old_qty > 0 and old_cost > 0:
-        new_cost = (old_qty * old_cost + add_qty * fill_price) / float(new_qty)
+    if pos_avg and pos_avg > 0 and pos_total_qty and pos_total_qty > 0:
+        # ✅ 优先用 Alpaca 的真实持仓均价
+        new_qty = pos_total_qty
+        new_cost = pos_avg
+        cost_source = "alpaca_pos"
     else:
-        new_cost = fill_price
+        # 回退:用订单 filled_avg + 旧 cost 加权
+        new_qty = old_qty + filled_qty
+        if old_qty > 0 and old_cost > 0:
+            new_cost = (old_qty * old_cost + filled_qty * filled_avg) / float(new_qty)
+        else:
+            new_cost = filled_avg
+        cost_source = "manual_calc"
 
+    # ============================================================
+    # 5) 落库
+    # ============================================================
     sql = f"""
     UPDATE `{OPS_TABLE}`
     SET
@@ -512,26 +748,137 @@ def _buy_add_qty(conn, code: str, add_qty: int, reason: str, snap_price: float) 
         last_order_side='buy',
         last_order_intent=%s,
         last_order_id=%s,
-        last_order_time=NOW(),
+        last_order_time=%s,
         is_bought=1,
         can_sell=1,
         can_buy=0
     WHERE stock_code=%s AND stock_type='B';
     """
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with conn.cursor() as cur:
         cur.execute(
             sql,
             (
                 int(new_qty),
                 round(float(new_cost), 2),
-                _intent_short(reason),
+                _intent_short(f"{reason} filled={filled_qty}@{filled_avg:.2f}"),
                 str(order_id or ""),
+                now_str,
                 code,
             ),
         )
 
-    print(f"[B ADD] {code} ✅ add_qty={add_qty} fill≈{fill_price:.2f} new_qty={new_qty} order_id={order_id}", flush=True)
+    print(
+        f"[B ADD] {code} ✅ filled={filled_qty}@{filled_avg:.2f} "
+        f"total_qty={new_qty} new_cost={new_cost:.2f} ({cost_source}) order_id={order_id}",
+        flush=True,
+    )
     return True
+
+
+
+
+
+
+def _reconcile_sell_fill(tc, code: str, order_id: str, expected_real_qty: int, wait_sec: float = 4.0) -> int:
+    """
+    确认卖单成交结果。返回实际卖出 qty。
+
+    优先级：订单 filled_qty > 真实持仓减少量。
+    一旦订单进入终态立即返回。
+    """
+    import time
+
+    deadline = time.time() + max(float(wait_sec), 0.5)
+    poll = 0.4
+
+    last_filled_qty = 0
+
+    while time.time() < deadline:
+        # ① 直接看订单 filled_qty(最准)
+        try:
+            o = tc.get_order_by_id(str(order_id))
+            status = str(getattr(o, "status", "") or "").lower()
+            filled_qty = int(float(getattr(o, "filled_qty", 0) or 0))
+
+            if filled_qty > 0:
+                last_filled_qty = filled_qty
+
+            if status in ("filled", "canceled", "cancelled", "expired", "rejected"):
+                return last_filled_qty
+        except Exception:
+            pass
+
+        # ② 兜底:看 position 减少量
+        try:
+            pos = tc.get_open_position(code)
+            cur_qty = int(float(getattr(pos, "qty", 0) or 0))
+            sold = max(expected_real_qty - cur_qty, 0)
+            if sold > last_filled_qty:
+                last_filled_qty = sold
+
+
+        except Exception as e:
+            msg = str(e)
+            if "position does not exist" in msg or "40410000" in msg:
+                return max(last_filled_qty, expected_real_qty)
+            print(f"[B SELL] {code} position check error during reconcile: {e}", flush=True)
+
+        time.sleep(poll)
+
+    # 超时:再尝试拿一次
+    try:
+        o = tc.get_order_by_id(str(order_id))
+        return int(float(getattr(o, "filled_qty", 0) or 0))
+    except Exception:
+        return last_filled_qty
+
+
+def _reconcile_add_fill(tc, order_id: str, wait_sec: float = 4.0):
+    """
+    确认加仓订单成交结果。返回 (filled_qty, filled_avg_price)。
+
+    专用于加仓：只看订单的 filled_qty / filled_avg_price，不看 position
+    （因为 position 的 avg 是合并后的均价，不是本次加仓的成交价）。
+    """
+    import time
+
+    deadline = time.time() + max(float(wait_sec), 0.5)
+    poll = 0.4
+
+    last_filled_qty = 0
+    last_filled_avg = 0.0
+
+    while time.time() < deadline:
+        try:
+            o = tc.get_order_by_id(str(order_id))
+            status = str(getattr(o, "status", "") or "").lower()
+            filled_qty = int(float(getattr(o, "filled_qty", 0) or 0))
+            filled_avg = float(getattr(o, "filled_avg_price", 0) or 0)
+
+            if filled_qty > 0 and filled_avg > 0:
+                last_filled_qty = filled_qty
+                last_filled_avg = filled_avg
+
+            if status in ("filled", "canceled", "cancelled", "expired", "rejected"):
+                return last_filled_qty, last_filled_avg
+        except Exception:
+            pass
+
+        time.sleep(poll)
+
+    # 超时:再尝试拿一次
+    try:
+        o = tc.get_order_by_id(str(order_id))
+        return (
+            int(float(getattr(o, "filled_qty", 0) or 0)),
+            float(getattr(o, "filled_avg_price", 0) or 0),
+        )
+    except Exception:
+        return last_filled_qty, last_filled_avg
+
+
+
 
 
 # =========================
@@ -563,6 +910,7 @@ def strategy_B_buy(code: str) -> bool:
     print(f"[B BUY] {code}", flush=True)
 
     conn = None
+    order_id = None
     try:
         conn = _connect()
         row = _load_one_b_row(conn, code)
@@ -570,6 +918,9 @@ def strategy_B_buy(code: str) -> bool:
             print(f"[B BUY] {code} skip: no B row", flush=True)
             return False
 
+        # ============================================================
+        # 1) 前置检查
+        # ============================================================
         can_buy = int(row.get("can_buy") or 0)
         is_bought = int(row.get("is_bought") or 0)
         trigger = float(row.get("trigger_price") or 0)
@@ -583,19 +934,15 @@ def strategy_B_buy(code: str) -> bool:
         if can_buy != 1:
             print(f"[B BUY] {code} skip: can_buy={can_buy}", flush=True)
             return False
-
         if is_bought == 1:
             print(f"[B BUY] {code} skip: already bought", flush=True)
             return False
-
         if trigger <= 0:
             print(f"[B BUY] {code} skip: invalid trigger={trigger:.2f}", flush=True)
             return False
-
         if entry_close <= 0:
             print(f"[B BUY] {code} skip: invalid entry_close={entry_close:.2f}", flush=True)
             return False
-
         if _is_cooldown(last_order_time, last_order_side):
             print(
                 f"[B BUY] {code} skip: cooldown last_side={last_order_side} last_time={last_order_time}",
@@ -603,14 +950,18 @@ def strategy_B_buy(code: str) -> bool:
             )
             return False
 
+        # ============================================================
+        # 2) 行情 + 信号校验
+        # ============================================================
         snap = get_snapshot_quote_realtime(code)
         price = float(snap.get("last_price") or 0.0)
         bid = float(snap.get("bid") or 0.0)
         ask = float(snap.get("ask") or 0.0)
         feed = snap.get("feed")
 
-        # ✅ 买入涨幅基准：昨日收盘价
-        prev_close = _get_prev_close_from_db(conn, code)
+        prev_close = float(snap.get("prev_close") or 0.0)
+        if prev_close <= 0:
+            prev_close = _get_prev_close_from_db(conn, code)
 
         day_up_pct = (price - prev_close) / prev_close if prev_close > 0 else 0.0
         entry_up_pct = (price - entry_close) / entry_close if entry_close > 0 else 0.0
@@ -629,18 +980,12 @@ def strategy_B_buy(code: str) -> bool:
         if price <= 0:
             print(f"[B BUY] {code} skip: invalid price={price:.2f}", flush=True)
             return False
-
         if prev_close <= 0:
             print(f"[B BUY] {code} skip: invalid prev_close={prev_close:.2f}", flush=True)
             return False
-
         if not (price > trigger):
-            print(
-                f"[B BUY] {code} skip: price={price:.2f} <= trigger={trigger:.2f}",
-                flush=True,
-            )
+            print(f"[B BUY] {code} skip: price={price:.2f} <= trigger={trigger:.2f}", flush=True)
             return False
-
         if not (day_up_pct > B_MIN_UP_PCT):
             print(
                 f"[B BUY] {code} skip: day_up={day_up_pct*100:.2f}% <= min_up={B_MIN_UP_PCT*100:.2f}% "
@@ -648,7 +993,6 @@ def strategy_B_buy(code: str) -> bool:
                 flush=True,
             )
             return False
-
         if day_up_pct >= B_MAX_BUY_UP_PCT:
             print(
                 f"[B BUY] {code} skip: day_up={day_up_pct*100:.2f}% >= max_buy_up={B_MAX_BUY_UP_PCT*100:.2f}% "
@@ -657,26 +1001,37 @@ def strategy_B_buy(code: str) -> bool:
             )
             return False
 
+        # spread 保护
+        if bid > 0 and ask > 0:
+            mid = (bid + ask) / 2.0
+            spread_pct = (ask - bid) / mid if mid > 0 else 0.0
+            if spread_pct > 0.03:
+                print(
+                    f"[B BUY] {code} skip: spread too wide bid={bid:.2f} ask={ask:.2f} "
+                    f"spread={spread_pct*100:.2f}%",
+                    flush=True,
+                )
+                return False
+
+        # ============================================================
+        # 3) 资金 + 计算下单参数
+        # ============================================================
         tc = _get_trading_client()
         buying_power = _get_buying_power(tc)
 
-        if buying_power < float(B_TARGET_NOTIONAL_USD):
+        required_bp = max(
+            float(B_MIN_BUYING_POWER),
+            float(B_TARGET_NOTIONAL_USD) / max(float(B_BP_USE_RATIO), 0.01),
+        )
+        if buying_power < required_bp:
             print(
-                f"[B BUY] {code} skip: buying_power={buying_power:.2f} < target_notional={float(B_TARGET_NOTIONAL_USD):.2f}",
-                flush=True,
-            )
-            return False
-
-        if buying_power < float(B_MIN_BUYING_POWER):
-            print(
-                f"[B BUY] {code} skip: buying_power={buying_power:.2f} < min_bp={float(B_MIN_BUYING_POWER):.2f}",
+                f"[B BUY] {code} skip: buying_power={buying_power:.2f} < required_bp={required_bp:.2f}",
                 flush=True,
             )
             return False
 
         max_use = float(buying_power) * float(B_BP_USE_RATIO)
         target = min(float(B_TARGET_NOTIONAL_USD), float(B_MAX_NOTIONAL_USD), float(max_use))
-
         if target < float(B_TARGET_NOTIONAL_USD):
             print(
                 f"[B BUY] {code} skip: target={target:.2f} < target_notional={float(B_TARGET_NOTIONAL_USD):.2f}",
@@ -686,46 +1041,90 @@ def strategy_B_buy(code: str) -> bool:
 
         qty = int(math.floor(float(target) / float(price))) if price > 0 else 0
         if qty <= 0:
+            print(f"[B BUY] {code} skip: qty={qty} target={target:.2f} price={price:.2f}", flush=True)
+            return False
+
+        used_notional = float(qty) * float(price)
+
+        # 限价：至少高于 last 0.1%（保证能成交），但不超过 max_buy_price（保证不破上限）
+        if ask > 0:
+            raw_limit = float(ask) * 1.002
+        else:
+            raw_limit = float(price) * 1.003
+        raw_limit = max(raw_limit, float(price) * 1.001)
+        limit_price = min(raw_limit, float(max_buy_price))
+        limit_price = round(float(limit_price), 2)
+
+        if limit_price <= 0:
+            print(f"[B BUY] {code} skip: invalid limit_price={limit_price:.2f}", flush=True)
+            return False
+        if limit_price < price:
             print(
-                f"[B BUY] {code} skip: qty={qty} target={target:.2f} price={price:.2f}",
+                f"[B BUY] {code} skip: limit_price={limit_price:.2f} < last_price={price:.2f}, "
+                f"max_buy_price={max_buy_price:.2f}",
                 flush=True,
             )
             return False
 
-        used_notional = float(qty) * float(price)
+        # ============================================================
+        # 4) 提交订单（先清 orphan）
+        # ============================================================
         intent = (
             f"B:BUY qty={qty} est={used_notional:.2f} "
             f"rt={price:.2f} bid={bid:.2f} ask={ask:.2f} "
-            f"trg={trigger:.2f} day_up={day_up_pct*100:.2f}% "
-            f"entry_up={entry_up_pct*100:.2f}% feed={feed} mode=market"
+            f"limit={limit_price:.2f} trg={trigger:.2f} "
+            f"day_up={day_up_pct*100:.2f}% entry_up={entry_up_pct*100:.2f}% "
+            f"feed={feed} mode={'limit_day_ext' if B_ALLOW_EXTENDED else 'limit_ioc'}"
         )
 
         print(
             f"[B BUY] {code} submit: qty={qty} est={used_notional:.2f} "
-            f"price={price:.2f} day_up={day_up_pct*100:.2f}% "
-            f"entry_up={entry_up_pct*100:.2f}% bp={buying_power:.2f}",
+            f"price={price:.2f} limit={limit_price:.2f} "
+            f"day_up={day_up_pct*100:.2f}% bp={buying_power:.2f}",
             flush=True,
         )
 
-        order = _submit_market_qty(tc, code, qty, side="buy")
+        # 防御：先取消同 symbol 下任何残留的 open 买单
+        _cancel_open_buy_orders(tc, code)
+
+        order = _submit_limit_buy_qty(tc, code, qty, limit_price=limit_price)
         order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
+        order_status = str(getattr(order, "status", "") or "")
+        print(f"[B BUY] {code} order submitted: id={order_id} status={order_status}", flush=True)
 
-        print(f"[B BUY] {code} order submitted: order_id={order_id}", flush=True)
+        # ============================================================
+        # 5) 对账
+        # ============================================================
+        # 立即终态拒单 → 快速失败
+        if order_status.lower() in ("rejected", "expired"):
+            print(f"[B BUY] {code} immediate {order_status}, no wait", flush=True)
+            _write_buy_cooldown(conn, code, order_id, f"REJECT_IMMEDIATE status={order_status}")
+            return False
 
-        pos_cost, pos_qty = _wait_and_get_position_fill(tc, code)
-        filled_avg = _poll_filled_avg_price(tc, str(order_id or ""))
+        # IOC 单瞬时成交;DAY 单等长一点
+        fill_wait_sec = 12.0 if B_ALLOW_EXTENDED else 4.0
+        filled_qty, filled_avg = _reconcile_fill(tc, code, str(order_id), wait_sec=fill_wait_sec)
 
-        if pos_cost is not None and pos_qty is not None and int(pos_qty) > 0:
-            cost_price = float(pos_cost)
-            qty_to_write = int(pos_qty)
-        elif filled_avg is not None:
-            cost_price = float(filled_avg)
-            qty_to_write = int(qty)
-        else:
-            cost_price = float(price)
-            qty_to_write = int(qty)
+        if filled_qty <= 0 or filled_avg <= 0:
+            final_status = ""
+            try:
+                o = tc.get_order_by_id(str(order_id))
+                final_status = str(getattr(o, "status", "") or "")
+            except Exception:
+                pass
+            print(
+                f"[B BUY] {code} no fill: order_id={order_id} status={final_status}",
+                flush=True,
+            )
+            _write_buy_cooldown(conn, code, order_id, f"NO_FILL status={final_status}")
+            return False
 
-        # ✅ 初始止损仍然用 entry_close 做底线
+        cost_price = float(filled_avg)
+        qty_to_write = int(filled_qty)
+
+        # ============================================================
+        # 6) 落库
+        # ============================================================
         init_sl = max(
             float(entry_close) if entry_close > 0 else 0,
             float(cost_price) * 0.97,
@@ -733,6 +1132,7 @@ def strategy_B_buy(code: str) -> bool:
 
         last_stage = 0
         base_qty = int(qty_to_write)
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         sql = f"""
         UPDATE `{OPS_TABLE}`
@@ -752,7 +1152,7 @@ def strategy_B_buy(code: str) -> bool:
             last_order_side='buy',
             last_order_intent=%s,
             last_order_id=%s,
-            last_order_time=NOW(),
+            last_order_time=%s,
             updated_at=CURRENT_TIMESTAMP
         WHERE stock_code=%s AND stock_type='B';
         """
@@ -769,6 +1169,7 @@ def strategy_B_buy(code: str) -> bool:
                     int(last_stage),
                     _intent_short(intent),
                     str(order_id or ""),
+                    now_str,
                     code,
                 ),
             )
@@ -776,7 +1177,8 @@ def strategy_B_buy(code: str) -> bool:
         print(
             f"[B BUY] {code} ✅ bought order_id={order_id} qty={qty_to_write} "
             f"base_qty={base_qty} cost≈{cost_price:.2f} sl={init_sl:.2f} "
-            f"prev_close={prev_close:.2f} entry_close={entry_close:.2f} day_up={day_up_pct*100:.2f}%",
+            f"prev_close={prev_close:.2f} entry_close={entry_close:.2f} "
+            f"day_up={day_up_pct*100:.2f}% limit={limit_price:.2f}",
             flush=True,
         )
         return True
@@ -786,13 +1188,7 @@ def strategy_B_buy(code: str) -> bool:
         traceback.print_exc()
         try:
             if conn:
-                _update_ops_fields(
-                    conn,
-                    code,
-                    last_order_side="buy",
-                    last_order_intent=_intent_short(f"B:BUY_ERR {code} {str(e)[:80]}"),
-                    last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                )
+                _write_buy_cooldown(conn, code, order_id, f"ERR {str(e)[:60]}")
         except Exception:
             pass
         return False
@@ -802,8 +1198,7 @@ def strategy_B_buy(code: str) -> bool:
             if conn:
                 conn.close()
         except Exception:
-            pass
-# =========================
+            pass# =========================
 # SELL
 # =========================
 
@@ -831,14 +1226,11 @@ def strategy_B_sell(code: str) -> bool:
     SAME_DAY_FORCE_SELL_LOSS_PCT = -0.05
     SAME_DAY_FORCE_SELL_WIN_PCT = 0.30
 
-    FLASH_CRASH_PROTECT_START_PCT = 0.08
-    FLASH_CRASH_WAIT_MINUTES = 10
-
     STAGE_RULES = [
-        (1, 0.03, 1.00, 0.50, None),
-        (2, 0.07, 1.03, 0.25, None),
-        (3, 0.12, 1.06, 0.15, None),
-        (4, 0.18, 1.10, None, None),
+        (1, 0.03, 1.01, 0.30, None),
+        (2, 0.07, 1.03, 0.30, None),
+        (3, 0.12, 1.06, 0.20, None),
+        (4, 0.18, 1.10, None, 0.10),
         (5, 0.25, 1.16, None, 0.20),
         (6, 0.35, 1.25, None, 0.20),
         (7, 0.45, 1.33, None, 0.10),
@@ -858,6 +1250,13 @@ def strategy_B_sell(code: str) -> bool:
             return float(v)
         except Exception:
             return default
+
+    def _flash_wait_minutes(up_pct_):
+        if up_pct_ >= 0.30:
+            return 3
+        if up_pct_ >= 0.15:
+            return 2
+        return 0
 
     def _read_stage_from_row(r: dict) -> int:
         if not r:
@@ -916,10 +1315,13 @@ def strategy_B_sell(code: str) -> bool:
     def _is_same_day_buy_lock(row_):
         if not BLOCK_SAME_DAY_SELL_AFTER_BUY:
             return False
+
         last_side = str(row_.get("last_order_side") or "").strip().lower()
         last_time = _parse_dt(row_.get("last_order_time"))
+
         if last_side != "buy" or last_time is None:
             return False
+
         return last_time.date() == datetime.now().date()
 
     def _allow_sell_even_same_day(row_, up_pct_):
@@ -992,6 +1394,19 @@ def strategy_B_sell(code: str) -> bool:
             print(f"[B SELL] {code_} clear pending stop failed: {e}", flush=True)
             return False
 
+    def _find_highest_hit_stage(up_pct_):
+        hit = None
+        for rule in STAGE_RULES:
+            if up_pct_ >= rule[1]:
+                hit = rule
+        return hit
+
+    def _find_rule_by_stage(stage_):
+        for rule in STAGE_RULES:
+            if rule[0] == stage_:
+                return rule
+        return None
+
     conn = None
     traded = False
 
@@ -1032,17 +1447,17 @@ def strategy_B_sell(code: str) -> bool:
 
         price, prev_close, feed = get_snapshot_realtime(code)
         price = _safe_float(price, 0.0)
-        prev_close = _safe_float(prev_close, 0.0)
 
         if price <= 0:
             print(f"[B SELL] {code} invalid realtime price={price}", flush=True)
             return False
 
         up_pct = (price - cost) / cost if cost > 0 else 0.0
+        flash_wait_minutes = _flash_wait_minutes(up_pct)
 
         print(
             f"[B SELL] {code} price={price:.2f} cost={cost:.2f} up_pct={up_pct:.2%} "
-            f"qty={qty} sl={sl:.2f} stage={last_stage} feed={feed}",
+            f"qty={qty} sl={sl:.2f} stage={last_stage} flash_wait={flash_wait_minutes}m feed={feed}",
             flush=True,
         )
 
@@ -1079,17 +1494,18 @@ def strategy_B_sell(code: str) -> bool:
                 )
             else:
                 elapsed_sec = (datetime.now() - pending_since).total_seconds()
-                wait_sec = FLASH_CRASH_WAIT_MINUTES * 60
+                wait_sec = flash_wait_minutes * 60
 
-                if elapsed_sec < wait_sec:
+                if flash_wait_minutes > 0 and elapsed_sec < wait_sec:
                     left_sec = int(wait_sec - elapsed_sec)
                     print(
-                        f"[B SELL] {code} pending stop waiting: price={price:.2f} <= pending_sl={pending_sl:.2f}, left={left_sec}s",
+                        f"[B SELL] {code} pending stop waiting: price={price:.2f} <= pending_sl={pending_sl:.2f}, "
+                        f"left={left_sec}s wait={flash_wait_minutes}m",
                         flush=True,
                     )
                     return False
 
-                reason = f"PENDING_STOP_TIMEOUT price={price:.2f} <= pending_sl={pending_sl:.2f} waited={FLASH_CRASH_WAIT_MINUTES}m"
+                reason = f"PENDING_STOP_TIMEOUT price={price:.2f} <= pending_sl={pending_sl:.2f} waited={flash_wait_minutes}m"
                 print(f"[B SELL] {code} pending stop timeout sell qty={qty} reason={reason}", flush=True)
                 traded = _sell_qty(conn, code, qty, reason) or traded
                 if traded:
@@ -1099,24 +1515,25 @@ def strategy_B_sell(code: str) -> bool:
         if sl > 0 and price <= sl:
             row_now = _latest_row_for_lock(conn, row_now)
 
-            if up_pct >= FLASH_CRASH_PROTECT_START_PCT:
+            if flash_wait_minutes > 0:
                 pending_since2, pending_sl2 = _get_pending_stop_info(row_now)
 
                 if not pending_since2:
                     _set_pending_stop(conn, code, sl)
                     print(
-                        f"[B SELL] {code} start pending stop: price={price:.2f} <= sl={sl:.2f}, up_pct={up_pct:.2%}",
+                        f"[B SELL] {code} start pending stop: price={price:.2f} <= sl={sl:.2f}, "
+                        f"up_pct={up_pct:.2%}, wait={flash_wait_minutes}m",
                         flush=True,
                     )
                     return False
 
                 elapsed_sec = (datetime.now() - pending_since2).total_seconds()
-                wait_sec = FLASH_CRASH_WAIT_MINUTES * 60
+                wait_sec = flash_wait_minutes * 60
 
                 if price > pending_sl2:
                     _clear_pending_stop(conn, code)
                     print(
-                        f"[B SELL] {code} pending recovered in hard stop block: price={price:.2f} > pending_sl={pending_sl2:.2f}",
+                        f"[B SELL] {code} pending recovered: price={price:.2f} > pending_sl={pending_sl2:.2f}",
                         flush=True,
                     )
                     return False
@@ -1129,7 +1546,7 @@ def strategy_B_sell(code: str) -> bool:
                     )
                     return False
 
-                reason = f"PENDING_STOP_TIMEOUT price={price:.2f} <= pending_sl={pending_sl2:.2f} waited={FLASH_CRASH_WAIT_MINUTES}m"
+                reason = f"PENDING_STOP_TIMEOUT price={price:.2f} <= pending_sl={pending_sl2:.2f} waited={flash_wait_minutes}m"
                 print(f"[B SELL] {code} timeout hard stop sell qty={qty} reason={reason}", flush=True)
                 traded = _sell_qty(conn, code, qty, reason) or traded
                 if traded:
@@ -1151,75 +1568,189 @@ def strategy_B_sell(code: str) -> bool:
             if pending_since:
                 _clear_pending_stop(conn, code)
 
-        next_stage = last_stage + 1
-        target_rule = None
+        highest_rule = _find_highest_hit_stage(up_pct)
 
-        for stage, pct, sl_mult, add_ratio, sell_ratio in STAGE_RULES:
-            if stage == next_stage:
-                target_rule = (stage, pct, sl_mult, add_ratio, sell_ratio)
-                break
+        if highest_rule is not None:
+            highest_stage, highest_pct, highest_sl_mult, highest_add_ratio, highest_sell_ratio = highest_rule
 
-        if target_rule is not None:
-            stage, pct, sl_mult, add_ratio, sell_ratio = target_rule
+            if highest_stage > last_stage:
+                next_stage = last_stage + 1
+                next_rule = _find_rule_by_stage(next_stage)
 
-            if up_pct >= pct:
-                print(
-                    f"[B SELL] {code} hit stage={stage} threshold={pct:.2%} up_pct={up_pct:.2%}",
-                    flush=True,
-                )
+                if highest_stage > next_stage:
+                    sl_old = float(sl or 0)
+                    stage_sl = round(float(cost) * float(highest_sl_mult), 2)
+                    dyn_sl = _calc_dynamic_trail_sl(cost, price, sl_old)
+                    sl = max(sl_old, stage_sl, dyn_sl)
 
-                if add_ratio is not None and add_ratio > 0:
-                    raw_add_qty = int(math.floor(qty * float(add_ratio)))
-                    raw_add_qty = max(raw_add_qty, MIN_ADD_QTY)
+                    if highest_sell_ratio is not None and highest_sell_ratio > 0:
+                        row_now = _latest_row_for_lock(conn, row)
 
-                    allow_add_qty = max(0, max_total_qty - qty)
-                    add_qty = min(raw_add_qty, allow_add_qty)
+                        if _allow_sell_even_same_day(row_now, up_pct):
+                            raw_sell_qty = int(math.floor(qty * float(highest_sell_ratio)))
+                            sell_qty = max(raw_sell_qty, 1)
+                            sell_qty = min(sell_qty, qty)
 
-                    # ✅ 新增：加仓前检查账户资金是否足够
-                    if add_qty > 0:
-                        try:
-                            tc_check = _get_trading_client()
-                            buying_power = _get_buying_power(tc_check)
-                            est_add_cost = float(add_qty) * float(price)
-                            need_cash = est_add_cost * 1.03
+                            reason = (
+                                f"JUMP_STAGE{highest_stage}_SELL{int(highest_sell_ratio * 100)} "
+                                f"price={price:.2f} qty={sell_qty} last_stage={last_stage}"
+                            )
 
-                            if buying_power < need_cash:
-                                print(
-                                    f"[B SELL] {code} skip add: buying_power={buying_power:.2f} "
-                                    f"< need≈{need_cash:.2f} add_qty={add_qty} price={price:.2f}",
-                                    flush=True,
-                                )
-                                add_qty = 0
+                            print(f"[B SELL] {code} jump sell qty={sell_qty} reason={reason}", flush=True)
 
-                        except Exception as e:
+                            sell_ok = _sell_qty(conn, code, sell_qty, reason)
+                            traded = sell_ok or traded
+
+                            row_after = _load_one_b_row(conn, code) or {}
+                            qty_after = _safe_int(row_after.get("qty"), max(qty - sell_qty, 0))
+                            cost_after = _safe_float(row_after.get("cost_price"), cost)
+                            sl_old_after = _safe_float(row_after.get("stop_loss_price"), sl)
+
+                            stage_sl = round(float(cost_after) * float(highest_sl_mult), 2)
+                            dyn_sl = _calc_dynamic_trail_sl(cost_after, price, sl_old_after)
+                            sl = max(sl_old_after, stage_sl, dyn_sl)
+
+                            if qty_after > 0:
+                                _write_stage_and_sl(conn, code, highest_stage, sl)
+
                             print(
-                                f"[B SELL] {code} skip add: failed to check buying_power err={e}",
+                                f"[B SELL] {code} stage jump sell_done: last_stage={last_stage} -> highest_stage={highest_stage} "
+                                f"left_qty={qty_after} sl={sl:.2f}",
                                 flush=True,
                             )
-                            add_qty = 0
+                            return traded
 
-                    if add_qty > 0:
-                        reason = f"STAGE{stage}_ADD{int(add_ratio * 100)} price={price:.2f} qty={add_qty}"
-                        print(f"[B SELL] {code} add qty={add_qty} reason={reason}", flush=True)
+                        print(
+                            f"[B SELL] {code} stage jump sell skipped by same-day lock: "
+                            f"last_stage={last_stage} -> highest_stage={highest_stage} "
+                            f"up_pct={up_pct:.2%}; stage NOT advanced, only update SL",
+                            flush=True,
+                        )
 
-                        buy_ok = _buy_add_qty(conn, code, add_qty, reason, snap_price=price)
-                        traded = buy_ok or traded
+                        try:
+                            _update_ops_fields(
+                                conn,
+                                code,
+                                stop_loss_price=round(float(sl), 2),
+                                updated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            )
+                        except Exception as e:
+                            print(f"[B SELL] {code} jump skip sell update sl failed: {e}", flush=True)
 
-                        row2 = _load_one_b_row(conn, code) or {}
-                        qty = _safe_int(row2.get("qty"), qty)
-                        cost = _safe_float(row2.get("cost_price"), cost)
-                        sl_old = _safe_float(row2.get("stop_loss_price"), sl)
-
-                        stage_sl = round(float(cost) * float(sl_mult), 2)
-                        dyn_sl = _calc_dynamic_trail_sl(cost, price, sl_old)
-                        sl = max(sl_old, stage_sl, dyn_sl)
-
-                        _write_stage_and_sl(conn, code, stage, sl)
-
-                        print(f"[B SELL] {code} add_done qty={qty} cost={cost:.2f} sl={sl:.2f}", flush=True)
                         return traded
 
-                    else:
+                    _write_stage_and_sl(conn, code, highest_stage, sl)
+                    print(
+                        f"[B SELL] {code} stage jump: last_stage={last_stage} -> highest_stage={highest_stage} "
+                        f"up_pct={up_pct:.2%}; skip missed add, no_jump_sell, new_sl={sl:.2f}",
+                        flush=True,
+                    )
+                    return traded
+
+                if next_rule is not None:
+                    stage, pct, sl_mult, add_ratio, sell_ratio = next_rule
+
+                    if up_pct >= pct:
+                        print(
+                            f"[B SELL] {code} hit stage={stage} threshold={pct:.2%} up_pct={up_pct:.2%}",
+                            flush=True,
+                        )
+
+                        if add_ratio is not None and add_ratio > 0:
+                            raw_add_qty = int(math.floor(qty * float(add_ratio)))
+                            raw_add_qty = max(raw_add_qty, MIN_ADD_QTY)
+
+                            allow_add_qty = max(0, max_total_qty - qty)
+                            add_qty = min(raw_add_qty, allow_add_qty)
+
+                            if add_qty > 0:
+                                try:
+                                    tc_check = _get_trading_client()
+                                    buying_power = _get_buying_power(tc_check)
+                                    est_add_cost = float(add_qty) * float(price)
+                                    need_cash = est_add_cost * 1.03
+
+                                    if buying_power < need_cash:
+                                        print(
+                                            f"[B SELL] {code} skip add: buying_power={buying_power:.2f} "
+                                            f"< need≈{need_cash:.2f} add_qty={add_qty} price={price:.2f}",
+                                            flush=True,
+                                        )
+                                        add_qty = 0
+
+                                except Exception as e:
+                                    print(
+                                        f"[B SELL] {code} skip add: failed to check buying_power err={e}",
+                                        flush=True,
+                                    )
+                                    add_qty = 0
+
+                            if add_qty > 0:
+                                reason = f"STAGE{stage}_ADD{int(add_ratio * 100)} price={price:.2f} qty={add_qty}"
+                                print(f"[B SELL] {code} add qty={add_qty} reason={reason}", flush=True)
+
+                                buy_ok = _buy_add_qty(conn, code, add_qty, reason, snap_price=price)
+                                traded = buy_ok or traded
+
+                                row2 = _load_one_b_row(conn, code) or {}
+                                qty = _safe_int(row2.get("qty"), qty)
+                                cost = _safe_float(row2.get("cost_price"), cost)
+                                sl_old = _safe_float(row2.get("stop_loss_price"), sl)
+
+                                stage_sl = round(float(cost) * float(sl_mult), 2)
+                                dyn_sl = _calc_dynamic_trail_sl(cost, price, sl_old)
+                                sl = max(sl_old, stage_sl, dyn_sl)
+
+                                _write_stage_and_sl(conn, code, stage, sl)
+
+                                print(f"[B SELL] {code} add_done qty={qty} cost={cost:.2f} sl={sl:.2f}", flush=True)
+                                return traded
+
+                            sl_old = float(sl or 0)
+                            stage_sl = round(float(cost) * float(sl_mult), 2)
+                            dyn_sl = _calc_dynamic_trail_sl(cost, price, sl_old)
+                            sl = max(sl_old, stage_sl, dyn_sl)
+
+                            _write_stage_and_sl(conn, code, stage, sl)
+
+                            print(f"[B SELL] {code} skip add, stage={stage}, new_sl={sl:.2f}", flush=True)
+                            return traded
+
+                        if sell_ratio is not None and sell_ratio > 0:
+                            row_now = _latest_row_for_lock(conn, row)
+
+                            if not _allow_sell_even_same_day(row_now, up_pct):
+                                print(
+                                    f"[B SELL] {code} same-day buy lock: stage={stage} sell skipped up_pct={up_pct:.2%}",
+                                    flush=True,
+                                )
+                                return False
+
+                            raw_sell_qty = int(math.floor(qty * float(sell_ratio)))
+                            sell_qty = max(raw_sell_qty, 1)
+                            sell_qty = min(sell_qty, qty)
+
+                            reason = f"STAGE{stage}_SELL{int(sell_ratio * 100)} price={price:.2f} qty={sell_qty}"
+                            print(f"[B SELL] {code} sell qty={sell_qty} reason={reason}", flush=True)
+
+                            sell_ok = _sell_qty(conn, code, sell_qty, reason)
+                            traded = sell_ok or traded
+
+                            row3 = _load_one_b_row(conn, code) or {}
+                            qty = _safe_int(row3.get("qty"), max(qty - sell_qty, 0))
+                            cost = _safe_float(row3.get("cost_price"), cost)
+                            sl_old = _safe_float(row3.get("stop_loss_price"), sl)
+
+                            stage_sl = round(float(cost) * float(sl_mult), 2)
+                            dyn_sl = _calc_dynamic_trail_sl(cost, price, sl_old)
+                            sl = max(sl_old, stage_sl, dyn_sl)
+
+                            if qty > 0:
+                                _write_stage_and_sl(conn, code, stage, sl)
+
+                            print(f"[B SELL] {code} sell_done left_qty={qty} cost={cost:.2f} sl={sl:.2f}", flush=True)
+                            return traded
+
                         sl_old = float(sl or 0)
                         stage_sl = round(float(cost) * float(sl_mult), 2)
                         dyn_sl = _calc_dynamic_trail_sl(cost, price, sl_old)
@@ -1227,53 +1758,8 @@ def strategy_B_sell(code: str) -> bool:
 
                         _write_stage_and_sl(conn, code, stage, sl)
 
-                        print(f"[B SELL] {code} skip add, new_sl={sl:.2f}", flush=True)
+                        print(f"[B SELL] {code} hold_only stage={stage} new_sl={sl:.2f}", flush=True)
                         return traded
-
-                if sell_ratio is not None and sell_ratio > 0:
-                    row_now = _latest_row_for_lock(conn, row)
-
-                    if not _allow_sell_even_same_day(row_now, up_pct):
-                        print(
-                            f"[B SELL] {code} same-day buy lock: stage={stage} sell skipped up_pct={up_pct:.2%}",
-                            flush=True,
-                        )
-                        return False
-
-                    raw_sell_qty = int(math.floor(qty * float(sell_ratio)))
-                    sell_qty = max(raw_sell_qty, 1)
-                    sell_qty = min(sell_qty, qty)
-
-                    reason = f"STAGE{stage}_SELL{int(sell_ratio * 100)} price={price:.2f} qty={sell_qty}"
-                    print(f"[B SELL] {code} sell qty={sell_qty} reason={reason}", flush=True)
-
-                    sell_ok = _sell_qty(conn, code, sell_qty, reason)
-                    traded = sell_ok or traded
-
-                    row3 = _load_one_b_row(conn, code) or {}
-                    qty = _safe_int(row3.get("qty"), max(qty - sell_qty, 0))
-                    cost = _safe_float(row3.get("cost_price"), cost)
-                    sl_old = _safe_float(row3.get("stop_loss_price"), sl)
-
-                    stage_sl = round(float(cost) * float(sl_mult), 2)
-                    dyn_sl = _calc_dynamic_trail_sl(cost, price, sl_old)
-                    sl = max(sl_old, stage_sl, dyn_sl)
-
-                    if qty > 0:
-                        _write_stage_and_sl(conn, code, stage, sl)
-
-                    print(f"[B SELL] {code} sell_done left_qty={qty} cost={cost:.2f} sl={sl:.2f}", flush=True)
-                    return traded
-
-                sl_old = float(sl or 0)
-                stage_sl = round(float(cost) * float(sl_mult), 2)
-                dyn_sl = _calc_dynamic_trail_sl(cost, price, sl_old)
-                sl = max(sl_old, stage_sl, dyn_sl)
-
-                _write_stage_and_sl(conn, code, stage, sl)
-
-                print(f"[B SELL] {code} hold_only stage={stage} new_sl={sl:.2f}", flush=True)
-                return traded
 
         if last_stage >= ENABLE_STRUCTURE_EXIT_STAGE:
             closes = _get_recent_closes(conn, code, n=4)
