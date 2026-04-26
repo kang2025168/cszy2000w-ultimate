@@ -404,3 +404,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# docker compose run --rm \
+#   -e TRADE_ENV=live \
+#   -e ALPACA_MODE=live \
+#   tradebot python /app/scripts/analyze_access_key_trades.py

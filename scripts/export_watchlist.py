@@ -96,3 +96,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# DB_HOST=138.197.75.51 DB_PORT=3307 python scripts/export_watchlist.py

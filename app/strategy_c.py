@@ -460,8 +460,27 @@ def main():
         print_result(df)
 
         if not df.empty:
-            out_path = "/app/data/strategy_c_candidates.csv"
+
+
+            out_dir = os.getenv("C_OUT_DIR", "data")
+            os.makedirs(out_dir, exist_ok=True)
+
+            out_path = os.path.join(out_dir, "strategy_c_candidates.csv")
             df.to_csv(out_path, index=False)
+
+            # =========================
+            # 导出 symbol 列表（txt）
+            # =========================
+            txt_path = os.path.join(out_dir, "strategy_c_watchlist.txt")
+
+            symbols = df["symbol"].dropna().astype(str).unique().tolist()
+
+            with open(txt_path, "w") as f:
+                for s in symbols:
+                    f.write(s + "\n")
+
+            print(f"[C] 已导出 TXT: {txt_path}")
+
             print(f"\n[C] 已导出: {out_path}")
 
     finally:
@@ -474,3 +493,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# DB_HOST=138.197.75.51 DB_PORT=3307 python app/strategy_c.py
