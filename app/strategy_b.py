@@ -35,10 +35,10 @@ DB = dict(
 # =========================
 B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.03"))
 B_MAX_BUY_UP_PCT = float(os.getenv("B_MAX_BUY_UP_PCT", "0.10"))
-B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "1200"))
+B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "2100"))
 
-B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "1000"))
-B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "1000"))
+B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "2100"))
+B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "2100"))
 
 B_COOLDOWN_MINUTES = int(os.getenv("B_COOLDOWN_MINUTES", "30"))
 B_BP_USE_RATIO = float(os.getenv("B_BP_USE_RATIO", "0.98"))
