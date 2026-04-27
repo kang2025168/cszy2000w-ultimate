@@ -1,37 +1,36 @@
 # -*- coding: utf-8 -*-
 """
-策略B：筛选入池 -> 写入 stock_operations（定时任务用，最终版：entry_open/entry_close）
+策略B：筛选入池 -> 写入 stock_operations（去掉 trigger 动态跟随版）
 
-你的最终要求（全部实现）：
-A) 不再"直接删掉之前入选池B(is_bought=0)"
-   维护逻辑（只针对 stock_type='B' 且 is_bought=0 的旧记录）：
-   1) trigger_price = GREATEST(entry_close, today_close)
-      上涨时触发价跟随今日收盘上移，回调时最低回到入选日收盘价
-   2) 淘汰删除：如果 today_close < entry_open，则删除该 B 记录（仅未买入）
-B) 新进入入选池：
-   - 如果已在 stock_operations（无论A/B）且 is_bought=1：不更新任何字段（保持原状态）
-   - 如果已在 stock_operations 且 stock_type='A'：不更新（A优先）
-   - 如果已在 stock_operations（B 且未买入）：不改变其现有数据（包括 trigger_price / entry_open / entry_close 都不动）
-   - 只有"完全不存在"的股票，才新增一条 B 记录，并写入：
-       trigger_price = pressure_price（入选当天的触发价）
-       entry_open / entry_close = 入选日当天的 open/close（只写一次）
-       created_at = pressure_date 00:00:00（保持你之前逻辑）
-C) 入池筛选条件（平衡版 + 你要求的增强）：
+本版规则：
+A) 不再动态修改 trigger_price
+   - 不再执行 trigger_price = GREATEST(entry_close, today_close)
+   - trigger_price 仅在首次入池时写入，值 = strategy_b_levels.pressure_price
+
+B) 旧池子（仅 B 且未买入）只做淘汰删除：
+   - 如果 today_close < entry_open，则删除该 B 记录（仅未买入）
+
+C) 新进入入选池：
+   - 如果已在 stock_operations（无论A/B）且 is_bought=1：不更新任何字段
+   - 如果已在 stock_operations 且 stock_type='A'：不更新
+   - 如果已在 stock_operations（B 且未买入）：不改变其现有数据
+   - 只有“完全不存在”的股票，才新增一条 B 记录，并写入：
+       trigger_price = strategy_b_levels.pressure_price
+       entry_date    = 入选日日期(as_of)
+       entry_open    = 入选日当天 open
+       entry_close   = 入选日当天 close
+       created_at    = pressure_date 00:00:00（保持你之前逻辑）
+
+D) 入池筛选条件：
    1) last_close 在 pressure_price * [0.95, 1.15]
-   2) 价格 > 2（用 close_today）
+   2) 价格 > 2（close_today）
    3) vol_today > 1,000,000
    4) MA3 > MA10
    5) vol_today > avg(vol_prev_20) * 1.5
-   6) up_pct_today > 2%（close_today vs close_prev）
-   7) ✅ 新增：m3-m8 "三连增"：
-       (ma3-ma8)_today > (ma3-ma8)_yesterday > (ma3-ma8)_daybefore
-      且你补充：必须 ma3 在 ma8 上方（其实三连增里也会体现，但这里单独强制）
-
-优化说明（v3）：
-  1) 价格>2 和 成交量>100万 提前到 SQL 候选阶段，减少无效 _load_recent_bars 调用
-  2) entry_open/entry_close 只在首次 INSERT 时写入，防止重跑时覆盖首次入选数据
-  3) trigger_price = GREATEST(entry_close, today_close)，动态跟随但有底线
-  4) 从近20日低点涨幅超过 20% 则剔除，避免追高
+   6) up_pct_today > 2%
+   7) (ma3-ma8)_today > (ma3-ma8)_yesterday > (ma3-ma8)_daybefore
+   8) ma3 > ma8
+   9) 从近20日低点涨幅 < 20%
 """
 
 import os
@@ -55,19 +54,15 @@ SRC_TABLE    = os.getenv("SRC_TABLE", "stock_prices_pool")
 LEVELS_TABLE = os.getenv("LEVELS_TABLE", "strategy_b_levels")
 OPS_TABLE    = os.getenv("OPS_TABLE", "stock_operations")
 
-# ✅ 平衡区间
 LOW_PCT  = float(os.getenv("B_LOW_PCT", "0.95"))
 HIGH_PCT = float(os.getenv("B_HIGH_PCT", "1.15"))
 
-# ✅ 量能/涨幅/价格过滤
 VOL_MULT      = float(os.getenv("B_VOL_MULT", "1.5"))
 UP_PCT_MIN    = float(os.getenv("B_UP_PCT_MIN", "0.02"))
 MIN_PRICE     = float(os.getenv("B_MIN_PRICE", "2.0"))
 MIN_VOL_TODAY = float(os.getenv("B_MIN_VOL_TODAY", "1000000"))
 
 PRINT_LIMIT = int(os.getenv("B_PRINT_LIMIT", "300"))
-
-# ✅ 从近20日低点涨幅超过此值则剔除（默认 20%）
 MAX_RISE_FROM_LOW_PCT = float(os.getenv("B_MAX_RISE_FROM_LOW_PCT", "0.20"))
 
 
@@ -98,40 +93,13 @@ def _fetch_as_of_date(cur):
 # =========================
 def _maintain_old_unbought_b(cur, as_of):
     """
-    1) 动态触发价：trigger_price = GREATEST(entry_close, today_close)
-       - 今日收盘 > 入选日收盘 → 触发价上移
-       - 今日收盘 < 入选日收盘 → 触发价回到入选日收盘价（有底线）
-    2) 淘汰删除：today_close < entry_open 则删除（仅未买入）
+    仅做淘汰删除，不再动态修改 trigger_price。
+    删除条件：
+      today_close < entry_open
+    仅删除：
+      stock_type='B' 且 is_bought=0/NULL 的未买入记录
     """
-    # 1) ✅ 动态触发价：以 entry_close 为底线，跟随今日收盘
-    sql1 = f"""
-    UPDATE `{OPS_TABLE}` op
-    JOIN (
-        SELECT p.symbol, p.`close` AS today_close
-        FROM `{SRC_TABLE}` p
-        JOIN (
-            SELECT symbol, MAX(DATE(`date`)) AS last_date
-            FROM `{SRC_TABLE}`
-            WHERE DATE(`date`) <= DATE(%s)
-            GROUP BY symbol
-        ) t
-          ON p.symbol = t.symbol
-         AND DATE(p.`date`) = t.last_date
-        WHERE p.`close` IS NOT NULL
-    ) px
-      ON px.symbol = op.stock_code
-    SET op.trigger_price = GREATEST(
-        op.entry_close,
-        px.today_close
-    )
-    WHERE op.stock_type = 'B'
-      AND (op.is_bought IS NULL OR op.is_bought = 0)
-      AND op.entry_close IS NOT NULL;
-    """
-    n1 = cur.execute(sql1, (as_of,))
-
-    # 2) 淘汰：today_close < entry_open 则删除
-    sql2 = f"""
+    sql = f"""
     DELETE op
     FROM `{OPS_TABLE}` op
     JOIN (
@@ -143,32 +111,28 @@ def _maintain_old_unbought_b(cur, as_of):
             WHERE DATE(`date`) <= DATE(%s)
             GROUP BY symbol
         ) t
-          ON p.symbol=t.symbol AND DATE(p.`date`)=t.last_date
+          ON p.symbol = t.symbol
+         AND DATE(p.`date`) = t.last_date
     ) px
       ON px.symbol = op.stock_code
-    WHERE op.stock_type='B'
-      AND (op.is_bought IS NULL OR op.is_bought=0)
+    WHERE op.stock_type = 'B'
+      AND (op.is_bought IS NULL OR op.is_bought = 0)
       AND op.entry_open IS NOT NULL
       AND px.today_close IS NOT NULL
       AND px.today_close < op.entry_open;
     """
-    n2 = cur.execute(sql2, (as_of,))
+    n = cur.execute(sql, (as_of,))
     print(
-        f"[OK] maintain old B(unbought): "
-        f"trigger=GREATEST(entry_close,today_close) rows={n1}, "
-        f"delete(today_close<entry_open) rows={n2}",
+        f"[OK] maintain old B(unbought): keep trigger_price unchanged, "
+        f"delete(today_close<entry_open) rows={n}",
         flush=True,
     )
 
 
 # =========================
-# ✅ 候选阶段提前过滤价格>2 和 成交量>100万
+# 候选阶段：提前过滤价格>2 和 成交量>100万
 # =========================
 def _load_candidates(cur, as_of):
-    """
-    第一层：SQL 做区间过滤 + 价格>2 + 成交量>100万
-    减少后续 _load_recent_bars 的无效调用
-    """
     sql = f"""
     SELECT
         lv.symbol,
@@ -190,7 +154,8 @@ def _load_candidates(cur, as_of):
             WHERE DATE(`date`) <= DATE(%s)
             GROUP BY symbol
         ) t
-          ON p.symbol = t.symbol AND DATE(p.`date`) = t.last_date
+          ON p.symbol = t.symbol
+         AND DATE(p.`date`) = t.last_date
         WHERE p.`close`  IS NOT NULL
           AND p.`close`  > %s
           AND p.`volume` > %s
@@ -208,7 +173,8 @@ def _load_recent_bars(cur, symbol, as_of, limit=30):
     sql = f"""
     SELECT DATE(`date`) AS d, `open`, `close`, `volume`
     FROM `{SRC_TABLE}`
-    WHERE symbol=%s AND DATE(`date`) <= DATE(%s)
+    WHERE symbol=%s
+      AND DATE(`date`) <= DATE(%s)
     ORDER BY `date` DESC
     LIMIT %s;
     """
@@ -225,7 +191,7 @@ def _compute_metrics(bars_desc):
         return None
 
     closes = [_safe_float(r.get("close")) for r in bars_desc]
-    opens  = [_safe_float(r.get("open"))  for r in bars_desc]
+    opens  = [_safe_float(r.get("open")) for r in bars_desc]
     vols   = [_safe_float(r.get("volume")) for r in bars_desc]
 
     close_today = closes[0]
@@ -274,20 +240,27 @@ def _compute_metrics(bars_desc):
 
 
 # =========================
-# 写入：只插入"全新"股票
+# 写入：只插入“全新”股票
 # =========================
 def _insert_new_ops_b_only(cur, rows):
     """
     只插入不存在的股票。
-    ON DUPLICATE KEY 什么都不更新，entry_open/entry_close 只在首次 INSERT 时写入。
+    entry_date / entry_open / entry_close / trigger_price 只在首次 INSERT 时写入。
+    trigger_price = strategy_b_levels.pressure_price
     """
     if not rows:
         return 0
 
     sql = f"""
     INSERT INTO `{OPS_TABLE}` (
-        stock_code, trigger_price, stock_type, is_bought, created_at,
-        entry_open, entry_close, entry_date
+        stock_code,
+        trigger_price,
+        stock_type,
+        is_bought,
+        created_at,
+        entry_open,
+        entry_close,
+        entry_date
     )
     VALUES (%s, %s, 'B', 0, %s, %s, %s, %s)
     ON DUPLICATE KEY UPDATE
@@ -309,8 +282,12 @@ def _insert_new_ops_b_only(cur, rows):
 
 def _already_exists(cur, code: str) -> bool:
     """
-    只要股票已存在于 stock_operations，就返回 True（不插入新行）。
-    包括：已买入、A类型、B未买入 — 全部跳过，保护现有数据。
+    只要股票已存在于 stock_operations，就返回 True。
+    包括：
+      - 已买入
+      - A类型
+      - B未买入
+    全部跳过，保护现有数据。
     """
     sql = f"SELECT 1 FROM `{OPS_TABLE}` WHERE stock_code=%s LIMIT 1;"
     cur.execute(sql, (code,))
@@ -330,7 +307,7 @@ def main():
                 flush=True,
             )
 
-            # A) 维护旧池子：动态触发价 + 淘汰删除
+            # A) 维护旧池子：只做淘汰删除，不再改 trigger_price
             _maintain_old_unbought_b(cur, as_of)
 
             # B) 候选（区间 + 价格>2 + 成交量>100万 已在 SQL 里过滤）
@@ -338,7 +315,7 @@ def main():
             print(f"[INFO] candidates(pre-filtered)={len(candidates)}", flush=True)
 
             to_insert = []
-            printed   = 0
+            printed = 0
 
             for c in candidates:
                 sym = (c.get("symbol") or "").strip().upper()
@@ -354,12 +331,11 @@ def main():
                 last_close     = _safe_float(c.get("last_close"))
 
                 bars = _load_recent_bars(cur, sym, as_of, limit=30)
-                m    = _compute_metrics(bars)
+                m = _compute_metrics(bars)
                 if not m:
                     continue
 
-                # Python 层技术指标过滤（价格/成交量已在 SQL 里过滤）
-
+                # Python 层技术指标过滤
                 if not (m["ma3"] > m["ma10"]):
                     continue
 
@@ -386,11 +362,11 @@ def main():
 
                 to_insert.append({
                     "stock_code":    sym,
-                    "trigger_price": round(pressure_price, 2),
+                    "trigger_price": round(pressure_price, 2),   # 固定写入 pressure_price
                     "created_at":    created_at,
-                    "entry_open":    round(float(m["entry_open"]), 2),
-                    "entry_close":   round(float(m["entry_close"]), 2),
-                    "entry_date":    str(as_of),
+                    "entry_open":    round(float(m["entry_open"]), 2),   # 入选日开盘价
+                    "entry_close":   round(float(m["entry_close"]), 2),  # 入选日收盘价
+                    "entry_date":    str(as_of),                         # 入选日日期
                 })
 
                 if printed < PRINT_LIMIT:

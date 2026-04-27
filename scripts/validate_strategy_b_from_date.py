@@ -19,32 +19,42 @@ validate_strategy_b_from_date.py
 - 这是“日线近似回放”，不是分钟级真实回放
 - 盘中先冲高还是先下杀无法从日线完全还原
 - 默认采用保守路径：先检查当日 low 是否打到旧 SL，再根据 high 更新动态止损 / Stage
-- same-day lock / pending stop 也做了近似模拟，不可能和实盘 100% 一样
+- same-day lock / pending stop 也做了近似模拟，不可能和实盘 100%% 一样
 """
 
 import os
 import sys
 import math
 import argparse
+from pathlib import Path
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import date
 from typing import List, Optional, Tuple
 
 import pymysql
 import pandas as pd
 
 # ============================================================
-# 为了复用你当前 strategy_b.py 的参数，优先导入 app.strategy_b
+# 把项目根目录加入 sys.path
+# ============================================================
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# ============================================================
+# 导入主策略文件
 # ============================================================
 try:
     from app import strategy_b as sb
 except Exception as e:
     raise RuntimeError(
-        f"无法导入 app.strategy_b，请在项目根目录运行，或把本文件放到项目根目录。错误: {e}"
+        f"无法导入 app.strategy_b，PROJECT_ROOT={PROJECT_ROOT}，错误: {e}"
     )
 
 # ============================================================
 # DB
+# 默认本地；你可以像这样连云库：
+# DB_HOST=138.197.75.51 DB_PORT=3307 python scripts/validate_strategy_b_from_date.py ...
 # ============================================================
 DB = dict(
     host=os.getenv("DB_HOST", "localhost"),
@@ -61,14 +71,13 @@ PRICES_TABLE = getattr(sb, "PRICES_TABLE", "stock_prices_pool")
 OPS_TABLE = getattr(sb, "OPS_TABLE", "stock_operations")
 
 # ============================================================
-# 复用你当前策略参数（来自 app.strategy_b）
+# 复用当前策略参数
 # ============================================================
 B_MIN_UP_PCT = float(getattr(sb, "B_MIN_UP_PCT", 0.03))
 B_MAX_BUY_UP_PCT = float(getattr(sb, "B_MAX_BUY_UP_PCT", 0.10))
 B_TARGET_NOTIONAL_USD = float(getattr(sb, "B_TARGET_NOTIONAL_USD", 2100.0))
-B_MAX_NOTIONAL_USD = float(getattr(sb, "B_MAX_NOTIONAL_USD", 2100.0))
 
-# 当前 strategy_B_sell 的关键参数（按你贴出来的最新版）
+# 当前无加仓版 strategy_B_sell 核心参数
 ENABLE_STRUCTURE_EXIT_STAGE = 3
 DYNAMIC_TRAIL_START_PCT = 0.08
 TRAIL_BREAKEVEN_PCT = 0.08
@@ -79,7 +88,7 @@ TRAIL_BACKOFF_PCT = 0.07
 SAME_DAY_FORCE_SELL_LOSS_PCT = -0.05
 SAME_DAY_FORCE_SELL_WIN_PCT = 0.05
 
-# 注意：这里用你代码“实际数值”，不是注释文字
+# 按你当前代码里的“实际数值”
 STAGE_RULES = [
     # stage, profit_pct, sell_ratio
     (1, 0.20, 0.20),
@@ -89,10 +98,7 @@ STAGE_RULES = [
     (5, 1.20, 0.10),
 ]
 
-# 模拟模式：
-# stop_first  = 保守：先检查 low 是否打旧 SL，再看 high 是否抬 SL / 触发 stage
-# profit_first = 乐观：先按 high 抬 SL / 触发 stage，再检查 low 是否打新 SL
-SIM_MODE = "stop_first"
+DEFAULT_SIM_MODE = "stop_first"
 
 
 # ============================================================
@@ -144,13 +150,6 @@ def _safe_float(v, default=0.0) -> float:
         return default
 
 
-def _safe_int(v, default=0) -> int:
-    try:
-        return int(float(v))
-    except Exception:
-        return default
-
-
 def _connect():
     return pymysql.connect(**DB)
 
@@ -163,27 +162,50 @@ def load_price_data(symbol: str, start_date: str, end_date: str) -> pd.DataFrame
       AND `date` BETWEEN %s AND %s
     ORDER BY `date` ASC
     """
+
     conn = _connect()
     try:
-        df = pd.read_sql(sql, conn, params=[symbol.upper(), start_date, end_date])
+        with conn.cursor() as cur:
+            cur.execute(sql, (symbol.upper(), start_date, end_date))
+            rows = cur.fetchall()
     finally:
         conn.close()
 
-    if df.empty:
-        return df
+    print(f"[DEBUG] raw rows = {len(rows)}")
+    if rows:
+        print("[DEBUG] first raw row =", rows[0])
 
-    df["date"] = pd.to_datetime(df["date"]).dt.date
+    if not rows:
+        return pd.DataFrame(columns=["symbol", "date", "open", "high", "low", "close", "volume"])
+
+    df = pd.DataFrame(list(rows))
+
+    print("[DEBUG] raw columns =", df.columns.tolist())
+    print("[DEBUG] raw head:")
+    print(df.head(10).to_string())
+    print("[DEBUG] raw dtypes:")
+    print(df.dtypes)
+
+    # 清洗 date 列
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    print(f"[DEBUG] valid date rows after parse = {df['date'].notna().sum()}")
+
+    df = df.dropna(subset=["date"]).copy()
+    df["date"] = df["date"].dt.date
+
     for c in ["open", "high", "low", "close", "volume"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    print(f"[DEBUG] valid OHLC rows before final drop = {df[['open','high','low','close']].notna().all(axis=1).sum()}")
+
     df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
+
+    print(f"[DEBUG] final rows = {len(df)}")
+    if not df.empty:
+        print(df.head(10).to_string())
+
     return df
-
-
 def load_trigger_from_ops(symbol: str) -> Optional[float]:
-    """
-    如果 stock_operations 里有这只 B 票，就优先拿 trigger_price。
-    没有的话返回 None。
-    """
     sql = f"""
     SELECT trigger_price
     FROM `{OPS_TABLE}`
@@ -204,13 +226,6 @@ def load_trigger_from_ops(symbol: str) -> Optional[float]:
 
 
 def calc_dynamic_trail_sl(cost: float, price_ref: float, sl_old: float) -> float:
-    """
-    完全按你当前无加仓版 strategy_B_sell 的动态止损节奏：
-      < +8%  : 不动
-      >=+8% : SL = cost
-      >=+15%: SL = cost*1.05
-      >=+25%: SL = max(old, price_ref*0.93)
-    """
     cost = _safe_float(cost, 0.0)
     price_ref = _safe_float(price_ref, 0.0)
     sl_old = _safe_float(sl_old, 0.0)
@@ -286,38 +301,25 @@ def check_entry(df: pd.DataFrame, signal_date: str, trigger_price: Optional[floa
 
     idx_list = df.index[df["date"] == sig_date].tolist()
     if not idx_list:
-        return EntryDecision(
-            passed=False,
-            reason=f"找不到交易日 {signal_date}",
-            signal_date=signal_date,
-            prev_close=0,
-            open_price=0,
-            high=0,
-            low=0,
-            close=0,
-            trigger_price=0,
-            buy_price=None,
-            initial_sl=None,
-            day_up_pct=0,
-        )
+        return EntryDecision(False, f"找不到交易日 {signal_date}", signal_date, 0, 0, 0, 0, 0, 0, None, None, 0)
 
     idx = idx_list[0]
     row = df.iloc[idx]
 
     if idx == 0:
         return EntryDecision(
-            passed=False,
-            reason="没有前一交易日，无法计算 prev_close",
-            signal_date=signal_date,
-            prev_close=0,
-            open_price=_safe_float(row["open"]),
-            high=_safe_float(row["high"]),
-            low=_safe_float(row["low"]),
-            close=_safe_float(row["close"]),
-            trigger_price=0,
-            buy_price=None,
-            initial_sl=None,
-            day_up_pct=0,
+            False,
+            "没有前一交易日，无法计算 prev_close",
+            signal_date,
+            0,
+            _safe_float(row["open"]),
+            _safe_float(row["high"]),
+            _safe_float(row["low"]),
+            _safe_float(row["close"]),
+            0,
+            None,
+            None,
+            0,
         )
 
     prev_close = _safe_float(df.iloc[idx - 1]["close"], 0.0)
@@ -327,108 +329,65 @@ def check_entry(df: pd.DataFrame, signal_date: str, trigger_price: Optional[floa
     close = _safe_float(row["close"], 0.0)
 
     if prev_close <= 0:
-        return EntryDecision(
-            passed=False,
-            reason="prev_close <= 0",
-            signal_date=signal_date,
-            prev_close=prev_close,
-            open_price=open_price,
-            high=high,
-            low=low,
-            close=close,
-            trigger_price=0,
-            buy_price=None,
-            initial_sl=None,
-            day_up_pct=0,
-        )
+        return EntryDecision(False, "prev_close <= 0", signal_date, prev_close, open_price, high, low, close, 0, None, None, 0)
 
     day_up_pct = (close - prev_close) / prev_close
 
     if trigger_price is None or trigger_price <= 0:
-        # 如果没传 trigger，就做一个“近似默认 trigger”
-        # 用前收 + 3% 作为触发价，便于快速测试
         trigger_price = round(prev_close * (1.0 + B_MIN_UP_PCT), 2)
     else:
         trigger_price = round(float(trigger_price), 2)
 
     if day_up_pct <= B_MIN_UP_PCT:
         return EntryDecision(
-            passed=False,
-            reason=f"day_up_pct={day_up_pct:.2%} <= min_up={B_MIN_UP_PCT:.2%}",
-            signal_date=signal_date,
-            prev_close=prev_close,
-            open_price=open_price,
-            high=high,
-            low=low,
-            close=close,
-            trigger_price=trigger_price,
-            buy_price=None,
-            initial_sl=None,
-            day_up_pct=day_up_pct,
+            False,
+            f"day_up_pct={day_up_pct:.2%} <= min_up={B_MIN_UP_PCT:.2%}",
+            signal_date, prev_close, open_price, high, low, close, trigger_price, None, None, day_up_pct
         )
 
     if day_up_pct >= B_MAX_BUY_UP_PCT:
         return EntryDecision(
-            passed=False,
-            reason=f"day_up_pct={day_up_pct:.2%} >= max_buy_up={B_MAX_BUY_UP_PCT:.2%}",
-            signal_date=signal_date,
-            prev_close=prev_close,
-            open_price=open_price,
-            high=high,
-            low=low,
-            close=close,
-            trigger_price=trigger_price,
-            buy_price=None,
-            initial_sl=None,
-            day_up_pct=day_up_pct,
+            False,
+            f"day_up_pct={day_up_pct:.2%} >= max_buy_up={B_MAX_BUY_UP_PCT:.2%}",
+            signal_date, prev_close, open_price, high, low, close, trigger_price, None, None, day_up_pct
         )
 
     if high <= trigger_price:
         return EntryDecision(
-            passed=False,
-            reason=f"当天 high={high:.2f} 没有突破 trigger={trigger_price:.2f}",
-            signal_date=signal_date,
-            prev_close=prev_close,
-            open_price=open_price,
-            high=high,
-            low=low,
-            close=close,
-            trigger_price=trigger_price,
-            buy_price=None,
-            initial_sl=None,
-            day_up_pct=day_up_pct,
+            False,
+            f"当天 high={high:.2f} 没有突破 trigger={trigger_price:.2f}",
+            signal_date, prev_close, open_price, high, low, close, trigger_price, None, None, day_up_pct
         )
 
-    # 日线近似买入价：
-    # - 如果开盘已高于 trigger，视为开盘直接突破，按 open 买
-    # - 否则按 trigger 买
     buy_price = max(open_price, trigger_price)
-
-    # 完全对齐你 strategy_B_buy 的 init_sl：
-    # init_sl = max(entry_close, cost*0.97)
-    # 日线工具这里没有 entry_close 字段，就近似用 prev_close
     initial_sl = max(prev_close, buy_price * 0.97)
 
     return EntryDecision(
-        passed=True,
-        reason="符合买入条件",
-        signal_date=signal_date,
-        prev_close=round(prev_close, 2),
-        open_price=round(open_price, 2),
-        high=round(high, 2),
-        low=round(low, 2),
-        close=round(close, 2),
-        trigger_price=round(trigger_price, 2),
-        buy_price=round(buy_price, 2),
-        initial_sl=round(initial_sl, 2),
-        day_up_pct=day_up_pct,
+        True,
+        "符合买入条件",
+        signal_date,
+        round(prev_close, 2),
+        round(open_price, 2),
+        round(high, 2),
+        round(low, 2),
+        round(close, 2),
+        round(trigger_price, 2),
+        round(buy_price, 2),
+        round(initial_sl, 2),
+        day_up_pct,
     )
 
 
 # ============================================================
 # 卖出模拟
 # ============================================================
-def simulate(df: pd.DataFrame, signal_date: str, entry: EntryDecision, initial_capital: float):
+def simulate(
+    df: pd.DataFrame,
+    signal_date: str,
+    entry: EntryDecision,
+    initial_capital: float,
+    sim_mode: str = DEFAULT_SIM_MODE,
+):
     sig_date = pd.to_datetime(signal_date).date()
     idx_list = df.index[df["date"] == sig_date].tolist()
     if not idx_list:
@@ -474,10 +433,7 @@ def simulate(df: pd.DataFrame, signal_date: str, entry: EntryDecision, initial_c
         pnl_today = 0.0
         note = ""
 
-        if SIM_MODE == "stop_first":
-            # ----------------------------------------------------
-            # 先看当日 low 是否先打旧 SL（保守）
-            # ----------------------------------------------------
+        if sim_mode == "stop_first":
             if qty > 0 and sl > 0 and l <= sl:
                 ref_up_pct = (sl - cost) / cost if cost > 0 else 0.0
                 if allow_sell_same_day(is_same_day, ref_up_pct):
@@ -513,19 +469,12 @@ def simulate(df: pd.DataFrame, signal_date: str, entry: EntryDecision, initial_c
                 else:
                     note += "same-day lock 阻止止损; "
 
-            # ----------------------------------------------------
-            # 再用 high 去更新 dynamic SL
-            # ----------------------------------------------------
             if qty > 0:
                 new_sl = calc_dynamic_trail_sl(cost, h, sl)
                 if new_sl > sl:
                     sl = new_sl
                     note += f"dyn_sl->{sl:.2f}; "
 
-            # ----------------------------------------------------
-            # 再看 stage（按 high 判定）
-            # 跳级时：对齐你当前实盘代码，只执行最高档一档卖出
-            # ----------------------------------------------------
             if qty > 0:
                 highest_stage = find_highest_hit_stage(up_pct_high, last_stage)
                 if highest_stage is not None and highest_stage > last_stage:
@@ -546,9 +495,7 @@ def simulate(df: pd.DataFrame, signal_date: str, entry: EntryDecision, initial_c
                             note += f"stage={highest_stage}; "
                         else:
                             note += f"same-day lock 阻止 stage{highest_stage} 卖出; "
-
         else:
-            # 乐观路径：先盈利再回撤
             if qty > 0:
                 new_sl = calc_dynamic_trail_sl(cost, h, sl)
                 if new_sl > sl:
@@ -609,9 +556,6 @@ def simulate(df: pd.DataFrame, signal_date: str, entry: EntryDecision, initial_c
                     ))
                     break
 
-        # --------------------------------------------------------
-        # 结构退出（stage>=3 后）
-        # --------------------------------------------------------
         if qty > 0 and last_stage >= ENABLE_STRUCTURE_EXIT_STAGE:
             closes4 = get_recent_closes_for_structure(df, i)
             if closes4 is not None:
@@ -653,7 +597,6 @@ def simulate(df: pd.DataFrame, signal_date: str, entry: EntryDecision, initial_c
         if qty <= 0:
             break
 
-    # 最终未平仓浮盈
     if qty > 0:
         last_close = _safe_float(df.iloc[-1]["close"], 0.0)
         unrealized_pnl = qty * (last_close - cost)
@@ -667,7 +610,7 @@ def simulate(df: pd.DataFrame, signal_date: str, entry: EntryDecision, initial_c
     return {
         "symbol": str(df.iloc[0]["symbol"]) if not df.empty else "",
         "signal_date": signal_date,
-        "sim_mode": SIM_MODE,
+        "sim_mode": sim_mode,
         "passed_entry": entry.passed,
         "entry_reason": entry.reason,
         "trigger_price": entry.trigger_price,
@@ -764,15 +707,17 @@ def main():
     parser = argparse.ArgumentParser(description="验证 strategy_B 从指定日期到今天的历史表现（日线近似回放）")
     parser.add_argument("--symbol", required=True, help="股票代码，例如 BTM")
     parser.add_argument("--date", required=True, help="信号日期，例如 2026-04-10")
-    parser.add_argument("--trigger", type=float, default=None, help="可选，手动传 trigger_price；不传则优先从 stock_operations 取，没有则用 prev_close*(1+3%)")
+    parser.add_argument(
+        "--trigger",
+        type=float,
+        default=None,
+        help="可选，手动传 trigger_price；不传则优先从 stock_operations 取，没有则用 prev_close*(1+3%%)"
+    )
     parser.add_argument("--capital", type=float, default=B_TARGET_NOTIONAL_USD, help="初始投入资金，默认用当前 B_TARGET_NOTIONAL_USD")
     parser.add_argument("--start-buffer-days", type=int, default=30, help="向前多读多少天数据，默认 30")
-    parser.add_argument("--mode", choices=["stop_first", "profit_first"], default=SIM_MODE, help="日线模拟路径")
+    parser.add_argument("--mode", choices=["stop_first", "profit_first"], default=DEFAULT_SIM_MODE, help="日线模拟路径")
     parser.add_argument("--max-rows", type=int, default=200, help="最多打印多少行 daily records")
     args = parser.parse_args()
-
-    global SIM_MODE
-    SIM_MODE = args.mode
 
     symbol = args.symbol.strip().upper()
     signal_date = pd.to_datetime(args.date).date()
@@ -790,7 +735,7 @@ def main():
         trigger = load_trigger_from_ops(symbol)
 
     entry = check_entry(df, str(signal_date), trigger)
-    result = simulate(df, str(signal_date), entry, args.capital) if entry.passed else {
+    result = simulate(df, str(signal_date), entry, args.capital, sim_mode=args.mode) if entry.passed else {
         "records": []
     }
 
@@ -799,3 +744,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# (.venv) (base) likang@Mac cszy2000w-ultimate % DB_HOST=138.197.75.51 DB_PORT=3307 python scripts/validate_strategy_b_from_date.py --symbol CAR --date 2026-03-31
