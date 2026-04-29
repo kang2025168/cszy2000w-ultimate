@@ -967,7 +967,6 @@ def strategy_B_buy(code: str) -> bool:
         entry_up_pct = (price - entry_close) / entry_close if entry_close > 0 else 0.0
 
         need_price = prev_close * (1.0 + float(B_MIN_UP_PCT)) if prev_close > 0 else 0.0
-        max_buy_price = prev_close * (1.0 + float(B_MAX_BUY_UP_PCT)) if prev_close > 0 else 0.0
 
         print(
             f"[B BUY] {code} quote bid={bid:.2f} ask={ask:.2f} last={price:.2f} "
@@ -993,14 +992,6 @@ def strategy_B_buy(code: str) -> bool:
                 flush=True,
             )
             return False
-        if day_up_pct >= B_MAX_BUY_UP_PCT:
-            print(
-                f"[B BUY] {code} skip: day_up={day_up_pct*100:.2f}% >= max_buy_up={B_MAX_BUY_UP_PCT*100:.2f}% "
-                f"(max_buy_price<={max_buy_price:.2f})",
-                flush=True,
-            )
-            return False
-
         # spread 保护
         if bid > 0 and ask > 0:
             mid = (bid + ask) / 2.0
@@ -1046,22 +1037,20 @@ def strategy_B_buy(code: str) -> bool:
 
         used_notional = float(qty) * float(price)
 
-        # 限价：至少高于 last 0.1%（保证能成交），但不超过 max_buy_price（保证不破上限）
+        # 限价：至少高于 last 0.1%，提高成交概率。
         if ask > 0:
             raw_limit = float(ask) * 1.002
         else:
             raw_limit = float(price) * 1.003
         raw_limit = max(raw_limit, float(price) * 1.001)
-        limit_price = min(raw_limit, float(max_buy_price))
-        limit_price = round(float(limit_price), 2)
+        limit_price = round(float(raw_limit), 2)
 
         if limit_price <= 0:
             print(f"[B BUY] {code} skip: invalid limit_price={limit_price:.2f}", flush=True)
             return False
         if limit_price < price:
             print(
-                f"[B BUY] {code} skip: limit_price={limit_price:.2f} < last_price={price:.2f}, "
-                f"max_buy_price={max_buy_price:.2f}",
+                f"[B BUY] {code} skip: limit_price={limit_price:.2f} < last_price={price:.2f}",
                 flush=True,
             )
             return False
@@ -1125,10 +1114,7 @@ def strategy_B_buy(code: str) -> bool:
         # ============================================================
         # 6) 落库
         # ============================================================
-        init_sl = max(
-            float(entry_close) if entry_close > 0 else 0,
-            float(cost_price) * 0.97,
-        )
+        init_sl = float(cost_price) * 0.98
 
         last_stage = 0
         base_qty = int(qty_to_write)
@@ -1857,7 +1843,7 @@ def strategy_B_sell(code: str) -> bool:
     设计哲学：
     1) 不加仓 —— 初始仓位即最终仓位,简化心智
     2) Stage 仅作"分层落袋的触发器",不再控 SL
-    3) SL 完全由 dynamic trail 主导（+8% 保本 / +15% 锁 5% / +25% 7% trail）
+    3) SL 完全由 dynamic trail 主导（+3% 近保本 / +6% 保本 / +10% 锁 3% / +25% 后 trailing）
     4) 保留 same-day lock / 闪崩 pending stop / 结构退出
 
     搭配建议：
@@ -1878,11 +1864,14 @@ def strategy_B_sell(code: str) -> bool:
     ENABLE_STRUCTURE_EXIT_STAGE = 3  # +60% 后启用 K 线结构退出
 
     # 动态 SL 参数
-    DYNAMIC_TRAIL_START_PCT = 0.08
-    TRAIL_BREAKEVEN_PCT = 0.08  # +8% → SL = cost
-    TRAIL_LOCK_LIGHT_PCT = 0.15  # +15% → SL = cost*1.05
-    TRAIL_PRICE_TRACK_PCT = 0.25  # +25% → 切换到 price trailing
-    TRAIL_BACKOFF_PCT = 0.07  # 7% 回撤
+    TRAIL_NEAR_BREAKEVEN_PCT = 0.03  # +3% -> SL = cost*0.995
+    TRAIL_BREAKEVEN_PCT = 0.06       # +6% -> SL = cost
+    TRAIL_LOCK_3_PCT = 0.10          # +10% -> SL = cost*1.03
+    TRAIL_LOCK_6_PCT = 0.15          # +15% -> SL = cost*1.06
+    TRAIL_PRICE_TRACK_PCT = 0.25     # +25% -> 切换到 price trailing
+    TRAIL_BACKOFF_PCT = 0.08         # +25% 后允许 8% 回撤
+    TRAIL_TIGHTEN_40_PCT = 0.40      # +40% -> trailing 收紧到 10% 回撤
+    TRAIL_TIGHTEN_70_PCT = 0.70      # +70% -> trailing 收紧到 12% 回撤
 
     BLOCK_SAME_DAY_SELL_AFTER_BUY = True
     SAME_DAY_FORCE_SELL_LOSS_PCT = -0.05
@@ -1892,8 +1881,8 @@ def strategy_B_sell(code: str) -> bool:
     # 总落袋: 20+16+10+5+4 ≈ 55%,留 45% 仓位裸奔到天上
     STAGE_RULES = [
         # stage, profit_pct, sl_mult, add_ratio, sell_ratio
-        (1, 0.20, None, None, 0.20),  # +25%  卖 20% (第一次落袋)
-        (2, 0.35, None, None, 0.20),  # +40%  卖 20%
+        (1, 0.20, None, None, 0.20),  # +20%  卖 20% (第一次落袋)
+        (2, 0.35, None, None, 0.20),  # +35%  卖 20%
         (3, 0.60, None, None, 0.15),  # +60%  卖 15% (开启结构退出)
         (4, 0.85, None, None, 0.10),  # +85%  卖 10%
         (5, 1.20, None, None, 0.10),  # +120% 卖 10%
@@ -2010,11 +1999,15 @@ def strategy_B_sell(code: str) -> bool:
 
     def _calc_dynamic_trail_sl(cost_, price_, sl_old_):
         """
-        宽松版动态 SL:
-          1) 涨幅 < 8%:不动
-          2) +8%:抬到保本
-          3) +15%:cost*1.05
-          4) +25%:price 跟踪,7% 回撤
+        平衡版动态 SL:
+          1) 涨幅 < 3%:不动
+          2) +3%:SL 抬到 cost*0.995,接近保本
+          3) +6%:SL 抬到 cost,真正保本
+          4) +10%:SL 抬到 cost*1.03,锁 3%
+          5) +15%:SL 抬到 cost*1.06,锁 6%
+          6) +25%:price 跟踪,8% 回撤
+          7) +40%:price 跟踪,10% 回撤
+          8) +70%:price 跟踪,12% 回撤
         """
         cost_ = _safe_float(cost_, 0.0)
         price_ = _safe_float(price_, 0.0)
@@ -2026,15 +2019,20 @@ def strategy_B_sell(code: str) -> bool:
         up_pct_ = (price_ - cost_) / cost_
         new_sl = sl_old_
 
-        if up_pct_ < DYNAMIC_TRAIL_START_PCT:
-            return round(new_sl, 2)
-
+        if up_pct_ >= TRAIL_NEAR_BREAKEVEN_PCT:
+            new_sl = max(new_sl, cost_ * 0.995)
         if up_pct_ >= TRAIL_BREAKEVEN_PCT:
             new_sl = max(new_sl, cost_ * 1.00)
-        if up_pct_ >= TRAIL_LOCK_LIGHT_PCT:
-            new_sl = max(new_sl, cost_ * 1.05)
+        if up_pct_ >= TRAIL_LOCK_3_PCT:
+            new_sl = max(new_sl, cost_ * 1.03)
+        if up_pct_ >= TRAIL_LOCK_6_PCT:
+            new_sl = max(new_sl, cost_ * 1.06)
         if up_pct_ >= TRAIL_PRICE_TRACK_PCT:
             new_sl = max(new_sl, price_ * (1.0 - TRAIL_BACKOFF_PCT))
+        if up_pct_ >= TRAIL_TIGHTEN_40_PCT:
+            new_sl = max(new_sl, price_ * 0.90)
+        if up_pct_ >= TRAIL_TIGHTEN_70_PCT:
+            new_sl = max(new_sl, price_ * 0.88)
 
         return round(new_sl, 2)
 

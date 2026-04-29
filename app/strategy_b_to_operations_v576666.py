@@ -22,7 +22,7 @@ C) 新进入入选池：
        created_at    = pressure_date 00:00:00（保持你之前逻辑）
 
 D) 入池筛选条件：
-   1) last_close 在 pressure_price * [0.95, 1.15]
+   1) last_close 在 pressure_price * [0.95, 1.10]
    2) 价格 > 2（close_today）
    3) vol_today > 1,000,000
    4) MA3 > MA10
@@ -30,7 +30,9 @@ D) 入池筛选条件：
    6) up_pct_today > 2%
    7) (ma3-ma8)_today > (ma3-ma8)_yesterday > (ma3-ma8)_daybefore
    8) ma3 > ma8
-   9) 从近20日低点涨幅 < 20%
+   9) 从近20日低点涨幅 < 35%
+  10) close_today > open_today，过滤高开低走/收阴线
+  11) 上影线占收盘价比例 <= 5%，过滤冲高回落太明显的票
 """
 
 import os
@@ -55,7 +57,7 @@ LEVELS_TABLE = os.getenv("LEVELS_TABLE", "strategy_b_levels")
 OPS_TABLE    = os.getenv("OPS_TABLE", "stock_operations")
 
 LOW_PCT  = float(os.getenv("B_LOW_PCT", "0.95"))
-HIGH_PCT = float(os.getenv("B_HIGH_PCT", "1.15"))
+HIGH_PCT = float(os.getenv("B_HIGH_PCT", "1.10"))
 
 VOL_MULT      = float(os.getenv("B_VOL_MULT", "1.5"))
 UP_PCT_MIN    = float(os.getenv("B_UP_PCT_MIN", "0.02"))
@@ -63,7 +65,8 @@ MIN_PRICE     = float(os.getenv("B_MIN_PRICE", "2.0"))
 MIN_VOL_TODAY = float(os.getenv("B_MIN_VOL_TODAY", "1000000"))
 
 PRINT_LIMIT = int(os.getenv("B_PRINT_LIMIT", "300"))
-MAX_RISE_FROM_LOW_PCT = float(os.getenv("B_MAX_RISE_FROM_LOW_PCT", "0.20"))
+MAX_RISE_FROM_LOW_PCT = float(os.getenv("B_MAX_RISE_FROM_LOW_PCT", "0.35"))
+MAX_UPPER_SHADOW_PCT = float(os.getenv("B_MAX_UPPER_SHADOW_PCT", "0.05"))
 
 
 def _connect():
@@ -171,7 +174,7 @@ def _load_candidates(cur, as_of):
 
 def _load_recent_bars(cur, symbol, as_of, limit=30):
     sql = f"""
-    SELECT DATE(`date`) AS d, `open`, `close`, `volume`
+    SELECT DATE(`date`) AS d, `open`, `high`, `low`, `close`, `volume`
     FROM `{SRC_TABLE}`
     WHERE symbol=%s
       AND DATE(`date`) <= DATE(%s)
@@ -192,6 +195,8 @@ def _compute_metrics(bars_desc):
 
     closes = [_safe_float(r.get("close")) for r in bars_desc]
     opens  = [_safe_float(r.get("open")) for r in bars_desc]
+    highs  = [_safe_float(r.get("high")) for r in bars_desc]
+    lows   = [_safe_float(r.get("low")) for r in bars_desc]
     vols   = [_safe_float(r.get("volume")) for r in bars_desc]
 
     close_today = closes[0]
@@ -215,10 +220,18 @@ def _compute_metrics(bars_desc):
     vol_avg20_prev = sum(vols[1:21]) / 20.0
 
     entry_open  = opens[0]
+    entry_high  = highs[0]
+    entry_low   = lows[0]
     entry_close = closes[0]
 
     min_close_20  = min(closes[1:21])
     rise_from_low = (close_today - min_close_20) / min_close_20 if min_close_20 > 0 else 0.0
+
+    # 上影线过滤说明：
+    # 用 high-close 衡量“冲高后回落”的幅度，占 close 的比例越大，说明抛压越明显。
+    # 默认 5% 是温和过滤：不要求完美光头阳线，只排除明显长上影。
+    upper_shadow_pct = (entry_high - entry_close) / entry_close if entry_close > 0 else 0.0
+    intraday_range_pct = (entry_high - entry_low) / entry_close if entry_close > 0 else 0.0
 
     return {
         "close_today":    close_today,
@@ -233,9 +246,13 @@ def _compute_metrics(bars_desc):
         "vol_today":      vol_today,
         "vol_avg20_prev": vol_avg20_prev,
         "entry_open":     entry_open,
+        "entry_high":     entry_high,
+        "entry_low":      entry_low,
         "entry_close":    entry_close,
         "min_close_20":   min_close_20,
         "rise_from_low":  rise_from_low,
+        "upper_shadow_pct": upper_shadow_pct,
+        "intraday_range_pct": intraday_range_pct,
     }
 
 
@@ -303,7 +320,8 @@ def main():
                 f"[INFO] as_of_date={as_of} range=[{LOW_PCT},{HIGH_PCT}] "
                 f"min_price={MIN_PRICE} min_vol={int(MIN_VOL_TODAY)} "
                 f"vol_mult={VOL_MULT} min_up={UP_PCT_MIN} "
-                f"max_rise_from_low={MAX_RISE_FROM_LOW_PCT}",
+                f"max_rise_from_low={MAX_RISE_FROM_LOW_PCT} "
+                f"max_upper_shadow={MAX_UPPER_SHADOW_PCT}",
                 flush=True,
             )
 
@@ -354,6 +372,17 @@ def main():
                 if m["rise_from_low"] >= MAX_RISE_FROM_LOW_PCT:
                     continue
 
+                # 收阳线过滤：
+                # 只保留 close_today > open_today 的票，避免把高开低走、收阴线的票放进待买池。
+                if not (m["entry_close"] > m["entry_open"]):
+                    continue
+
+                # 长上影线过滤：
+                # high 有冲高但 close 离 high 太远，往往代表当日上方抛压重，次日突破质量较差。
+                # 这里用 (high-close)/close <= 5% 做默认阈值，可用 B_MAX_UPPER_SHADOW_PCT 调整。
+                if m["upper_shadow_pct"] > MAX_UPPER_SHADOW_PCT:
+                    continue
+
                 created_at = (
                     f"{pressure_date} 00:00:00"
                     if pressure_date
@@ -374,11 +403,14 @@ def main():
                     print(
                         f"[PASS] {sym} last_close={last_close:.2f} pressure={pressure_price:.2f} "
                         f"close_today={m['close_today']:.2f} "
-                        f"entry_open={m['entry_open']:.2f} entry_close={m['entry_close']:.2f} "
+                        f"entry_open={m['entry_open']:.2f} entry_high={m['entry_high']:.2f} "
+                        f"entry_low={m['entry_low']:.2f} entry_close={m['entry_close']:.2f} "
                         f"MA3={m['ma3']:.4f} MA8={m['ma8']:.4f} MA10={m['ma10']:.4f} "
                         f"diff(m3-m8) t={m['diff_today']:.4f} y={m['diff_y']:.4f} 2d={m['diff_2']:.4f} "
                         f"vol_today={m['vol_today']:.0f} vol_avg20={m['vol_avg20_prev']:.0f} "
-                        f"up_pct={m['up_pct']*100:.2f}% rise_from_low={m['rise_from_low']*100:.1f}%",
+                        f"up_pct={m['up_pct']*100:.2f}% rise_from_low={m['rise_from_low']*100:.1f}% "
+                        f"upper_shadow={m['upper_shadow_pct']*100:.1f}% "
+                        f"range={m['intraday_range_pct']*100:.1f}%",
                         flush=True,
                     )
 
