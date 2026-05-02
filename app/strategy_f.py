@@ -83,9 +83,9 @@ F_STRONG_DAY_UP = float(os.getenv("F_STRONG_DAY_UP", "0.10"))
 F_EXPLOSIVE_DAY_UP = float(os.getenv("F_EXPLOSIVE_DAY_UP", "0.15"))
 
 # F 是 B 的二次启动版本，默认仓位先小一点，避免妖股波动把账户打疼。
-F_TARGET_NOTIONAL_USD = float(os.getenv("F_TARGET_NOTIONAL_USD", "1050"))
-F_MAX_NOTIONAL_USD = float(os.getenv("F_MAX_NOTIONAL_USD", "1050"))
-F_MIN_BUYING_POWER = float(os.getenv("F_MIN_BUYING_POWER", "1050"))
+F_TARGET_NOTIONAL_USD = float(os.getenv("F_TARGET_NOTIONAL_USD", "2500"))
+F_MAX_NOTIONAL_USD = float(os.getenv("F_MAX_NOTIONAL_USD", "2500"))
+F_MIN_BUYING_POWER = float(os.getenv("F_MIN_BUYING_POWER", "2500"))
 F_BP_USE_RATIO = float(os.getenv("F_BP_USE_RATIO", "0.98"))
 
 # F 的止损比 B 略宽：B 是 -2%，F 默认 -3%，给二次启动一点洗盘空间。

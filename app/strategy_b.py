@@ -37,6 +37,7 @@ DB = dict(
 B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.03"))
 B_MAX_BUY_UP_PCT = float(os.getenv("B_MAX_BUY_UP_PCT", "0.10"))
 B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "2100"))
+B_MIN_OPEN_BUYING_POWER = float(os.getenv("B_MIN_OPEN_BUYING_POWER", "4500"))
 
 B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "2100"))
 B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "2100"))
@@ -1107,6 +1108,7 @@ def strategy_B_buy(code: str) -> bool:
 
         required_bp = max(
             float(B_MIN_BUYING_POWER),
+            float(B_MIN_OPEN_BUYING_POWER),
             float(B_TARGET_NOTIONAL_USD) / max(float(B_BP_USE_RATIO), 0.01),
         )
         if buying_power < required_bp:
