@@ -49,7 +49,8 @@ from __future__ import annotations
 
 import os
 import traceback
-from datetime import date
+from collections import defaultdict
+from datetime import date, datetime, timedelta
 
 import pymysql
 
@@ -132,39 +133,66 @@ def _fetch_as_of_date(cur) -> date:
     return as_of
 
 
-def _load_symbols(cur, as_of) -> list[str]:
-    """
-    只加载 as_of 当天有数据、价格和成交量基本合格的股票，减少无效扫描。
-    """
-    sql = f"""
-    SELECT DISTINCT symbol
-    FROM `{PRICES_TABLE}`
-    WHERE DATE(`date`) = DATE(%s)
-      AND symbol IS NOT NULL
-      AND `close` IS NOT NULL
-      AND `close` >= %s
-      AND `volume` IS NOT NULL
-      AND `volume` > 0
-    ORDER BY symbol;
-    """
-    cur.execute(sql, (as_of, float(C_SCAN_MIN_PRICE)))
-    rows = cur.fetchall() or []
-    return [(r.get("symbol") or "").strip().upper() for r in rows if (r.get("symbol") or "").strip()]
+def _as_date(v) -> date:
+    if isinstance(v, date):
+        return v
+    return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
 
 
-def _load_recent_bars(cur, symbol: str, as_of, limit: int = C_SCAN_LOOKBACK_DAYS) -> list[dict]:
-    sql = f"""
-    SELECT DATE(`date`) AS d, `open`, `high`, `low`, `close`, `volume`
-    FROM `{PRICES_TABLE}`
-    WHERE UPPER(TRIM(symbol))=%s
-      AND DATE(`date`) <= DATE(%s)
-      AND `close` IS NOT NULL
-    ORDER BY `date` DESC
-    LIMIT %s;
+def _load_recent_bars_bulk(cur, as_of) -> dict[str, list[dict]]:
     """
-    cur.execute(sql, (symbol.upper(), as_of, int(limit)))
+    一次性加载全市场最近一段 K 线，避免每只股票单独查一次数据库。
+
+    为什么不用 SQL 的 ROW_NUMBER() 做每只股票 LIMIT 90：
+    - 有些 MySQL 版本不支持窗口函数。
+    - 这里用“日历天回看”批量拉取，再在 Python 里截取每只股票最后 N 根。
+
+    这会比 N+1 查询快很多；云数据库尤其明显，因为最大开销通常是网络往返。
+    """
+    as_of_d = _as_date(as_of)
+    as_of_next = as_of_d + timedelta(days=1)
+    calendar_days = max(int(C_SCAN_LOOKBACK_DAYS) * 2, int(C_SCAN_LOOKBACK_DAYS) + 30)
+    cutoff = as_of_d - timedelta(days=calendar_days)
+
+    sql = f"""
+    SELECT
+        p.symbol,
+        DATE(p.`date`) AS d,
+        p.`open`,
+        p.`high`,
+        p.`low`,
+        p.`close`,
+        p.`volume`
+    FROM `{PRICES_TABLE}` p
+    JOIN (
+        SELECT DISTINCT symbol
+        FROM `{PRICES_TABLE}`
+        WHERE `date` >= %s
+          AND `date` < %s
+          AND symbol IS NOT NULL
+          AND `close` IS NOT NULL
+          AND `close` >= %s
+          AND `volume` IS NOT NULL
+          AND `volume` > 0
+    ) s
+      ON s.symbol = p.symbol
+    WHERE p.`date` >= %s
+      AND p.`date` < %s
+      AND p.`close` IS NOT NULL
+    ORDER BY p.symbol ASC, p.`date` ASC;
+    """
+    cur.execute(sql, (as_of_d, as_of_next, float(C_SCAN_MIN_PRICE), cutoff, as_of_next))
     rows = cur.fetchall() or []
-    return list(reversed(rows))
+
+    grouped = defaultdict(list)
+    for r in rows:
+        symbol = (r.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        grouped[symbol].append(r)
+
+    # 每只股票只保留最后 C_SCAN_LOOKBACK_DAYS 根，保持 calc_metrics 的输入为升序。
+    return {symbol: bars[-int(C_SCAN_LOOKBACK_DAYS):] for symbol, bars in grouped.items()}
 
 
 def calc_metrics(bars: list[dict]) -> dict | None:
@@ -362,21 +390,94 @@ def save_candidate(cur, as_of, symbol: str, category: str, option_mode: str, sco
     )
 
 
+def _candidate_args(as_of, symbol: str, category: str, option_mode: str, score: float, reason: str, m: dict):
+    return (
+        as_of,
+        symbol,
+        category,
+        option_mode,
+        float(score),
+        (reason or "")[:800],
+        m["close"],
+        m["ma5"],
+        m["ma10"],
+        m["ma20"],
+        m["ma50"],
+        m["ret3"],
+        m["ret5"],
+        m["ret10"],
+        m["high20"],
+        m["low20"],
+        m["range20_pct"],
+        m["dist_high20"],
+        m["dist_low20"],
+        m["vol_ratio"],
+    )
+
+
+def save_candidates_bulk(cur, rows: list[tuple]) -> int:
+    """
+    批量写入候选结果。
+
+    原来每个候选执行一次 INSERT；云数据库会被网络往返拖慢。
+    这里改成 executemany，一批提交，分类结果不变。
+    """
+    if not rows:
+        return 0
+
+    sql = f"""
+    INSERT INTO `{CANDIDATES_TABLE}` (
+        as_of, symbol, category, option_mode, score, reason,
+        close_price, ma5, ma10, ma20, ma50,
+        ret3, ret5, ret10,
+        high20, low20, range20_pct, dist_high20, dist_low20,
+        vol_ratio,
+        created_at, updated_at
+    )
+    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+    ON DUPLICATE KEY UPDATE
+        category=VALUES(category),
+        option_mode=VALUES(option_mode),
+        score=VALUES(score),
+        reason=VALUES(reason),
+        close_price=VALUES(close_price),
+        ma5=VALUES(ma5),
+        ma10=VALUES(ma10),
+        ma20=VALUES(ma20),
+        ma50=VALUES(ma50),
+        ret3=VALUES(ret3),
+        ret5=VALUES(ret5),
+        ret10=VALUES(ret10),
+        high20=VALUES(high20),
+        low20=VALUES(low20),
+        range20_pct=VALUES(range20_pct),
+        dist_high20=VALUES(dist_high20),
+        dist_low20=VALUES(dist_low20),
+        vol_ratio=VALUES(vol_ratio),
+        updated_at=NOW();
+    """
+    return cur.executemany(sql, rows)
+
+
 def scan_all():
     conn = _connect()
     counts = {}
     printed = 0
     saved = 0
+    rows_to_save = []
 
     try:
         with conn.cursor() as cur:
             as_of = _fetch_as_of_date(cur)
-            symbols = _load_symbols(cur, as_of)
-            print(f"[C SCAN] as_of={as_of} symbols={len(symbols)}", flush=True)
+            bars_by_symbol = _load_recent_bars_bulk(cur, as_of)
+            print(
+                f"[C SCAN] as_of={as_of} symbols={len(bars_by_symbol)} "
+                f"lookback={C_SCAN_LOOKBACK_DAYS}",
+                flush=True,
+            )
 
-            for symbol in symbols:
+            for symbol, bars in bars_by_symbol.items():
                 try:
-                    bars = _load_recent_bars(cur, symbol, as_of)
                     m = calc_metrics(bars)
                     if not m:
                         continue
@@ -385,7 +486,7 @@ def scan_all():
                     counts[category] = counts.get(category, 0) + 1
 
                     if category != CATEGORY_NO_TRADE:
-                        save_candidate(cur, as_of, symbol, category, option_mode, score, reason, m)
+                        rows_to_save.append(_candidate_args(as_of, symbol, category, option_mode, score, reason, m))
                         saved += 1
                         if printed < C_SCAN_PRINT_LIMIT:
                             printed += 1
@@ -395,13 +496,15 @@ def scan_all():
                                 flush=True,
                             )
                     elif C_SCAN_WRITE_NO_TRADE == 1:
-                        save_candidate(cur, as_of, symbol, category, option_mode, score, reason, m)
+                        rows_to_save.append(_candidate_args(as_of, symbol, category, option_mode, score, reason, m))
 
                 except Exception as e:
                     print(f"[C SCAN] {symbol} error: {e}", flush=True)
                     traceback.print_exc()
 
-        print(f"[C SCAN OK] saved={saved} counts={counts}", flush=True)
+            affected = save_candidates_bulk(cur, rows_to_save)
+
+        print(f"[C SCAN OK] saved={saved} write_rows={len(rows_to_save)} affected={affected} counts={counts}", flush=True)
         return saved
 
     finally:
