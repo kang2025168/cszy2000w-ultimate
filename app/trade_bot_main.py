@@ -509,7 +509,10 @@ def one_round(conn, buy_allowed):
         return conn, traded_any
 
     # F 是 B 被利润回吐洗出去后的二次启动观察池。
-    # 买入阶段开始前先刷新候选，只把满足条件的 WATCHING 股票写成 F/can_buy=1。
+    # 买入阶段开始前先刷新 C/F 候选，只写入 can_buy=1，真正下单仍由各策略买入函数执行。
+    safe_call(strategy_C_refresh_candidates)
+
+    # F：只把满足二次启动的 WATCHING 股票写成 F/can_buy=1。
     safe_call(strategy_F_refresh_candidates)
 
     buy_rows = load_rows(conn, mode="buy") or []

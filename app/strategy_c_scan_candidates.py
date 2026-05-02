@@ -81,8 +81,9 @@ C_SCAN_MIN_BARS = int(os.getenv("C_SCAN_MIN_BARS", "60"))
 C_SCAN_PRINT_LIMIT = int(os.getenv("C_SCAN_PRINT_LIMIT", "200"))
 C_SCAN_WRITE_NO_TRADE = int(os.getenv("C_SCAN_WRITE_NO_TRADE", "0"))
 
-C_SCAN_MIN_PRICE = float(os.getenv("C_SCAN_MIN_PRICE", "5"))
-C_SCAN_MIN_AVG_VOL20 = float(os.getenv("C_SCAN_MIN_AVG_VOL20", "500000"))
+C_SCAN_MIN_PRICE = float(os.getenv("C_SCAN_MIN_PRICE", "10"))
+C_SCAN_MIN_AVG_VOL20 = float(os.getenv("C_SCAN_MIN_AVG_VOL20", "1000000"))
+C_SCAN_MIN_DOLLAR_VOL20 = float(os.getenv("C_SCAN_MIN_DOLLAR_VOL20", "20000000"))
 
 C_UP_RET3 = float(os.getenv("C_UP_RET3", "0.015"))
 C_DOWN_RET3 = float(os.getenv("C_DOWN_RET3", "-0.015"))
@@ -92,6 +93,26 @@ C_NEAR_LOW20 = float(os.getenv("C_NEAR_LOW20", "0.03"))
 C_SIDEWAYS_MA20_BAND = float(os.getenv("C_SIDEWAYS_MA20_BAND", "0.025"))
 C_SIDEWAYS_RANGE20_MAX = float(os.getenv("C_SIDEWAYS_RANGE20_MAX", "0.10"))
 C_SIDEWAYS_RET10_MAX = float(os.getenv("C_SIDEWAYS_RET10_MAX", "0.04"))
+
+# =========================
+# 位置过滤：防止涨完才买涨、跌完才买跌
+# =========================
+# 趋势类：离 MA20 太远，说明短线可能已经过热/超跌，期权追进去容易买在末端。
+C_TREND_MAX_DIST_MA20 = float(os.getenv("C_TREND_MAX_DIST_MA20", "0.12"))
+C_TREND_MAX_RET5 = float(os.getenv("C_TREND_MAX_RET5", "0.15"))
+
+# 趋势类：当天 K 线收盘位置。上涨要求收得不弱；下跌要求收得不强。
+C_UP_CLOSE_POS_MIN = float(os.getenv("C_UP_CLOSE_POS_MIN", "0.55"))
+C_DOWN_CLOSE_POS_MAX = float(os.getenv("C_DOWN_CLOSE_POS_MAX", "0.45"))
+
+# 横盘类：卖 put / 卖 call 不希望价格贴着 20 日区间极端。
+# Bull Put 太靠近区间高位，安全垫变差；太靠近区间低位，可能正在破支撑。
+C_BULL_PUT_RANGE_POS_MIN = float(os.getenv("C_BULL_PUT_RANGE_POS_MIN", "0.30"))
+C_BULL_PUT_RANGE_POS_MAX = float(os.getenv("C_BULL_PUT_RANGE_POS_MAX", "0.85"))
+
+# Bear Call 太靠近区间低位，容易技术反弹；太靠近区间高位，可能正在突破压力。
+C_BEAR_CALL_RANGE_POS_MIN = float(os.getenv("C_BEAR_CALL_RANGE_POS_MIN", "0.15"))
+C_BEAR_CALL_RANGE_POS_MAX = float(os.getenv("C_BEAR_CALL_RANGE_POS_MAX", "0.70"))
 
 
 CATEGORY_STRONG_UP = "STRONG_UP"
@@ -205,6 +226,8 @@ def calc_metrics(bars: list[dict]) -> dict | None:
     vols = [_safe_float(r.get("volume")) for r in bars]
 
     close = closes[-1]
+    high = highs[-1]
+    low = lows[-1]
     if close <= 0:
         return None
 
@@ -220,14 +243,24 @@ def calc_metrics(bars: list[dict]) -> dict | None:
     high20 = max(highs[-20:])
     low20 = min(lows[-20:])
     range20_pct = (high20 - low20) / close if close > 0 else 0.0
+    range20_span = high20 - low20
+    range20_pos = (close - low20) / range20_span if range20_span > 0 else 0.5
     dist_high20 = close / high20 - 1 if high20 > 0 else 0.0
     dist_low20 = close / low20 - 1 if low20 > 0 else 0.0
+    dist_ma20_up = close / ma20 - 1 if ma20 > 0 else 0.0
+    dist_ma20_down = ma20 / close - 1 if close > 0 else 0.0
+
+    day_span = high - low
+    close_position = (close - low) / day_span if day_span > 0 else 0.5
 
     vol20 = _mean(vols[-20:])
     vol_ratio = vols[-1] / vol20 if vol20 > 0 else 0.0
+    dollar_vol20 = close * vol20
 
     return {
         "close": close,
+        "high": high,
+        "low": low,
         "ma5": ma5,
         "ma10": ma10,
         "ma20": ma20,
@@ -238,10 +271,15 @@ def calc_metrics(bars: list[dict]) -> dict | None:
         "high20": high20,
         "low20": low20,
         "range20_pct": range20_pct,
+        "range20_pos": range20_pos,
         "dist_high20": dist_high20,
         "dist_low20": dist_low20,
+        "dist_ma20_up": dist_ma20_up,
+        "dist_ma20_down": dist_ma20_down,
+        "close_position": close_position,
         "vol20": vol20,
         "vol_ratio": vol_ratio,
+        "dollar_vol20": dollar_vol20,
     }
 
 
@@ -258,10 +296,15 @@ def classify_symbol(m: dict) -> tuple[str, str, float, str]:
     ret5 = m["ret5"]
     ret10 = m["ret10"]
     range20_pct = m["range20_pct"]
+    range20_pos = m["range20_pos"]
     dist_high20 = m["dist_high20"]
     dist_low20 = m["dist_low20"]
+    dist_ma20_up = m["dist_ma20_up"]
+    dist_ma20_down = m["dist_ma20_down"]
+    close_position = m["close_position"]
     vol20 = m["vol20"]
     vol_ratio = m["vol_ratio"]
+    dollar_vol20 = m["dollar_vol20"]
 
     if vol20 < C_SCAN_MIN_AVG_VOL20:
         return (
@@ -270,18 +313,31 @@ def classify_symbol(m: dict) -> tuple[str, str, float, str]:
             0.0,
             f"NO_TRADE avg_vol20={vol20:.0f} < min={C_SCAN_MIN_AVG_VOL20:.0f}",
         )
+    if dollar_vol20 < C_SCAN_MIN_DOLLAR_VOL20:
+        return (
+            CATEGORY_NO_TRADE,
+            MODE_NO_TRADE,
+            0.0,
+            f"NO_TRADE dollar_vol20={dollar_vol20:.0f} < min={C_SCAN_MIN_DOLLAR_VOL20:.0f}",
+        )
 
     strong_up = (
         close > ma5 > ma10 > ma20
         and ma20 >= ma50
         and ret3 >= C_UP_RET3
+        and ret5 <= C_TREND_MAX_RET5
         and dist_high20 >= -C_NEAR_HIGH20
+        and dist_ma20_up <= C_TREND_MAX_DIST_MA20
+        and close_position >= C_UP_CLOSE_POS_MIN
     )
     strong_down = (
         close < ma5 < ma10 < ma20
         and ma20 <= ma50
         and ret3 <= C_DOWN_RET3
+        and ret5 >= -C_TREND_MAX_RET5
         and dist_low20 <= C_NEAR_LOW20
+        and dist_ma20_down <= C_TREND_MAX_DIST_MA20
+        and close_position <= C_DOWN_CLOSE_POS_MAX
     )
     sideways = (
         abs(close / ma20 - 1) <= C_SIDEWAYS_MA20_BAND
@@ -293,7 +349,9 @@ def classify_symbol(m: dict) -> tuple[str, str, float, str]:
         score = 80 + min(ret5 * 100, 20) + min(vol_ratio, 3) * 3
         reason = (
             f"STRONG_UP close>MA5>MA10>MA20, ret3={ret3:.2%}, "
-            f"ret5={ret5:.2%}, dist_high20={dist_high20:.2%}, volx={vol_ratio:.2f}"
+            f"ret5={ret5:.2%}, dist_high20={dist_high20:.2%}, "
+            f"dist_ma20={dist_ma20_up:.2%}, close_pos={close_position:.2f}, "
+            f"volx={vol_ratio:.2f}, dollar_vol20={dollar_vol20:.0f}"
         )
         return CATEGORY_STRONG_UP, MODE_BULL_CALL, round(score, 2), reason
 
@@ -301,29 +359,43 @@ def classify_symbol(m: dict) -> tuple[str, str, float, str]:
         score = 80 + min(abs(ret5) * 100, 20) + min(vol_ratio, 3) * 3
         reason = (
             f"STRONG_DOWN close<MA5<MA10<MA20, ret3={ret3:.2%}, "
-            f"ret5={ret5:.2%}, dist_low20={dist_low20:.2%}, volx={vol_ratio:.2f}"
+            f"ret5={ret5:.2%}, dist_low20={dist_low20:.2%}, "
+            f"dist_ma20={dist_ma20_down:.2%}, close_pos={close_position:.2f}, "
+            f"volx={vol_ratio:.2f}, dollar_vol20={dollar_vol20:.0f}"
         )
         return CATEGORY_STRONG_DOWN, MODE_BEAR_PUT, round(score, 2), reason
 
     if sideways:
         base = 55 + max(0.0, 1.0 - range20_pct / max(C_SIDEWAYS_RANGE20_MAX, 0.01)) * 20
-        if close >= ma20 and ma5 >= ma10:
+        if (
+            close >= ma20
+            and ma5 >= ma10
+            and C_BULL_PUT_RANGE_POS_MIN <= range20_pos <= C_BULL_PUT_RANGE_POS_MAX
+        ):
             reason = (
                 f"SIDEWAYS_BULLISH close>=MA20 MA5>=MA10, "
-                f"range20={range20_pct:.2%}, ret10={ret10:.2%}, volx={vol_ratio:.2f}"
+                f"range20={range20_pct:.2%}, range_pos={range20_pos:.2f}, "
+                f"ret10={ret10:.2%}, volx={vol_ratio:.2f}, dollar_vol20={dollar_vol20:.0f}"
             )
             return CATEGORY_SIDEWAYS_BULLISH, MODE_BULL_PUT, round(base, 2), reason
 
-        if close <= ma20 and ma5 <= ma10:
+        if (
+            close <= ma20
+            and ma5 <= ma10
+            and C_BEAR_CALL_RANGE_POS_MIN <= range20_pos <= C_BEAR_CALL_RANGE_POS_MAX
+        ):
             reason = (
                 f"SIDEWAYS_BEARISH close<=MA20 MA5<=MA10, "
-                f"range20={range20_pct:.2%}, ret10={ret10:.2%}, volx={vol_ratio:.2f}"
+                f"range20={range20_pct:.2%}, range_pos={range20_pos:.2f}, "
+                f"ret10={ret10:.2%}, volx={vol_ratio:.2f}, dollar_vol20={dollar_vol20:.0f}"
             )
             return CATEGORY_SIDEWAYS_BEARISH, MODE_BEAR_CALL, round(base, 2), reason
 
     reason = (
         f"NO_TRADE close={close:.2f}, MA5={ma5:.2f}, MA10={ma10:.2f}, "
-        f"MA20={ma20:.2f}, ret3={ret3:.2%}, ret10={ret10:.2%}, range20={range20_pct:.2%}"
+        f"MA20={ma20:.2f}, ret3={ret3:.2%}, ret5={ret5:.2%}, ret10={ret10:.2%}, "
+        f"range20={range20_pct:.2%}, range_pos={range20_pos:.2f}, "
+        f"close_pos={close_position:.2f}, dollar_vol20={dollar_vol20:.0f}"
     )
     return CATEGORY_NO_TRADE, MODE_NO_TRADE, 0.0, reason
 
