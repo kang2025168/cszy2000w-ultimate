@@ -18,6 +18,7 @@ import requests
 # =========================
 OPS_TABLE = os.getenv("OPS_TABLE", "stock_operations")
 PRICES_TABLE = os.getenv("B_PRICES_TABLE", "stock_prices_pool")
+MONSTER_TABLE = os.getenv("MONSTER_TABLE", "monster_watchlist")
 
 DB = dict(
     host=os.getenv("DB_HOST", "mysql"),
@@ -45,6 +46,8 @@ B_BP_USE_RATIO = float(os.getenv("B_BP_USE_RATIO", "0.98"))
 B_ALLOW_EXTENDED = int(os.getenv("B_ALLOW_EXTENDED", "0"))
 B_DEBUG = int(os.getenv("B_DEBUG", "0"))
 HTTP_TIMEOUT = float(os.getenv("B_HTTP_TIMEOUT", "6"))
+
+B_MONSTER_MIN_PEAK_GAIN_PCT = float(os.getenv("B_MONSTER_MIN_PEAK_GAIN_PCT", "0.03"))
 
 B_BP_USE_CASH = int(os.getenv("B_BP_USE_CASH", "0"))  # 0=buying_power,1=cash
 
@@ -285,14 +288,7 @@ def _wait_and_get_position_fill(trading_client, code: str):
 
 def _load_one_b_row(conn, code: str):
     sql = f"""
-    SELECT stock_code, stock_type,
-           trigger_price, close_price,
-           cost_price, stop_loss_price, take_profit_price,
-           entry_open, entry_close, entry_date,
-           b_stage, base_qty,
-           qty, is_bought, can_buy, can_sell,
-           last_order_time, last_order_side, last_order_id,
-           b_stop_pending_since, b_stop_pending_sl
+    SELECT *
     FROM `{OPS_TABLE}`
     WHERE stock_code=%s AND stock_type='B'
     LIMIT 1;
@@ -333,6 +329,80 @@ def _update_ops_fields(conn, code: str, **kwargs):
     vals.append(code)
     with conn.cursor() as cur:
         cur.execute(sql, tuple(vals))
+
+
+def _write_monster_watchlist(conn, code: str, reason: str, sell_price, row: dict):
+    """
+    把“B 策略最终清仓卖出”的股票放入妖股观察池。
+
+    注意：
+    - 这里只记录，不买回，不改变主程序调度。
+    - 使用 ON DUPLICATE KEY，避免同一只股票重复插入 WATCHING 记录。
+    - 这个函数由卖出成功后调用；失败只打印日志，不影响卖出结果。
+    """
+    code = (code or "").strip().upper()
+    if not code:
+        return
+
+    try:
+        peak_price = row.get("b_peak_price") if row else None
+        peak_profit = row.get("b_peak_profit") if row else None
+        cost_price = float(row.get("cost_price") or 0.0) if row else 0.0
+        peak_price_f = float(peak_price or 0.0)
+        peak_gain_pct = (peak_price_f - cost_price) / cost_price if cost_price > 0 and peak_price_f > 0 else 0.0
+
+        # 只把“曾经涨起来过”的 B 放进妖股观察池。
+        # 如果买入后没涨过 3% 就止损，大概率只是买错，不值得让 F 二次追踪。
+        if peak_gain_pct < float(B_MONSTER_MIN_PEAK_GAIN_PCT):
+            print(
+                f"[B MONSTER] {code} skip watchlist: peak_gain={peak_gain_pct:.2%} "
+                f"< min={B_MONSTER_MIN_PEAK_GAIN_PCT:.2%} reason={reason}",
+                flush=True,
+            )
+            return
+
+        notes = "B策略清仓离场，进入妖股二次启动观察池"
+
+        sql = f"""
+        INSERT INTO `{MONSTER_TABLE}` (
+            stock_code,
+            source_strategy,
+            source_reason,
+            last_sell_price,
+            last_sell_time,
+            b_peak_price,
+            b_peak_profit,
+            watch_status,
+            watch_since,
+            last_checked_at,
+            notes
+        )
+        VALUES (%s, 'B', %s, %s, NOW(), %s, %s, 'WATCHING', NOW(), NULL, %s)
+        ON DUPLICATE KEY UPDATE
+            source_reason=VALUES(source_reason),
+            last_sell_price=VALUES(last_sell_price),
+            last_sell_time=VALUES(last_sell_time),
+            b_peak_price=VALUES(b_peak_price),
+            b_peak_profit=VALUES(b_peak_profit),
+            last_checked_at=NULL,
+            notes=VALUES(notes);
+        """
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    code,
+                    (reason or "")[:255],
+                    sell_price,
+                    peak_price,
+                    peak_profit,
+                    notes,
+                ),
+            )
+        print(f"[B MONSTER] {code} added to watchlist sell_price={sell_price} reason={reason}", flush=True)
+    except Exception as e:
+        print(f"[B MONSTER] {code} write watchlist failed: {e}", flush=True)
+
 
 def get_snapshot_quote_realtime(code: str):
     code = (code or "").strip().upper()
@@ -509,6 +579,7 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
             qty=0, is_bought=0, can_sell=0, can_buy=0,
             stop_loss_price=None, take_profit_price=None,
             b_stage=0, base_qty=0,
+            b_peak_price=None, b_peak_profit=0, b_last_profit=0,
             b_stop_pending_since=None, b_stop_pending_sl=None,
             last_order_side="sell",
             last_order_intent=_intent_short(f"B:SELL_SKIP no_real_pos {reason}"),
@@ -525,6 +596,8 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
     old_tp = row.get("take_profit_price")
     old_b_stage = int(row.get("b_stage") or 0)
     old_base_qty = int(row.get("base_qty") or 0)
+    old_peak_price = float(row.get("b_peak_price") or 0.0)
+    old_cost = float(row.get("cost_price") or 0.0)
 
     # ============================================================
     # 2) 提交市价卖单
@@ -583,6 +656,15 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
     if sold_qty < qty:
         print(f"[B SELL] {code} partial fill: req={qty} sold={sold_qty}", flush=True)
 
+    sell_price = None
+    try:
+        o = tc.get_order_by_id(str(order_id))
+        p = getattr(o, "filled_avg_price", None)
+        if p is not None and str(p).strip() != "":
+            sell_price = float(p)
+    except Exception:
+        sell_price = None
+
     # ============================================================
     # 5) 按真实成交量更新 DB
     # ============================================================
@@ -595,6 +677,9 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
     new_take_profit = old_tp if remaining_qty > 0 else None
     new_b_stage = old_b_stage if remaining_qty > 0 else 0
     new_base_qty = old_base_qty if remaining_qty > 0 else 0
+    new_peak_price = old_peak_price if remaining_qty > 0 else None
+    new_peak_profit = max((old_peak_price - old_cost) * remaining_qty, 0.0) if remaining_qty > 0 else 0.0
+    new_last_profit = 0.0
 
     sql = f"""
     UPDATE `{OPS_TABLE}`
@@ -610,7 +695,10 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
         stop_loss_price=%s,
         take_profit_price=%s,
         b_stage=%s,
-        base_qty=%s
+        base_qty=%s,
+        b_peak_price=%s,
+        b_peak_profit=%s,
+        b_last_profit=%s
     WHERE stock_code=%s AND stock_type='B';
     """
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -629,6 +717,9 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
                 new_take_profit,
                 int(new_b_stage),
                 int(new_base_qty),
+                new_peak_price,
+                float(new_peak_profit),
+                float(new_last_profit),
                 code,
             ),
         )
@@ -638,6 +729,10 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
         f"stage={new_b_stage} base_qty={new_base_qty} reason={reason} order_id={order_id}",
         flush=True,
     )
+
+    if remaining_qty == 0:
+        _write_monster_watchlist(conn, code, reason, sell_price, row)
+
     return True
 
 
@@ -1131,6 +1226,9 @@ def strategy_B_buy(code: str) -> bool:
             stop_loss_price=%s,
             take_profit_price=%s,
             b_stage=%s,
+            b_peak_price=%s,
+            b_peak_profit=%s,
+            b_last_profit=%s,
             b_stop_pending_since=NULL,
             b_stop_pending_sl=NULL,
             can_sell=1,
@@ -1153,6 +1251,9 @@ def strategy_B_buy(code: str) -> bool:
                     round(float(init_sl), 2),
                     float(last_stage),
                     int(last_stage),
+                    round(float(cost_price), 2),
+                    0.0,
+                    0.0,
                     _intent_short(intent),
                     str(order_id or ""),
                     now_str,
@@ -1843,8 +1944,9 @@ def strategy_B_sell(code: str) -> bool:
     设计哲学：
     1) 不加仓 —— 初始仓位即最终仓位,简化心智
     2) Stage 仅作"分层落袋的触发器",不再控 SL
-    3) SL 完全由 dynamic trail 主导（+3% 近保本 / +6% 保本 / +10% 锁 3% / +25% 后 trailing）
-    4) 保留 same-day lock / 闪崩 pending stop / 结构退出
+    3) 普通B用更紧的保护：初始 -2%，涨 3% 后锁 1%
+    4) 涨 5% 后启用“最高价回撤保护”，防止利润大幅回吐
+    5) 保留 Stage 分层止盈 / same-day lock / 闪崩 pending stop / 结构退出
 
     搭配建议：
     - 把 B_TARGET_NOTIONAL_USD 抬到 1500-2500（用更大基础仓换金字塔效应）
@@ -1863,15 +1965,22 @@ def strategy_B_sell(code: str) -> bool:
     # ============================================================
     ENABLE_STRUCTURE_EXIT_STAGE = 3  # +60% 后启用 K 线结构退出
 
-    # 动态 SL 参数
-    TRAIL_NEAR_BREAKEVEN_PCT = 0.03  # +3% -> SL = cost*0.995
-    TRAIL_BREAKEVEN_PCT = 0.06       # +6% -> SL = cost
-    TRAIL_LOCK_3_PCT = 0.10          # +10% -> SL = cost*1.03
-    TRAIL_LOCK_6_PCT = 0.15          # +15% -> SL = cost*1.06
-    TRAIL_PRICE_TRACK_PCT = 0.25     # +25% -> 切换到 price trailing
-    TRAIL_BACKOFF_PCT = 0.08         # +25% 后允许 8% 回撤
-    TRAIL_TIGHTEN_40_PCT = 0.40      # +40% -> trailing 收紧到 10% 回撤
-    TRAIL_TIGHTEN_70_PCT = 0.70      # +70% -> trailing 收紧到 12% 回撤
+    # 普通B止损参数：
+    # - 买入后初始止损由 strategy_B_buy 写入 cost*0.98。
+    # - 如果历史记录没有 stop_loss_price，这里也会补成 cost*0.98。
+    # - 当前涨幅 >= 3% 后，止损抬到 cost*1.01，锁 1% 利润。
+    TRAIL_LOCK_START_PCT = 0.03
+    TRAIL_LOCK_SL_MULT = 1.01
+
+    # 最高价回撤保护：
+    # 这不是替代分层止盈，而是保护“已经涨起来但又回落”的剩余仓位。
+    # 涨幅越大，允许从高点回撤的空间越大，避免妖股后期被太早洗掉。
+    PEAK_GIVEBACK_RULES = [
+        (0.40, 0.05),   # 最高涨 >=40%，从最高价回撤 5% 卖
+        (0.20, 0.035),  # 最高涨 >=20%，从最高价回撤 3.5% 卖
+        (0.10, 0.025),  # 最高涨 >=10%，从最高价回撤 2.5% 卖
+        (0.05, 0.02),   # 最高涨 >=5%，从最高价回撤 2% 卖
+    ]
 
     BLOCK_SAME_DAY_SELL_AFTER_BUY = True
     SAME_DAY_FORCE_SELL_LOSS_PCT = -0.05
@@ -1999,15 +2108,10 @@ def strategy_B_sell(code: str) -> bool:
 
     def _calc_dynamic_trail_sl(cost_, price_, sl_old_):
         """
-        平衡版动态 SL:
-          1) 涨幅 < 3%:不动
-          2) +3%:SL 抬到 cost*0.995,接近保本
-          3) +6%:SL 抬到 cost,真正保本
-          4) +10%:SL 抬到 cost*1.03,锁 3%
-          5) +15%:SL 抬到 cost*1.06,锁 6%
-          6) +25%:price 跟踪,8% 回撤
-          7) +40%:price 跟踪,10% 回撤
-          8) +70%:price 跟踪,12% 回撤
+        普通B动态止损：
+          1) 初始 SL = cost*0.98，由买入落库；这里兜底补齐。
+          2) 当前涨幅 >= 3% 后，SL 抬到 cost*1.01，锁 1% 利润。
+          3) 更高涨幅不在这里继续抬 SL，交给“最高价回撤保护”处理。
         """
         cost_ = _safe_float(cost_, 0.0)
         price_ = _safe_float(price_, 0.0)
@@ -2019,22 +2123,58 @@ def strategy_B_sell(code: str) -> bool:
         up_pct_ = (price_ - cost_) / cost_
         new_sl = sl_old_
 
-        if up_pct_ >= TRAIL_NEAR_BREAKEVEN_PCT:
-            new_sl = max(new_sl, cost_ * 0.995)
-        if up_pct_ >= TRAIL_BREAKEVEN_PCT:
-            new_sl = max(new_sl, cost_ * 1.00)
-        if up_pct_ >= TRAIL_LOCK_3_PCT:
-            new_sl = max(new_sl, cost_ * 1.03)
-        if up_pct_ >= TRAIL_LOCK_6_PCT:
-            new_sl = max(new_sl, cost_ * 1.06)
-        if up_pct_ >= TRAIL_PRICE_TRACK_PCT:
-            new_sl = max(new_sl, price_ * (1.0 - TRAIL_BACKOFF_PCT))
-        if up_pct_ >= TRAIL_TIGHTEN_40_PCT:
-            new_sl = max(new_sl, price_ * 0.90)
-        if up_pct_ >= TRAIL_TIGHTEN_70_PCT:
-            new_sl = max(new_sl, price_ * 0.88)
+        if up_pct_ >= TRAIL_LOCK_START_PCT:
+            new_sl = max(new_sl, cost_ * TRAIL_LOCK_SL_MULT)
 
         return round(new_sl, 2)
+
+    def _giveback_pct_for_peak(peak_gain_pct_):
+        """
+        根据持仓以来最高涨幅，决定允许从最高价回撤多少。
+
+        返回 None 表示还没涨够，不启用最高价回撤保护。
+        """
+        for min_gain, giveback_pct in PEAK_GIVEBACK_RULES:
+            if peak_gain_pct_ >= min_gain:
+                return giveback_pct
+        return None
+
+    def _update_peak_tracking(conn_, code_, row_, cost_, qty_, price_):
+        """
+        记录持仓以来最高价和最高浮盈。
+
+        为了避免每轮都写数据库，只有这些情况才写：
+        - 当前价格刷新 b_peak_price
+        - 当前浮盈相对 b_last_profit 变化超过 20 美元
+
+        需要字段：
+          b_peak_price, b_peak_profit, b_last_profit
+        """
+        old_peak_price = _safe_float(row_.get("b_peak_price"), 0.0)
+        old_last_profit = _safe_float(row_.get("b_last_profit"), 0.0)
+
+        if old_peak_price <= 0 or old_peak_price < cost_ * 0.5:
+            old_peak_price = cost_
+
+        peak_price = max(old_peak_price, price_)
+        profit_now = (price_ - cost_) * qty_
+        peak_profit = max(_safe_float(row_.get("b_peak_profit"), 0.0), (peak_price - cost_) * qty_)
+
+        updates = {}
+        if peak_price > old_peak_price + 0.005:
+            updates["b_peak_price"] = round(float(peak_price), 4)
+            updates["b_peak_profit"] = round(float(peak_profit), 4)
+
+        if abs(profit_now - old_last_profit) >= 20:
+            updates["b_last_profit"] = round(float(profit_now), 4)
+
+        if updates:
+            try:
+                _update_ops_fields(conn_, code_, **updates)
+            except Exception as e:
+                print(f"[B SELL] {code_} peak tracking write failed: {e}", flush=True)
+
+        return peak_price, profit_now, peak_profit
 
     def _get_pending_stop_info(row_):
         pending_since = _parse_dt(row_.get("b_stop_pending_since"))
@@ -2130,9 +2270,21 @@ def strategy_B_sell(code: str) -> bool:
             flush=True,
         )
 
+        # ----- 0) 更新最高价/最高浮盈追踪 -----
+        # 这个数据用于后面的“最高价回撤保护”：
+        # 比如最高涨到 +5% 后，如果从最高价回撤 2%，就保护利润离场。
+        peak_price, profit_now, peak_profit = _update_peak_tracking(conn, code, row, cost, qty, price)
+        peak_gain_pct = (peak_price - cost) / cost if cost > 0 else 0.0
+        print(
+            f"[B SELL] {code} peak_price={peak_price:.2f} peak_gain={peak_gain_pct:.2%} "
+            f"profit_now={profit_now:.2f} peak_profit={peak_profit:.2f}",
+            flush=True,
+        )
+
         # ----- 1) 补初始 SL -----
         if sl <= 0:
-            init_sl = max(float(trigger or 0), float(cost) * 0.97) if cost > 0 else 0
+            # 普通B初始止损统一用 cost*0.98，避免 trigger/entry_open 把止损抬到买入价上方。
+            init_sl = float(cost) * 0.98 if cost > 0 else 0
             if init_sl > 0:
                 sl = _cap_sl_below_price(init_sl, price)
                 try:
@@ -2152,6 +2304,37 @@ def strategy_B_sell(code: str) -> bool:
                     print(f"[B SELL] {code} trail old_sl={old_sl:.2f} new_sl={sl:.2f}", flush=True)
                 except Exception as e:
                     print(f"[B SELL] {code} dynamic trail write failed: {e}", flush=True)
+
+        # ----- 3) 最高价回撤保护 -----
+        # 这条规则专门解决“最高赚很多，最后吐回很多”的问题。
+        # 它不取消分层止盈；如果价格一路涨，不触发回撤，后面仍然会执行 Stage 分层卖出。
+        giveback_pct = _giveback_pct_for_peak(peak_gain_pct)
+        if giveback_pct is not None:
+            giveback_trigger = round(float(peak_price) * (1.0 - float(giveback_pct)), 2)
+            print(
+                f"[B SELL] {code} giveback watch: peak={peak_price:.2f} "
+                f"allow_pullback={giveback_pct:.2%} trigger={giveback_trigger:.2f}",
+                flush=True,
+            )
+
+            if price <= giveback_trigger:
+                row_now = _latest_row_for_lock(conn, row)
+                if not _allow_sell_even_same_day(row_now, up_pct):
+                    print(
+                        f"[B SELL] {code} giveback blocked by same-day lock: "
+                        f"price={price:.2f} trigger={giveback_trigger:.2f} up_pct={up_pct:.2%}",
+                        flush=True,
+                    )
+                    return False
+
+                reason = (
+                    f"PEAK_GIVEBACK price={price:.2f} <= trigger={giveback_trigger:.2f} "
+                    f"peak={peak_price:.2f} peak_gain={peak_gain_pct:.2%} "
+                    f"pullback={giveback_pct:.2%} profit_now={profit_now:.2f} peak_profit={peak_profit:.2f}"
+                )
+                print(f"[B SELL] {code} peak giveback sell qty={qty} reason={reason}", flush=True)
+                traded = _sell_qty(conn, code, qty, reason) or traded
+                return traded
 
         # ----- 3) 已存在的 pending stop -----
         row_now = _latest_row_for_lock(conn, row)

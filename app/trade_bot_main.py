@@ -55,6 +55,7 @@ from app.strategy_b import *  # noqa
 from app.strategy_c import *  # noqa
 from app.strategy_d import *  # noqa
 from app.strategy_e import *  # noqa
+from app.strategy_f import *  # noqa
 
 # =========================
 # 4) 强制 stdout/stderr UTF-8
@@ -312,7 +313,7 @@ def load_rows(conn, mode: str):
         sql = f"""
         SELECT stock_code, stock_type, is_bought, can_sell, can_buy
         FROM {TABLE}
-        WHERE stock_type IN ('A','B','C','D','E')
+        WHERE stock_type IN ('A','B','C','D','E','F')
           AND is_bought=1 AND can_sell=1
         ORDER BY stock_type, stock_code
         """
@@ -320,7 +321,7 @@ def load_rows(conn, mode: str):
         sql = f"""
         SELECT stock_code, stock_type, is_bought, can_sell, can_buy
         FROM {TABLE}
-        WHERE stock_type IN ('A','B','C','D','E')
+        WHERE stock_type IN ('A','B','C','D','E','F')
           AND can_buy=1 AND (is_bought IS NULL OR is_bought<>1)
         ORDER BY stock_type, stock_code
         """
@@ -351,6 +352,20 @@ def dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed: bool) -
             traded = (r is True)
         elif buy_allowed and can_buy == 1:
             r = safe_call(strategy_B_buy, code)
+            traded = (r is True)
+    elif stype == "C":
+        if is_bought == 1 and can_sell == 1:
+            r = safe_call(strategy_C_sell, code)
+            traded = (r is True)
+        elif buy_allowed and can_buy == 1:
+            r = safe_call(strategy_C_buy, code)
+            traded = (r is True)
+    elif stype == "F":
+        if is_bought == 1 and can_sell == 1:
+            r = safe_call(strategy_F_sell, code)
+            traded = (r is True)
+        elif buy_allowed and can_buy == 1:
+            r = safe_call(strategy_F_buy, code)
             traded = (r is True)
     else:
         # 其它策略先不动（你后面自己补）
@@ -468,7 +483,7 @@ def one_round(conn, buy_allowed):
             is_bought = int(row.get("is_bought") or 0)
             can_sell  = int(row.get("can_sell") or 0)
 
-            if not code or stype not in ("A", "B", "C", "D", "E"):
+            if not code or stype not in ("A", "B", "C", "D", "E", "F"):
                 continue
 
             traded = dispatch_one(code, stype, is_bought, can_sell, 0, True)
@@ -493,6 +508,10 @@ def one_round(conn, buy_allowed):
         log.info("[ROUND] BUY skipped (gate closed)")
         return conn, traded_any
 
+    # F 是 B 被利润回吐洗出去后的二次启动观察池。
+    # 买入阶段开始前先刷新候选，只把满足条件的 WATCHING 股票写成 F/can_buy=1。
+    safe_call(strategy_F_refresh_candidates)
+
     buy_rows = load_rows(conn, mode="buy") or []
     buy_n = len(buy_rows)
 
@@ -509,7 +528,7 @@ def one_round(conn, buy_allowed):
             stype = (row.get("stock_type") or "").strip().upper()
             can_buy = int(row.get("can_buy") or 0)
 
-            if not code or stype not in ("A", "B", "C", "D", "E"):
+            if not code or stype not in ("A", "B", "C", "D", "E", "F"):
                 continue
 
             traded = dispatch_one(code, stype, 0, 0, can_buy, True)
