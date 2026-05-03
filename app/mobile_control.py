@@ -596,11 +596,9 @@ class Handler(BaseHTTPRequestHandler):
         <header><h1>TradeBot 控制台</h1><span class="muted">手机第一版</span></header>
         <main>
           {f'<section class="card"><b>{_esc(msg)}</b></section>' if msg else ''}
-          <div class="grid">
-            <section class="card"><h2>状态</h2><div id="status-box">{parts["status"]}</div><div id="counts-box">{parts["counts"]}</div></section>
-            <section class="card"><h2>控制</h2>{control_form}</section>
-          </div>
-          <details class="card" style="margin-top:12px"><summary>券商持仓</summary><p class="muted">卖出按钮会提交 extended_hours=True 的 DAY 限价卖单，限价≈当前价*(1-{SELL_LIMIT_BUFFER_PCT:.2%})。</p><div id="positions-box">{parts["positions"]}</div></details>
+          <details class="card" style="margin-top:12px"><summary>状态</summary><div id="status-box">{parts["status"]}</div><div id="counts-box">{parts["counts"]}</div></details>
+          <details class="card" style="margin-top:12px"><summary>控制</summary>{control_form}</details>
+          <details class="card" style="margin-top:12px" open><summary>券商持仓</summary><p class="muted">卖出按钮会提交 extended_hours=True 的 DAY 限价卖单，限价≈当前价*(1-{SELL_LIMIT_BUFFER_PCT:.2%})。</p><div id="positions-box">{parts["positions"]}</div></details>
           <details class="card" style="margin-top:12px"><summary>策略队列</summary><div id="ops-box">{parts["ops"]}</div></details>
           <details class="card" style="margin-top:12px"><summary>期权组合</summary><div id="spreads-box">{parts["spreads"]}</div></details>
         </main>
