@@ -299,6 +299,63 @@ def refresh_buy_gate(force: bool = False) -> bool:
 # ✅ 在全局游标区，多加一个 SELL
 _BUY_CURSOR = 0
 _SELL_CURSOR = 0
+
+_CONTROL = {
+    "global_buy_enabled": 1,
+    "strategy_b_enabled": 1,
+    "strategy_c_enabled": 1,
+    "strategy_f_enabled": 1,
+    "sell_only_mode": 0,
+    "emergency_stop": 0,
+}
+
+
+def ensure_bot_control_table(conn):
+    sql = """
+    CREATE TABLE IF NOT EXISTS bot_control (
+        id INT NOT NULL PRIMARY KEY DEFAULT 1,
+        global_buy_enabled TINYINT NOT NULL DEFAULT 1,
+        strategy_b_enabled TINYINT NOT NULL DEFAULT 1,
+        strategy_c_enabled TINYINT NOT NULL DEFAULT 1,
+        strategy_f_enabled TINYINT NOT NULL DEFAULT 1,
+        sell_only_mode TINYINT NOT NULL DEFAULT 0,
+        emergency_stop TINYINT NOT NULL DEFAULT 0,
+        note VARCHAR(255) NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        cur.execute("INSERT IGNORE INTO bot_control (id) VALUES (1);")
+
+
+def load_bot_control(conn):
+    global _CONTROL
+    ensure_bot_control_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM bot_control WHERE id=1 LIMIT 1;")
+        row = cur.fetchone() or {}
+
+    _CONTROL = {
+        "global_buy_enabled": int(row.get("global_buy_enabled") or 0),
+        "strategy_b_enabled": int(row.get("strategy_b_enabled") or 0),
+        "strategy_c_enabled": int(row.get("strategy_c_enabled") or 0),
+        "strategy_f_enabled": int(row.get("strategy_f_enabled") or 0),
+        "sell_only_mode": int(row.get("sell_only_mode") or 0),
+        "emergency_stop": int(row.get("emergency_stop") or 0),
+    }
+    return _CONTROL
+
+
+def _strategy_buy_enabled(stype: str) -> bool:
+    stype = (stype or "").strip().upper()
+    if stype == "B":
+        return _CONTROL.get("strategy_b_enabled", 1) == 1
+    if stype == "C":
+        return _CONTROL.get("strategy_c_enabled", 1) == 1
+    if stype == "F":
+        return _CONTROL.get("strategy_f_enabled", 1) == 1
+    return True
 # =========================
 # 15) load_rows：分 sell/buy 两种
 #     ✅ 必须 ORDER BY 保证顺序稳定（游标才有意义）
@@ -350,21 +407,21 @@ def dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed: bool) -
         if is_bought == 1 and can_sell == 1:
             r = safe_call(strategy_B_sell, code)
             traded = (r is True)
-        elif buy_allowed and can_buy == 1:
+        elif buy_allowed and can_buy == 1 and _strategy_buy_enabled("B"):
             r = safe_call(strategy_B_buy, code)
             traded = (r is True)
     elif stype == "C":
         if is_bought == 1 and can_sell == 1:
             r = safe_call(strategy_C_sell, code)
             traded = (r is True)
-        elif buy_allowed and can_buy == 1:
+        elif buy_allowed and can_buy == 1 and _strategy_buy_enabled("C"):
             r = safe_call(strategy_C_buy, code)
             traded = (r is True)
     elif stype == "F":
         if is_bought == 1 and can_sell == 1:
             r = safe_call(strategy_F_sell, code)
             traded = (r is True)
-        elif buy_allowed and can_buy == 1:
+        elif buy_allowed and can_buy == 1 and _strategy_buy_enabled("F"):
             r = safe_call(strategy_F_buy, code)
             traded = (r is True)
     else:
@@ -626,6 +683,12 @@ def main_loop():
                 log.info("DB 已连接")
 
             conn = ensure_conn_alive(conn)
+            control = load_bot_control(conn)
+
+            if control.get("emergency_stop") == 1:
+                log.warning("[CONTROL] emergency_stop=1，暂停本轮所有买卖...")
+                t.sleep(30)
+                continue
 
             # 1) 原来的资金开关
             bp_buy_allowed = refresh_buy_gate(force=False)
@@ -635,14 +698,28 @@ def main_loop():
             market_buy_allowed = (market_gate == 1)
 
             # 3) 最终买入开关：资金允许 且 大盘允许
-            buy_allowed = bp_buy_allowed and market_buy_allowed
+            buy_allowed = (
+                bp_buy_allowed
+                and market_buy_allowed
+                and control.get("global_buy_enabled") == 1
+                and control.get("sell_only_mode") != 1
+            )
 
-            if not market_buy_allowed:
+            if control.get("sell_only_mode") == 1:
+                log.info("[CONTROL] sell_only_mode=1，仅允许卖出...")
+            elif control.get("global_buy_enabled") != 1:
+                log.info("[CONTROL] global_buy_enabled=0，禁止买入，仅允许卖出...")
+            elif not market_buy_allowed:
                 log.info("大盘趋势不行，禁止买入，仅允许卖出...")
             elif not bp_buy_allowed:
                 log.info("账户资金不足，禁止买入，仅允许卖出...")
             else:
-                log.info("买入条件允许：资金开关=1，大盘开关=1")
+                log.info(
+                    "买入条件允许：资金开关=1，大盘开关=1 "
+                    f"B={control.get('strategy_b_enabled')} "
+                    f"C={control.get('strategy_c_enabled')} "
+                    f"F={control.get('strategy_f_enabled')}"
+                )
 
             conn, traded_once = one_round(conn, buy_allowed)
 

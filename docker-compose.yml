@@ -68,3 +68,35 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cszy_monitor
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      TZ: America/Los_Angeles
+      TRADE_ENV: ${ALPACA_MODE}
+      MOBILE_CONTROL_PORT: 5050
+      MOBILE_CONTROL_TOKEN: ${MOBILE_CONTROL_TOKEN:-change-me-please}
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./scripts:/app/scripts
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["python", "-u", "app/mobile_control.py"]
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
