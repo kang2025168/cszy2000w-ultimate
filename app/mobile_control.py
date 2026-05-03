@@ -15,11 +15,12 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import pymysql
 
@@ -42,6 +43,7 @@ SPREADS_TABLE = os.getenv("C_SPREADS_TABLE", "option_spreads")
 LEGS_TABLE = os.getenv("C_LEGS_TABLE", "option_spread_legs")
 
 POSITION_CACHE_SEC = int(os.getenv("MOBILE_POSITION_CACHE_SEC", "30"))
+SELL_LIMIT_BUFFER_PCT = float(os.getenv("MOBILE_SELL_LIMIT_BUFFER_PCT", "0.005"))
 _position_cache = {
     "ts": 0.0,
     "env": "",
@@ -109,11 +111,85 @@ def _money(v):
         return ""
 
 
+def _limit_price_for_stock(price: float) -> float:
+    """
+    股票限价精度：
+    - >= 1 美元按 2 位小数
+    - < 1 美元按 4 位小数
+    """
+    price = float(price or 0.0)
+    if price <= 0:
+        return 0.0
+    return round(price, 4 if price < 1 else 2)
+
+
 def _pct(v):
     try:
         return f"{float(v) * 100:.2f}%"
     except Exception:
         return ""
+
+
+def _is_equity_position(row: dict) -> bool:
+    asset_class = str(row.get("asset_class") or "").upper()
+    return "EQUITY" in asset_class or asset_class in ("US_EQUITY", "US_EQUITIES")
+
+
+def _submit_sell_position(symbol: str):
+    """
+    手机控制台手动卖出持仓。
+
+    盘前/盘后 Alpaca 不接受 market order，只接受：
+      - limit order
+      - time_in_force=day
+      - extended_hours=True
+
+    所以这里用当前价下方一点点的限价卖单，让它尽量成为可成交的
+    marketable limit order，同时避免真正 market order 在扩展时段被拒。
+    """
+    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest
+
+    symbol = (symbol or "").strip().upper()
+    if not symbol:
+        raise RuntimeError("empty symbol")
+
+    tc = _get_trading_client()
+    pos = tc.get_open_position(symbol)
+    qty = getattr(pos, "qty", None)
+    current_price = getattr(pos, "current_price", None)
+
+    qty_f = float(qty or 0)
+    price_f = float(current_price or 0)
+    if qty_f <= 0:
+        raise RuntimeError(f"{symbol} qty<=0")
+    if price_f <= 0:
+        raise RuntimeError(f"{symbol} current_price missing")
+
+    limit_price = _limit_price_for_stock(price_f * (1.0 - SELL_LIMIT_BUFFER_PCT))
+    if limit_price <= 0:
+        raise RuntimeError(f"{symbol} invalid limit_price")
+
+    req = LimitOrderRequest(
+        symbol=symbol,
+        qty=str(qty),
+        side=OrderSide.SELL,
+        time_in_force=TimeInForce.DAY,
+        limit_price=limit_price,
+        extended_hours=True,
+    )
+    order = tc.submit_order(order_data=req)
+
+    # 卖出后让下一次页面刷新重新拉持仓。
+    _position_cache["ts"] = 0.0
+    return {
+        "symbol": symbol,
+        "qty": qty,
+        "current_price": price_f,
+        "limit_price": limit_price,
+        "order_id": getattr(order, "id", ""),
+        "status": getattr(order, "status", ""),
+    }
 
 
 def _get_positions_cached():
@@ -211,6 +287,37 @@ def _table(rows, cols) -> str:
     return f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
 
 
+def _positions_table(rows) -> str:
+    if not rows:
+        return '<div class="empty">暂无数据</div>'
+
+    cols = [
+        ("代码", "symbol"),
+        ("数量", "qty"),
+        ("成本", "avg_entry_price"),
+        ("现价", "current_price"),
+        ("市值", "market_value"),
+        ("浮盈亏", "unrealized_pl"),
+        ("浮盈亏%", "unrealized_plpc"),
+    ]
+    head = "".join(f"<th>{_esc(c)}</th>" for c, _ in cols) + "<th>操作</th>"
+    body = []
+    for r in rows:
+        tds = "".join(f"<td>{_esc(r.get(k))}</td>" for _, k in cols)
+        symbol = str(r.get("symbol") or "").strip().upper()
+        if symbol and _is_equity_position(r):
+            action = f"""
+            <form method="post" action="/sell_position" onsubmit="return confirm('确认卖出 {symbol} 全部持仓？扩展时段会用当前价下方一点点的限价单提交。');">
+              <input type="hidden" name="symbol" value="{_esc(symbol)}">
+              <button class="danger mini" type="submit">卖出</button>
+            </form>
+            """
+        else:
+            action = '<span class="muted">-</span>'
+        body.append(f"<tr>{tds}<td>{action}</td></tr>")
+    return f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+
+
 def _page(body: str) -> bytes:
     css = """
     <style>
@@ -232,6 +339,7 @@ def _page(body: str) -> bytes:
       button, .btn { display:inline-block; border:0; border-radius:8px; padding:11px 14px; background:#2563eb; color:white; text-decoration:none; font-weight:600; font-size:15px; }
       .danger { background:#dc2626; }
       .secondary { background:#374151; }
+      .mini { padding:7px 10px; font-size:13px; white-space:nowrap; }
       .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
       .table-wrap { overflow-x:auto; }
       table { width:100%; border-collapse:collapse; font-size:13px; }
@@ -239,6 +347,12 @@ def _page(body: str) -> bytes:
       th { color:#cbd5e1; font-weight:600; }
       .empty { color:var(--muted); padding:12px 0; }
       .status-line { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+      details.card { display:block; }
+      summary { cursor:pointer; list-style:none; display:flex; justify-content:space-between; align-items:center; font-weight:700; font-size:16px; color:#f8fafc; }
+      summary::-webkit-details-marker { display:none; }
+      summary::after { content:"展开"; color:var(--muted); font-size:13px; font-weight:500; }
+      details[open] summary { margin-bottom:10px; }
+      details[open] summary::after { content:"收起"; }
       @media (max-width:600px) { main { padding:10px; } .card { padding:12px; } }
     </style>
     """
@@ -267,6 +381,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(content)
+
+    def _send_json(self, data: dict, status=HTTPStatus.OK):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
     def _redirect(self, path="/"):
         self.send_response(302)
@@ -310,6 +430,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/" or path == "/index":
             self._dashboard()
+            return
+        if path == "/api/refresh":
+            self._api_refresh()
             return
         self._send(_page("<main>Not found</main>"), HTTPStatus.NOT_FOUND)
 
@@ -359,9 +482,22 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect("/")
             return
 
+        if path == "/sell_position":
+            symbol = (data.get("symbol") or [""])[0]
+            try:
+                result = _submit_sell_position(symbol)
+                msg = (
+                    f"已提交卖出 {result['symbol']} qty={result['qty']} "
+                    f"limit={result['limit_price']} status={result['status']} order={result['order_id']}"
+                )
+            except Exception as e:
+                msg = f"卖出失败: {str(e)[:120]}"
+            self._redirect(f"/?msg={quote(msg)}")
+            return
+
         self._send(_page("<main>Not found</main>"), HTTPStatus.NOT_FOUND)
 
-    def _dashboard(self):
+    def _load_dashboard_parts(self):
         with _connect() as conn:
             _ensure_control(conn)
             control = _fetch_one(conn, "SELECT * FROM bot_control WHERE id=1 LIMIT 1;")
@@ -408,6 +544,35 @@ class Handler(BaseHTTPRequestHandler):
         </div>
         """
 
+        return {
+            "control": control,
+            "status": status,
+            "counts": _table(counts, [('策略','stock_type'),('待买','buy_q'),('待卖','sell_q')]),
+            "positions": _positions_table(positions),
+            "ops": _table(ops, [('代码','stock_code'),('类','stock_type'),('持仓','is_bought'),('买','can_buy'),('卖','can_sell'),('qty','qty'),('cost','cost_price'),('side','last_order_side'),('intent','last_order_intent'),('更新','updated_at')]),
+            "spreads": _table(spreads, [('ID','id'),('标的','underlying'),('模式','mode'),('到期','expiry'),('状态','status'),('入场','entry_price'),('风险','max_loss'),('更新','updated_at')]),
+        }
+
+    def _api_refresh(self):
+        try:
+            parts = self._load_dashboard_parts()
+            self._send_json({
+                "ok": True,
+                "status": parts["status"],
+                "counts": parts["counts"],
+                "positions": parts["positions"],
+                "ops": parts["ops"],
+                "spreads": parts["spreads"],
+            })
+        except Exception as e:
+            self._send_json({"ok": False, "error": str(e)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _dashboard(self):
+        parts = self._load_dashboard_parts()
+        control = parts["control"]
+        qs = parse_qs(urlparse(self.path).query)
+        msg = (qs.get("msg") or [""])[0]
+
         control_form = f"""
         <form method="post" action="/control">
           {_bool_button("global_buy_enabled", control.get("global_buy_enabled"), "总买入允许")}
@@ -430,16 +595,31 @@ class Handler(BaseHTTPRequestHandler):
         body = f"""
         <header><h1>TradeBot 控制台</h1><span class="muted">手机第一版</span></header>
         <main>
+          {f'<section class="card"><b>{_esc(msg)}</b></section>' if msg else ''}
           <div class="grid">
-            <section class="card"><h2>状态</h2>{status}{_table(counts, [('策略','stock_type'),('待买','buy_q'),('待卖','sell_q')])}</section>
+            <section class="card"><h2>状态</h2><div id="status-box">{parts["status"]}</div><div id="counts-box">{parts["counts"]}</div></section>
             <section class="card"><h2>控制</h2>{control_form}</section>
           </div>
-          <section class="card" style="margin-top:12px"><h2>券商持仓</h2>{_table(positions, [('代码','symbol'),('类型','asset_class'),('数量','qty'),('成本','avg_entry_price'),('现价','current_price'),('市值','market_value'),('浮盈亏','unrealized_pl'),('浮盈亏%','unrealized_plpc')])}</section>
-          <section class="card" style="margin-top:12px"><h2>策略队列</h2>{_table(ops, [('代码','stock_code'),('类','stock_type'),('持仓','is_bought'),('买','can_buy'),('卖','can_sell'),('qty','qty'),('cost','cost_price'),('side','last_order_side'),('intent','last_order_intent'),('更新','updated_at')])}</section>
-          <section class="card" style="margin-top:12px"><h2>期权组合</h2>{_table(spreads, [('ID','id'),('标的','underlying'),('模式','mode'),('到期','expiry'),('状态','status'),('入场','entry_price'),('风险','max_loss'),('更新','updated_at')])}</section>
+          <details class="card" style="margin-top:12px"><summary>券商持仓</summary><p class="muted">卖出按钮会提交 extended_hours=True 的 DAY 限价卖单，限价≈当前价*(1-{SELL_LIMIT_BUFFER_PCT:.2%})。</p><div id="positions-box">{parts["positions"]}</div></details>
+          <details class="card" style="margin-top:12px"><summary>策略队列</summary><div id="ops-box">{parts["ops"]}</div></details>
+          <details class="card" style="margin-top:12px"><summary>期权组合</summary><div id="spreads-box">{parts["spreads"]}</div></details>
         </main>
         <script>
-          setTimeout(function() {{ window.location.reload(); }}, {POSITION_CACHE_SEC * 1000});
+          async function refreshData() {{
+            try {{
+              const resp = await fetch('/api/refresh', {{ cache: 'no-store' }});
+              const data = await resp.json();
+              if (!data.ok) return;
+              document.getElementById('status-box').innerHTML = data.status;
+              document.getElementById('counts-box').innerHTML = data.counts;
+              document.getElementById('positions-box').innerHTML = data.positions;
+              document.getElementById('ops-box').innerHTML = data.ops;
+              document.getElementById('spreads-box').innerHTML = data.spreads;
+            }} catch (e) {{
+              console.log('refresh failed', e);
+            }}
+          }}
+          setInterval(refreshData, {POSITION_CACHE_SEC * 1000});
         </script>
         """
         self._send(_page(body))
