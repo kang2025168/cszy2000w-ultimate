@@ -19,12 +19,18 @@
 from __future__ import annotations
 
 import os
+import re
 import traceback
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 from typing import Optional
 
 import pymysql
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 
 
 # =========================
@@ -51,6 +57,8 @@ DB = dict(
 # =========================
 # 策略 C 参数
 # =========================
+TRADE_ENV = (os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper").strip().lower()
+
 C_LOOKBACK_DAYS = int(os.getenv("C_LOOKBACK_DAYS", "90"))
 C_MIN_BARS = int(os.getenv("C_MIN_BARS", "60"))
 
@@ -65,8 +73,14 @@ C_SIDEWAYS_RET10_MAX = float(os.getenv("C_SIDEWAYS_RET10_MAX", "0.04"))
 C_STRIKE_STEP = float(os.getenv("C_STRIKE_STEP", "5"))
 C_SPREAD_WIDTH = float(os.getenv("C_SPREAD_WIDTH", "10"))
 C_CREDIT_SHORT_OTM_PCT = float(os.getenv("C_CREDIT_SHORT_OTM_PCT", "0.02"))
-C_EXPIRY_DAYS_MIN = int(os.getenv("C_EXPIRY_DAYS_MIN", "30"))
-C_EXPIRY_DAYS_MAX = int(os.getenv("C_EXPIRY_DAYS_MAX", "45"))
+C_DEBIT_EXPIRY_DAYS_MIN = int(os.getenv("C_DEBIT_EXPIRY_DAYS_MIN", "45"))
+C_DEBIT_EXPIRY_DAYS_MAX = int(os.getenv("C_DEBIT_EXPIRY_DAYS_MAX", "60"))
+C_CREDIT_EXPIRY_DAYS_MIN = int(os.getenv("C_CREDIT_EXPIRY_DAYS_MIN", "21"))
+C_CREDIT_EXPIRY_DAYS_MAX = int(os.getenv("C_CREDIT_EXPIRY_DAYS_MAX", "35"))
+
+# 兼容旧环境变量：如果你仍然设置 C_EXPIRY_DAYS_MIN/MAX，会作为 fallback 使用。
+C_EXPIRY_DAYS_MIN = int(os.getenv("C_EXPIRY_DAYS_MIN", str(C_DEBIT_EXPIRY_DAYS_MIN)))
+C_EXPIRY_DAYS_MAX = int(os.getenv("C_EXPIRY_DAYS_MAX", str(C_DEBIT_EXPIRY_DAYS_MAX)))
 
 # 借方价差：Bull Call / Bear Put。
 # 例如花 2.00 买入，涨到 3.20 是盈利 60%，跌到 1.20 是亏损 40%。
@@ -84,11 +98,53 @@ C_DTE_EXIT_DAYS = int(os.getenv("C_DTE_EXIT_DAYS", "10"))
 # 仓位控制：C 是期权策略，宁可少做，不要铺太多。
 C_MAX_OPEN_SPREADS = int(os.getenv("C_MAX_OPEN_SPREADS", "3"))
 C_MAX_RISK_PER_TRADE = float(os.getenv("C_MAX_RISK_PER_TRADE", "300"))
+C_MIN_OPTIONS_BUYING_POWER = float(os.getenv("C_MIN_OPTIONS_BUYING_POWER", "1000"))
+C_MAX_OPTIONS_BP_USAGE = float(os.getenv("C_MAX_OPTIONS_BP_USAGE", "1500"))
 C_BP_USE_RATIO = float(os.getenv("C_BP_USE_RATIO", "0.95"))
 C_MIN_CANDIDATE_SCORE = float(os.getenv("C_MIN_CANDIDATE_SCORE", "60"))
-C_REFRESH_LIMIT = int(os.getenv("C_REFRESH_LIMIT", "5"))
+C_REFRESH_LIMIT = int(os.getenv("C_REFRESH_LIMIT", "120"))
 C_CANDIDATE_MAX_AGE_DAYS = int(os.getenv("C_CANDIDATE_MAX_AGE_DAYS", "3"))
 C_SAME_SYMBOL_COOLDOWN_DAYS = int(os.getenv("C_SAME_SYMBOL_COOLDOWN_DAYS", "2"))
+C_READY_REQUIRE_OPTION_QUOTE = int(os.getenv("C_READY_REQUIRE_OPTION_QUOTE", "1"))
+C_DEBUG = int(os.getenv("C_DEBUG", "0"))
+C_OPTION_CHAIN_MIN_DAYS = int(os.getenv("C_OPTION_CHAIN_MIN_DAYS", "7"))
+C_OPTION_CHAIN_EXTRA_DAYS = int(os.getenv("C_OPTION_CHAIN_EXTRA_DAYS", "14"))
+
+# C 买入避开开盘前几分钟的期权报价混乱；卖出/风控不受这个限制。
+C_TZ_NAME = os.getenv("TZ", "America/Los_Angeles")
+C_MARKET_OPEN_TIME = os.getenv("C_MARKET_OPEN_TIME", "06:30")
+C_BUY_AFTER_OPEN_MINUTES = int(os.getenv("C_BUY_AFTER_OPEN_MINUTES", "10"))
+C_IGNORE_BUY_TIME = int(os.getenv("C_IGNORE_BUY_TIME", "0"))
+
+# 如果你的 stock_operations 还没有迁移到 UNIQUE(stock_code, stock_type)，
+# 可以用 C_RESERVED_OPS_SYMBOLS=QQQ 临时保护 QQQ/N 风控开关。
+# 迁移完成后默认不需要保留 symbol，QQQ/N 和 QQQ/C 可以共存。
+C_RESERVED_OPS_SYMBOLS = {
+    s.strip().upper()
+    for s in os.getenv("C_RESERVED_OPS_SYMBOLS", "").split(",")
+    if s.strip()
+}
+
+# 默认不允许策略 C 交易保留 symbol；如果只是想用 QQQ 做计划测试，
+# 请设置 C_ALLOW_DIRECT_TEST=1 且 C_ENABLE_REAL_ORDER=0。
+C_ALLOW_RESERVED_SYMBOL_TRADE = int(os.getenv("C_ALLOW_RESERVED_SYMBOL_TRADE", "0"))
+C_ALLOW_DIRECT_TEST = int(os.getenv("C_ALLOW_DIRECT_TEST", "0"))
+
+# 仅用于 paper 联调：允许保留 symbol 走真实 paper 下单，
+# 但仍然不更新 stock_operations。
+C_ALLOW_DIRECT_TEST_REAL_ORDER = int(os.getenv("C_ALLOW_DIRECT_TEST_REAL_ORDER", "0"))
+
+# 小账户规避 PDT：同日开仓默认不做普通平仓，但允许紧急风险出口。
+C_BLOCK_SAME_DAY_CLOSE = int(os.getenv("C_BLOCK_SAME_DAY_CLOSE", "1"))
+C_ALLOW_SAME_DAY_EMERGENCY_CLOSE = int(os.getenv("C_ALLOW_SAME_DAY_EMERGENCY_CLOSE", "1"))
+C_ALLOW_SAME_DAY_TAKE_PROFIT_CLOSE = int(os.getenv("C_ALLOW_SAME_DAY_TAKE_PROFIT_CLOSE", "1"))
+
+# 候选排序权重：
+# 趋势型借方价差弹性更好，略微提高权重；收租型更稳，但收益上限固定。
+C_MODE_WEIGHT_BULL_CALL = float(os.getenv("C_MODE_WEIGHT_BULL_CALL", "1.10"))
+C_MODE_WEIGHT_BEAR_PUT = float(os.getenv("C_MODE_WEIGHT_BEAR_PUT", "1.05"))
+C_MODE_WEIGHT_BULL_PUT = float(os.getenv("C_MODE_WEIGHT_BULL_PUT", "1.00"))
+C_MODE_WEIGHT_BEAR_CALL = float(os.getenv("C_MODE_WEIGHT_BEAR_CALL", "0.95"))
 
 # 兼容旧字段/旧表：如果 option_spreads.take_profit_pct 已经有值，仍优先读表里的值。
 C_TAKE_PROFIT_PCT = float(os.getenv("C_TAKE_PROFIT_PCT", str(C_DEBIT_TAKE_PROFIT_PCT)))
@@ -107,6 +163,9 @@ C_OPTION_MIN_BID = float(os.getenv("C_OPTION_MIN_BID", "0.01"))
 C_OPTION_MIN_MID = float(os.getenv("C_OPTION_MIN_MID", "0.05"))
 C_OPTION_DATA_FEED = os.getenv("C_OPTION_DATA_FEED", "indicative").strip().lower()
 C_OPTION_ENTRY_PRICE_BUFFER_PCT = float(os.getenv("C_OPTION_ENTRY_PRICE_BUFFER_PCT", "0.03"))
+C_OPTION_CHAIN_LOOKUP = int(os.getenv("C_OPTION_CHAIN_LOOKUP", "1"))
+C_OPTION_CHAIN_STRIKE_RANGE = float(os.getenv("C_OPTION_CHAIN_STRIKE_RANGE", "25"))
+C_OPTION_CHAIN_MAX_EXPIRIES = int(os.getenv("C_OPTION_CHAIN_MAX_EXPIRIES", "8"))
 
 # 1 = 如果表存在，就把生成的计划写入数据库；0 = 只打印，不写库。
 C_RECORD_PLAN = int(os.getenv("C_RECORD_PLAN", "1"))
@@ -202,11 +261,61 @@ def _round_to_step(price: float, step: float = C_STRIKE_STEP) -> float:
     return round(round(float(price) / step) * step, 2)
 
 
+def _now_local() -> datetime:
+    if ZoneInfo:
+        try:
+            return datetime.now(ZoneInfo(C_TZ_NAME))
+        except Exception:
+            pass
+    return datetime.now()
+
+
+def _parse_hhmm(s: str, default: dt_time) -> dt_time:
+    try:
+        hh, mm = str(s).strip().split(":", 1)
+        return dt_time(int(hh), int(mm))
+    except Exception:
+        return default
+
+
+def _is_c_buy_time() -> tuple[bool, str]:
+    """
+    C 新开仓时间门槛。
+
+    卖出/风控每轮都可以检查；新买入要等开盘后 N 分钟，
+    避免刚开盘期权 bid/ask 太乱。
+    """
+    if C_IGNORE_BUY_TIME == 1:
+        return True, "buy time ignored by C_IGNORE_BUY_TIME=1"
+
+    now = _now_local()
+    if now.weekday() >= 5:
+        return False, f"weekend now={now}"
+
+    open_t = _parse_hhmm(C_MARKET_OPEN_TIME, dt_time(6, 30))
+    open_dt = datetime.combine(now.date(), open_t)
+    if now.tzinfo is not None:
+        open_dt = open_dt.replace(tzinfo=now.tzinfo)
+    allow_dt = open_dt + timedelta(minutes=max(C_BUY_AFTER_OPEN_MINUTES, 0))
+    if now < allow_dt:
+        return False, f"before C buy window now={now.strftime('%H:%M:%S')} allow_after={allow_dt.strftime('%H:%M:%S')}"
+    return True, f"buy window ok now={now.strftime('%H:%M:%S')}"
+
+
 def _intent_short(s: str, max_len: int = 80) -> str:
     s = (s or "").strip()
     if len(s) <= max_len:
         return s
     return s[: max_len - 3] + "..."
+
+
+def _is_reserved_ops_symbol(code: str) -> bool:
+    """
+    判断 symbol 是否属于 stock_operations 的系统保留行。
+
+    例如 QQQ/N 是大盘风控开关，不是策略 C 的普通交易候选。
+    """
+    return (code or "").strip().upper() in C_RESERVED_OPS_SYMBOLS
 
 
 def _parse_date(v) -> Optional[date]:
@@ -269,12 +378,30 @@ def _get_trading_client():
     return _trading_client
 
 
-def _get_buying_power() -> float:
+def _get_options_buying_power() -> float:
+    """
+    期权开仓必须看 options_buying_power。
+
+    不能用股票 buying_power 代替，因为股票可以用 margin，
+    但期权通常不能用保证金杠杆购买。
+    """
     tc = _get_trading_client()
     acct = tc.get_account()
+    opt_bp = getattr(acct, "options_buying_power", None)
+    if opt_bp is not None:
+        return float(opt_bp or 0.0)
+
+    # 兼容兜底：如果 Alpaca SDK 没返回 options_buying_power，
+    # 先看 non_marginable_buying_power，再看 cash，最后才看 buying_power。
+    non_margin_bp = getattr(acct, "non_marginable_buying_power", None)
+    if non_margin_bp is not None:
+        return float(non_margin_bp or 0.0)
+
+    cash = getattr(acct, "cash", None)
+    if cash is not None:
+        return max(float(cash or 0.0), 0.0)
+
     bp = getattr(acct, "buying_power", None)
-    if bp is None:
-        bp = getattr(acct, "cash", None)
     return float(bp or 0.0)
 
 
@@ -363,11 +490,73 @@ def _occ_option_symbol(underlying: str, expiry: date, cp: str, strike: float) ->
     return f"{root}{yymmdd}{cp}{strike_int:08d}"
 
 
+def _parse_occ_option_symbol(symbol: str) -> Optional[dict]:
+    m = re.match(r"^([A-Z]+)(\d{6})([CP])(\d{8})$", (symbol or "").strip().upper())
+    if not m:
+        return None
+    root, yymmdd, cp, strike_raw = m.groups()
+    try:
+        expiry = datetime.strptime(yymmdd, "%y%m%d").date()
+        strike = int(strike_raw) / 1000.0
+    except Exception:
+        return None
+    return {
+        "underlying": root,
+        "expiry": expiry,
+        "cp": cp,
+        "strike": strike,
+    }
+
+
 def _attach_option_symbols(plan: SpreadPlan) -> SpreadPlan:
     for leg in plan.legs:
         if not leg.option_symbol:
             leg.option_symbol = _occ_option_symbol(plan.underlying, plan.expiry, leg.cp, leg.strike)
     return plan
+
+
+def _option_data_client_and_feed():
+    from alpaca.data import OptionHistoricalDataClient
+
+    try:
+        from alpaca.data.enums import OptionsFeed
+        feed = OptionsFeed.OPRA if C_OPTION_DATA_FEED == "opra" else OptionsFeed.INDICATIVE
+    except Exception:
+        feed = None
+
+    key = os.getenv("APCA_API_KEY_ID", "") or os.getenv("ALPACA_KEY", "")
+    secret = os.getenv("APCA_API_SECRET_KEY", "") or os.getenv("ALPACA_SECRET", "")
+    if not key or not secret:
+        raise RuntimeError("Alpaca option key missing: APCA_API_KEY_ID / APCA_API_SECRET_KEY")
+    return OptionHistoricalDataClient(key, secret), feed
+
+
+def _option_quote_from_snapshot(sym: str, snap) -> OptionQuote:
+    latest_quote = getattr(snap, "latest_quote", None) or getattr(snap, "latestQuote", None)
+    bid = _safe_float(getattr(latest_quote, "bid_price", None), None)
+    ask = _safe_float(getattr(latest_quote, "ask_price", None), None)
+    if bid is None:
+        bid = _safe_float(getattr(latest_quote, "bp", None), 0.0)
+    if ask is None:
+        ask = _safe_float(getattr(latest_quote, "ap", None), 0.0)
+
+    daily_bar = getattr(snap, "daily_bar", None) or getattr(snap, "dailyBar", None)
+    volume = int(_safe_float(getattr(daily_bar, "volume", None), 0.0))
+
+    open_interest = int(_safe_float(
+        getattr(snap, "open_interest", None)
+        or getattr(snap, "openInterest", None)
+        or getattr(snap, "oi", None),
+        0.0,
+    ))
+
+    return OptionQuote(
+        option_symbol=sym,
+        bid=float(bid or 0.0),
+        ask=float(ask or 0.0),
+        volume=volume,
+        open_interest=open_interest,
+    )
 
 
 def _get_option_quotes(option_symbols: list[str]) -> dict[str, OptionQuote]:
@@ -382,18 +571,9 @@ def _get_option_quotes(option_symbols: list[str]) -> dict[str, OptionQuote]:
     if not option_symbols:
         return {}
 
-    from alpaca.data import OptionHistoricalDataClient
     from alpaca.data.requests import OptionSnapshotRequest
 
-    try:
-        from alpaca.data.enums import OptionsFeed
-        feed = OptionsFeed.OPRA if C_OPTION_DATA_FEED == "opra" else OptionsFeed.INDICATIVE
-    except Exception:
-        feed = None
-
-    key = os.getenv("APCA_API_KEY_ID", "") or os.getenv("ALPACA_KEY", "")
-    secret = os.getenv("APCA_API_SECRET_KEY", "") or os.getenv("ALPACA_SECRET", "")
-    client = OptionHistoricalDataClient(key, secret)
+    client, feed = _option_data_client_and_feed()
 
     req_kwargs = {"symbol_or_symbols": option_symbols}
     if feed is not None:
@@ -406,36 +586,16 @@ def _get_option_quotes(option_symbols: list[str]) -> dict[str, OptionQuote]:
         if not snap:
             continue
 
-        latest_quote = getattr(snap, "latest_quote", None) or getattr(snap, "latestQuote", None)
-        bid = _safe_float(getattr(latest_quote, "bid_price", None), None)
-        ask = _safe_float(getattr(latest_quote, "ask_price", None), None)
-        if bid is None:
-            bid = _safe_float(getattr(latest_quote, "bp", None), 0.0)
-        if ask is None:
-            ask = _safe_float(getattr(latest_quote, "ap", None), 0.0)
-
-        daily_bar = getattr(snap, "daily_bar", None) or getattr(snap, "dailyBar", None)
-        volume = int(_safe_float(getattr(daily_bar, "volume", None), 0.0))
-
-        # 不同 SDK/数据源字段名可能不同，这里做宽松兼容。
-        open_interest = int(_safe_float(
-            getattr(snap, "open_interest", None)
-            or getattr(snap, "openInterest", None)
-            or getattr(snap, "oi", None),
-            0.0,
-        ))
-
-        out[sym] = OptionQuote(
-            option_symbol=sym,
-            bid=float(bid or 0.0),
-            ask=float(ask or 0.0),
-            volume=volume,
-            open_interest=open_interest,
-        )
+        out[sym] = _option_quote_from_snapshot(sym, snap)
     return out
 
 
-def _price_spread_from_quotes(plan: SpreadPlan, quote_map: dict[str, OptionQuote]) -> Optional[SpreadPricing]:
+def _price_spread_from_quotes(
+    plan: SpreadPlan,
+    quote_map: dict[str, OptionQuote],
+    active_options_usage: float = 0.0,
+    options_buying_power_override: Optional[float] = None,
+) -> Optional[SpreadPricing]:
     """
     用 bid/ask 测算开仓价格、最大亏损和可买数量。
 
@@ -445,17 +605,19 @@ def _price_spread_from_quotes(plan: SpreadPlan, quote_map: dict[str, OptionQuote
     这是保守估算，避免低估成本/风险。
     """
     plan = _attach_option_symbols(plan)
+
     quotes = []
     for leg in plan.legs:
         q = quote_map.get(str(leg.option_symbol))
         if not q:
-            return None
+            raise RuntimeError(f"missing option quote: {leg.option_symbol}")
         quotes.append(q)
 
     liquid_ok, liquid_reason = is_spread_quotes_liquid(quotes)
     if not liquid_ok:
         raise RuntimeError(f"option not liquid: {liquid_reason}")
 
+    # === 核心：计算净价格 ===
     net = 0.0
     for leg in plan.legs:
         q = quote_map[str(leg.option_symbol)]
@@ -466,33 +628,71 @@ def _price_spread_from_quotes(plan: SpreadPlan, quote_map: dict[str, OptionQuote
             net -= q.bid
 
     width = abs(float(plan.legs[0].strike) - float(plan.legs[1].strike))
-    buying_power = _get_buying_power()
-    usable_bp = max(buying_power * C_BP_USE_RATIO, 0.0)
+    if options_buying_power_override is None:
+        options_buying_power = _get_options_buying_power()
+    else:
+        options_buying_power = float(options_buying_power_override or 0.0)
 
+    if options_buying_power < C_MIN_OPTIONS_BUYING_POWER:
+        raise RuntimeError(
+            f"options_buying_power too low: {options_buying_power:.2f} "
+            f"< min={C_MIN_OPTIONS_BUYING_POWER:.2f}"
+        )
+
+    usable_bp = max(options_buying_power * C_BP_USE_RATIO, 0.0)
+    remaining_c_usage = max(C_MAX_OPTIONS_BP_USAGE - float(active_options_usage or 0.0), 0.0)
+
+    if remaining_c_usage <= 0:
+        raise RuntimeError(
+            f"C options usage cap reached: active_usage={active_options_usage:.2f} "
+            f">= cap={C_MAX_OPTIONS_BP_USAGE:.2f}"
+        )
+
+    # =========================
+    # ⭐ 核心修复：严格区分 debit / credit
+    # =========================
     if plan.mode in DEBIT_MODES:
-        debit = max(float(net), 0.01)
+        # 必须是正数（付钱）
+        if net <= 0:
+            raise RuntimeError(f"invalid debit spread net={net:.2f}")
+
+        debit = float(net)
         entry_price = round(debit * (1.0 + C_OPTION_ENTRY_PRICE_BUFFER_PCT), 2)
+
         max_loss_per_spread = entry_price * 100.0
         alpaca_limit_price = entry_price
+
     elif plan.mode in CREDIT_MODES:
-        credit = abs(min(float(net), -0.01))
+        # 必须是负数（收钱）
+        if net >= 0:
+            raise RuntimeError(f"invalid credit spread net={net:.2f}")
+
+        credit = abs(float(net))
         entry_price = round(credit * (1.0 - C_OPTION_ENTRY_PRICE_BUFFER_PCT), 2)
+
         if entry_price <= 0:
             raise RuntimeError(f"invalid credit entry_price={entry_price}")
+
         max_loss_per_spread = max((width - entry_price) * 100.0, 0.0)
         alpaca_limit_price = -entry_price
+
     else:
         raise RuntimeError(f"unknown mode={plan.mode}")
 
     if max_loss_per_spread <= 0:
         raise RuntimeError(f"invalid max_loss_per_spread={max_loss_per_spread}")
 
-    max_risk_budget = min(C_MAX_RISK_PER_TRADE, usable_bp)
+    # =========================
+    # 仓位计算
+    # =========================
+    max_risk_budget = min(C_MAX_RISK_PER_TRADE, usable_bp, remaining_c_usage)
     qty = int(max_risk_budget // max_loss_per_spread)
+
     if qty <= 0:
         raise RuntimeError(
-            f"not enough buying_power: bp={buying_power:.2f} usable={usable_bp:.2f} "
-            f"risk_per_spread={max_loss_per_spread:.2f} max_risk={C_MAX_RISK_PER_TRADE:.2f}"
+            f"not enough options_buying_power: options_bp={options_buying_power:.2f} usable={usable_bp:.2f} "
+            f"risk_per_spread={max_loss_per_spread:.2f} max_risk={C_MAX_RISK_PER_TRADE:.2f} "
+            f"remaining_c_usage={remaining_c_usage:.2f}"
         )
 
     return SpreadPricing(
@@ -500,30 +700,248 @@ def _price_spread_from_quotes(plan: SpreadPlan, quote_map: dict[str, OptionQuote
         alpaca_limit_price=round(alpaca_limit_price, 2),
         max_loss_per_spread=round(max_loss_per_spread, 2),
         qty=qty,
-        buying_power=round(buying_power, 2),
-        reason=f"{liquid_reason}; max_loss_per_spread={max_loss_per_spread:.2f} qty={qty}",
+        buying_power=round(options_buying_power, 2),
+        reason=(
+            f"{liquid_reason}; max_loss_per_spread={max_loss_per_spread:.2f} "
+            f"active_usage={active_options_usage:.2f} remaining_usage={remaining_c_usage:.2f} qty={qty}"
+        ),
     )
 
 
-def _next_friday_after(min_days: int) -> date:
+def _candidate_friday_expiries(mode: str) -> list[date]:
+    """
+    给 option chain 预检生成可尝试的周五到期日列表。
+
+    真实策略偏好：
+    - 借方价差偏 45-60 DTE
+    - 信用价差偏 21-35 DTE
+
+    但 Alpaca indicative 对很多个股远期期权链覆盖很差。
+    所以这里会从近端周五一路扫到目标窗口之后，优先把策略偏好的日期排前面，
+    但不会完全放弃近月可交易合约。
+    """
+    mode = (mode or "").strip().upper()
+    if mode in CREDIT_MODES:
+        preferred_min = C_CREDIT_EXPIRY_DAYS_MIN
+        preferred_max = C_CREDIT_EXPIRY_DAYS_MAX
+    else:
+        preferred_min = C_DEBIT_EXPIRY_DAYS_MIN
+        preferred_max = C_DEBIT_EXPIRY_DAYS_MAX
+
+    today = datetime.now().date()
+    scan_min = max(min(C_OPTION_CHAIN_MIN_DAYS, preferred_min), 1)
+    scan_max = max(preferred_max + max(C_OPTION_CHAIN_EXTRA_DAYS, 0), preferred_min)
+    start = today + timedelta(days=int(scan_min))
+    end = today + timedelta(days=int(scan_max))
+
+    d = start
+    while d.weekday() != 4:
+        d += timedelta(days=1)
+
+    all_fridays = []
+    while d <= end:
+        all_fridays.append(d)
+        d += timedelta(days=7)
+
+    def _expiry_score(expiry: date):
+        dte = (expiry - today).days
+        in_preferred = preferred_min <= dte <= preferred_max
+        if in_preferred:
+            center = (preferred_min + preferred_max) / 2.0
+            return (0, abs(dte - center))
+        # 近月能交易也可以接受，但排在偏好窗口后面。
+        if dte < preferred_min:
+            return (1, preferred_min - dte)
+        return (2, dte - preferred_max)
+
+    out = sorted(all_fridays, key=_expiry_score)[: max(C_OPTION_CHAIN_MAX_EXPIRIES, 1)]
+    if not out:
+        out = [_select_expiry(mode)]
+    return out
+
+
+def _get_option_chain_quotes(underlying: str, expiry: date, cp: str, center_strike: float, strike_range: float) -> dict[float, OptionQuote]:
+    """
+    从 Alpaca 实际返回的 option chain 里取报价。
+
+    这比自己拼 OCC symbol 更稳，因为很多个股并不是每个到期日/行权价都有可用报价。
+    """
+    from alpaca.data.requests import OptionChainRequest
+
+    client, feed = _option_data_client_and_feed()
+    opt_type = "call" if (cp or "").upper().startswith("C") else "put"
+    try:
+        from alpaca.data.enums import ContractType
+        opt_type = ContractType.CALL if opt_type == "call" else ContractType.PUT
+    except Exception:
+        pass
+
+    req_kwargs = {
+        "underlying_symbol": underlying.upper(),
+        "expiration_date": expiry,
+        "type": opt_type,
+        "strike_price_gte": max(float(center_strike) - float(strike_range), 0.0),
+        "strike_price_lte": float(center_strike) + float(strike_range),
+    }
+    if feed is not None:
+        req_kwargs["feed"] = feed
+
+    chain = client.get_option_chain(OptionChainRequest(**req_kwargs))
+    out = {}
+    if not chain:
+        return out
+
+    for sym, snap in chain.items():
+        parsed = _parse_occ_option_symbol(str(sym))
+        if not parsed:
+            continue
+        if parsed["expiry"] != expiry or parsed["cp"] != (cp or "").strip().upper()[0]:
+            continue
+        out[float(parsed["strike"])] = _option_quote_from_snapshot(str(sym), snap)
+    return out
+
+
+def _clone_plan_with_chain_strikes(plan: SpreadPlan, buy_leg: OptionLeg, sell_leg: OptionLeg, expiry: date) -> SpreadPlan:
+    legs = []
+    for old in plan.legs:
+        if old.side.upper() == "BUY":
+            src = buy_leg
+        else:
+            src = sell_leg
+        legs.append(OptionLeg(src.side, src.cp, float(src.strike), qty=old.qty, option_symbol=src.option_symbol))
+
+    return SpreadPlan(
+        underlying=plan.underlying,
+        mode=plan.mode,
+        expiry=expiry,
+        underlying_price=plan.underlying_price,
+        width=abs(float(legs[0].strike) - float(legs[1].strike)),
+        legs=legs,
+        signal_score=plan.signal_score,
+        signal_reason=plan.signal_reason,
+        max_profit=plan.max_profit,
+        max_loss=plan.max_loss,
+        status=plan.status,
+    )
+
+
+def _price_plan_from_option_chain(
+    plan: SpreadPlan,
+    active_options_usage: float,
+    options_buying_power: Optional[float] = None,
+) -> tuple[SpreadPlan, SpreadPricing]:
+    """
+    用实际 option chain 选择可交易两腿。
+
+    选择原则：
+    - 尽量贴近原计划的 buy/sell strike。
+    - 必须满足方向结构：Bull Call/ Bear Put / Bull Put / Bear Call。
+    - 必须通过流动性和资金检查。
+    """
+    if C_OPTION_CHAIN_LOOKUP != 1:
+        quote_map = _get_option_quotes([str(leg.option_symbol) for leg in _attach_option_symbols(plan).legs])
+        pricing = _price_spread_from_quotes(
+            plan,
+            quote_map,
+            active_options_usage=active_options_usage,
+            options_buying_power_override=options_buying_power,
+        )
+        return plan, pricing
+
+    buy_target = next((leg for leg in plan.legs if leg.side.upper() == "BUY"), None)
+    sell_target = next((leg for leg in plan.legs if leg.side.upper() == "SELL"), None)
+    if not buy_target or not sell_target:
+        raise RuntimeError("spread plan missing BUY/SELL legs")
+
+    cp = buy_target.cp
+    center = (float(buy_target.strike) + float(sell_target.strike)) / 2.0
+    strike_range = max(C_OPTION_CHAIN_STRIKE_RANGE, abs(float(sell_target.strike) - float(buy_target.strike)) * 2.5)
+    last_error = None
+
+    for expiry in _candidate_friday_expiries(plan.mode):
+        chain_quotes = _get_option_chain_quotes(plan.underlying, expiry, cp, center, strike_range)
+        if len(chain_quotes) < 2:
+            last_error = f"chain empty expiry={expiry} cp={cp}"
+            continue
+
+        strikes = sorted(chain_quotes.keys())
+        pairs = []
+        for s1 in strikes:
+            for s2 in strikes:
+                if abs(s1 - s2) < 0.01:
+                    continue
+                if plan.mode == MODE_BULL_CALL and not (s1 < s2):
+                    continue
+                if plan.mode == MODE_BEAR_PUT and not (s1 > s2):
+                    continue
+                if plan.mode == MODE_BULL_PUT and not (s1 < s2):
+                    # BUY lower put, SELL higher put
+                    continue
+                if plan.mode == MODE_BEAR_CALL and not (s1 > s2):
+                    # BUY higher call, SELL lower call
+                    continue
+
+                if plan.mode in (MODE_BULL_CALL, MODE_BEAR_PUT):
+                    buy_strike, sell_strike = s1, s2
+                else:
+                    buy_strike, sell_strike = s1, s2
+
+                width = abs(float(sell_strike) - float(buy_strike))
+                if width <= 0 or width > max(C_SPREAD_WIDTH * 2.0, C_SPREAD_WIDTH + 5.0):
+                    continue
+
+                score = abs(buy_strike - float(buy_target.strike)) + abs(sell_strike - float(sell_target.strike))
+                score += abs(width - C_SPREAD_WIDTH) * 0.25
+                pairs.append((score, buy_strike, sell_strike))
+
+        pairs.sort(key=lambda x: x[0])
+        for _score, buy_strike, sell_strike in pairs[:30]:
+            buy_q = chain_quotes[buy_strike]
+            sell_q = chain_quotes[sell_strike]
+            test_plan = _clone_plan_with_chain_strikes(
+                plan,
+                OptionLeg("BUY", cp, buy_strike, option_symbol=buy_q.option_symbol),
+                OptionLeg("SELL", cp, sell_strike, option_symbol=sell_q.option_symbol),
+                expiry,
+            )
+            try:
+                pricing = _price_spread_from_quotes(
+                    test_plan,
+                    {buy_q.option_symbol: buy_q, sell_q.option_symbol: sell_q},
+                    active_options_usage=active_options_usage,
+                    options_buying_power_override=options_buying_power,
+                )
+                return test_plan, pricing
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+    raise RuntimeError(last_error or "no tradable option chain pair")
+
+def _next_friday_after(min_days: int, max_days: Optional[int] = None) -> date:
     d = datetime.now().date() + timedelta(days=max(int(min_days), 1))
     while d.weekday() != 4:  # 4 = 周五，期权常用周五到期
         d += timedelta(days=1)
+    if max_days is not None:
+        max_d = datetime.now().date() + timedelta(days=max(int(max_days), int(min_days)))
+        if d > max_d:
+            return _next_friday_after(max_days, None)
     return d
 
 
-def _select_expiry() -> date:
+def _select_expiry(mode: str) -> date:
     """
-    选择 30-45 DTE 附近的周五到期。
+    按模式选择周五到期日。
 
-    第一版不做复杂期限优化，只取 >= C_EXPIRY_DAYS_MIN 的最近周五。
-    通常会落在 30-36 天；如果你后面想更久，可以调 C_EXPIRY_DAYS_MIN。
+    - Bull Call / Bear Put：方向型，给 45-60 DTE，留足趋势发酵时间。
+    - Bull Put / Bear Call：收租型，给 21-35 DTE，加快 theta 衰减，但避免太短。
     """
-    expiry = _next_friday_after(C_EXPIRY_DAYS_MIN)
-    max_expiry = datetime.now().date() + timedelta(days=max(C_EXPIRY_DAYS_MAX, C_EXPIRY_DAYS_MIN))
-    if expiry <= max_expiry:
-        return expiry
-    return _next_friday_after(C_EXPIRY_DAYS_MAX)
+    mode = (mode or "").strip().upper()
+    if mode in CREDIT_MODES:
+        return _next_friday_after(C_CREDIT_EXPIRY_DAYS_MIN, C_CREDIT_EXPIRY_DAYS_MAX)
+    if mode in DEBIT_MODES:
+        return _next_friday_after(C_DEBIT_EXPIRY_DAYS_MIN, C_DEBIT_EXPIRY_DAYS_MAX)
+    return _next_friday_after(C_EXPIRY_DAYS_MIN, C_EXPIRY_DAYS_MAX)
 
 
 def _load_bars(conn, symbol: str, limit: int = C_LOOKBACK_DAYS) -> list[dict]:
@@ -697,7 +1115,7 @@ def build_spread_plan(symbol: str, mode: str, price: float, market: dict) -> Opt
     if price <= 0 or mode == MODE_NO_TRADE:
         return None
 
-    expiry = _select_expiry()
+    expiry = _select_expiry(mode)
     width = float(C_SPREAD_WIDTH)
     atm = _round_to_step(price)
 
@@ -922,31 +1340,32 @@ def record_spread_plan(plan: SpreadPlan) -> Optional[int]:
             print(f"[C] skip record: active plan already exists for {plan.underlying}", flush=True)
             return None
 
+        spread_cols = _table_columns(conn, SPREADS_TABLE)
+        spread_values = {
+            "underlying": plan.underlying,
+            "mode": plan.mode,
+            "expiry": plan.expiry,
+            "status": plan.status,
+            "underlying_price": plan.underlying_price,
+            "width": plan.width,
+            "signal_score": plan.signal_score,
+            "signal_reason": plan.signal_reason[:500],
+            "max_profit": plan.max_profit,
+            "max_loss": plan.max_loss,
+            "take_profit_pct": _take_profit_for_mode(plan.mode),
+        }
+        insert_cols = [c for c in spread_values if c in spread_cols]
+        if not insert_cols:
+            raise RuntimeError(f"{SPREADS_TABLE} has no compatible insert columns")
+
+        col_sql = ", ".join(f"`{c}`" for c in insert_cols)
+        val_sql = ", ".join(["%s"] * len(insert_cols))
         spread_sql = f"""
-        INSERT INTO `{SPREADS_TABLE}` (
-            underlying, mode, expiry, status,
-            underlying_price, width, signal_score, signal_reason,
-            max_profit, max_loss, take_profit_pct, created_at, updated_at
-        )
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW());
+        INSERT INTO `{SPREADS_TABLE}` ({col_sql}, created_at, updated_at)
+        VALUES ({val_sql}, NOW(), NOW());
         """
         with conn.cursor() as cur:
-            cur.execute(
-                spread_sql,
-                (
-                    plan.underlying,
-                    plan.mode,
-                    plan.expiry,
-                    plan.status,
-                    plan.underlying_price,
-                    plan.width,
-                    plan.signal_score,
-                    plan.signal_reason[:500],
-                    plan.max_profit,
-                    plan.max_loss,
-                    _take_profit_for_mode(plan.mode),
-                ),
-            )
+            cur.execute(spread_sql, tuple(spread_values[c] for c in insert_cols))
             spread_id = int(cur.lastrowid)
 
             leg_sql = f"""
@@ -987,6 +1406,24 @@ def _count_active_spreads(conn) -> int:
     return int(row.get("n") or 0)
 
 
+def _sum_active_options_usage(conn) -> float:
+    """
+    估算 C 当前已占用的最大风险。
+
+    用 option_spreads.max_loss 作为 C 使用期权购买力的近似值；
+    这样可以限制 C 总占用不超过 C_MAX_OPTIONS_BP_USAGE。
+    """
+    sql = f"""
+    SELECT COALESCE(SUM(COALESCE(max_loss, 0)), 0) AS total
+    FROM `{SPREADS_TABLE}`
+    WHERE status IN ('PLANNED','SUBMITTED','OPEN','CLOSE_PLANNED','CLOSE_SUBMITTED');
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        row = cur.fetchone() or {}
+    return float(row.get("total") or 0.0)
+
+
 def _has_recent_closed_spread(conn, symbol: str) -> bool:
     """同一标的刚退出后冷却几天，避免刚卖完又马上追进去。"""
     if C_SAME_SYMBOL_COOLDOWN_DAYS <= 0:
@@ -1011,9 +1448,18 @@ def _load_latest_c_candidates(conn, limit: int = C_REFRESH_LIMIT) -> list[dict]:
 
     注意：扫描器只负责分类入表；这里才把少数候选送进 stock_operations，
     让主程序 BUY PHASE 像 B/F 一样统一调度。
+    这里的 limit 是“最多扫描多少个候选”，不是最终入队数量。
     """
     sql = f"""
-    SELECT c.*
+    SELECT
+        c.*,
+        CASE c.option_mode
+            WHEN %s THEN c.score * %s
+            WHEN %s THEN c.score * %s
+            WHEN %s THEN c.score * %s
+            WHEN %s THEN c.score * %s
+            ELSE c.score
+        END AS final_score
     FROM `{CANDIDATES_TABLE}` c
     JOIN (
         SELECT MAX(as_of) AS as_of
@@ -1022,12 +1468,82 @@ def _load_latest_c_candidates(conn, limit: int = C_REFRESH_LIMIT) -> list[dict]:
     WHERE c.option_mode <> %s
       AND c.score >= %s
       AND c.as_of >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
-    ORDER BY c.score DESC, c.symbol ASC
+    ORDER BY final_score DESC, c.score DESC, c.symbol ASC
     LIMIT %s;
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (MODE_NO_TRADE, float(C_MIN_CANDIDATE_SCORE), int(C_CANDIDATE_MAX_AGE_DAYS), int(limit)))
+        cur.execute(
+            sql,
+            (
+                MODE_BULL_CALL, float(C_MODE_WEIGHT_BULL_CALL),
+                MODE_BEAR_PUT, float(C_MODE_WEIGHT_BEAR_PUT),
+                MODE_BULL_PUT, float(C_MODE_WEIGHT_BULL_PUT),
+                MODE_BEAR_CALL, float(C_MODE_WEIGHT_BEAR_CALL),
+                MODE_NO_TRADE,
+                float(C_MIN_CANDIDATE_SCORE),
+                int(C_CANDIDATE_MAX_AGE_DAYS),
+                int(limit),
+            ),
+        )
         return cur.fetchall() or []
+
+
+def _market_from_candidate(row: dict) -> dict:
+    """把 strategy_c_candidates 行转成 build_spread_plan 需要的 market 字典。"""
+    return {
+        "trend": str(row.get("category") or "").strip().lower(),
+        "bias": "",
+        "score": _safe_float(row.get("score")),
+        "reason": str(row.get("reason") or ""),
+        "price": _safe_float(row.get("close_price")),
+    }
+
+
+def _candidate_option_ready(
+    row: dict,
+    active_options_usage: float,
+    options_buying_power: Optional[float] = None,
+) -> tuple[bool, Optional[SpreadPlan], Optional[SpreadPricing], str]:
+    """
+    候选入主队列前的期权预检。
+
+    以前是先把股票信号最高的几只放进 stock_operations，
+    到下单时才发现期权没有报价，导致名额被 DRVN/MO 这类票占住。
+
+    现在先生成组合、拉期权 quote、计算真实可下单价格；
+    只有报价完整且流动性/资金检查通过，才进入 stock_operations。
+    """
+    code = (row.get("symbol") or "").strip().upper()
+    mode = str(row.get("option_mode") or "").strip().upper()
+    price = _safe_float(row.get("close_price"))
+    if not code:
+        return False, None, None, "empty symbol"
+    if mode == MODE_NO_TRADE:
+        return False, None, None, "mode=NO_TRADE"
+    if price <= 0:
+        return False, None, None, f"invalid close_price={price}"
+
+    market = _market_from_candidate(row)
+    plan = build_spread_plan(code, mode, price, market)
+    if plan is None:
+        return False, None, None, "failed to build spread plan"
+
+    _attach_option_symbols(plan)
+    if C_READY_REQUIRE_OPTION_QUOTE != 1:
+        return True, plan, None, "option quote precheck disabled"
+
+    plan, pricing = _price_plan_from_option_chain(
+        plan,
+        active_options_usage=active_options_usage,
+        options_buying_power=options_buying_power,
+    )
+    if pricing is None:
+        return False, plan, None, "failed to price spread"
+
+    return True, plan, pricing, (
+        f"option_ok expiry={plan.expiry} entry={pricing.entry_price:.2f} "
+        f"risk={pricing.max_loss_per_spread:.2f} qty={pricing.qty}"
+    )
 
 
 def _upsert_c_ops_candidate(conn, row: dict) -> bool:
@@ -1035,12 +1551,16 @@ def _upsert_c_ops_candidate(conn, row: dict) -> bool:
     把 C 候选写入 stock_operations(stock_type='C', can_buy=1)。
 
     保护规则：
-    - 已有其它策略持仓，不抢。
-    - 已有其它策略候选，不强行覆盖。
+    - 只管理同一 symbol 的 C 行，不动 QQQ/N 这类控制行。
+    - 数据库迁移到 UNIQUE(stock_code, stock_type) 后，QQQ/N 与 QQQ/C 可共存。
     - 同一个标的已有 C 活跃组合，不重复开。
     """
     code = (row.get("symbol") or "").strip().upper()
     if not code:
+        return False
+
+    if _is_reserved_ops_symbol(code):
+        print(f"[C READY] {code} skip: reserved stock_operations control row", flush=True)
         return False
 
     if _has_active_plan(conn, code):
@@ -1050,7 +1570,7 @@ def _upsert_c_ops_candidate(conn, row: dict) -> bool:
         print(f"[C READY] {code} skip: cooldown after recent close", flush=True)
         return False
 
-    sql = f"SELECT * FROM `{OPS_TABLE}` WHERE stock_code=%s LIMIT 1;"
+    sql = f"SELECT * FROM `{OPS_TABLE}` WHERE stock_code=%s AND stock_type='C' LIMIT 1;"
     with conn.cursor() as cur:
         cur.execute(sql, (code,))
         existing = cur.fetchone()
@@ -1058,17 +1578,13 @@ def _upsert_c_ops_candidate(conn, row: dict) -> bool:
     close_price = _safe_float(row.get("close_price"))
     intent = _intent_short(
         f"C:READY {row.get('option_mode')} score={_safe_float(row.get('score')):.2f} "
-        f"as_of={row.get('as_of')}"
+        f"final={_safe_float(row.get('final_score')):.2f} as_of={row.get('as_of')}"
     )
 
     if existing:
-        old_type = str(existing.get("stock_type") or "").strip().upper()
         is_bought = int(existing.get("is_bought") or 0)
         if is_bought == 1:
-            print(f"[C READY] {code} skip: already bought stock_type={old_type}", flush=True)
-            return False
-        if old_type != "C":
-            print(f"[C READY] {code} skip: protected old stock_type={old_type}", flush=True)
+            print(f"[C READY] {code} skip: already bought stock_type=C", flush=True)
             return False
 
         sql = f"""
@@ -1110,27 +1626,84 @@ def strategy_C_refresh_candidates() -> int:
     conn = _connect()
     ready = 0
     try:
+        buy_time_ok, buy_time_reason = _is_c_buy_time()
+        if not buy_time_ok:
+            print(f"[C READY] skip: {buy_time_reason}", flush=True)
+            return 0
+
+        try:
+            options_bp = _get_options_buying_power()
+            if options_bp < C_MIN_OPTIONS_BUYING_POWER:
+                print(
+                    f"[C READY] skip: options_buying_power={options_bp:.2f} "
+                    f"< min={C_MIN_OPTIONS_BUYING_POWER:.2f}",
+                    flush=True,
+                )
+                return 0
+        except Exception as e:
+            print(f"[C READY] skip: failed to read options buying power: {e}", flush=True)
+            return 0
+
         active_n = _count_active_spreads(conn)
         if active_n >= C_MAX_OPEN_SPREADS:
             print(f"[C READY] skip: active_spreads={active_n} >= max={C_MAX_OPEN_SPREADS}", flush=True)
             return 0
 
+        active_usage = _sum_active_options_usage(conn)
+        if active_usage >= C_MAX_OPTIONS_BP_USAGE:
+            print(
+                f"[C READY] skip: active_options_usage={active_usage:.2f} "
+                f">= cap={C_MAX_OPTIONS_BP_USAGE:.2f}",
+                flush=True,
+            )
+            return 0
+
         room = max(C_MAX_OPEN_SPREADS - active_n, 0)
-        rows = _load_latest_c_candidates(conn, limit=min(C_REFRESH_LIMIT, room))
-        print(f"[C READY] candidates={len(rows)} active={active_n} room={room}", flush=True)
+        rows = _load_latest_c_candidates(conn, limit=C_REFRESH_LIMIT)
+        print(
+            f"[C READY] scan_candidates={len(rows)} active={active_n} room={room} "
+            f"options_bp={options_bp:.2f} active_usage={active_usage:.2f}",
+            flush=True,
+        )
 
         for row in rows:
+            if ready >= room:
+                break
+
+            code = (row.get("symbol") or "").strip().upper()
             try:
+                if _has_active_plan(conn, code):
+                    print(f"[C READY] {code} skip: active spread exists", flush=True)
+                    continue
+                if _has_recent_closed_spread(conn, code):
+                    print(f"[C READY] {code} skip: cooldown after recent close", flush=True)
+                    continue
+
+                ok, plan, pricing, reason = _candidate_option_ready(
+                    row,
+                    active_options_usage=active_usage + ready * C_MAX_RISK_PER_TRADE,
+                    options_buying_power=options_bp,
+                )
+                if not ok:
+                    print(
+                        f"[C READY] {code} skip: {reason} "
+                        f"mode={row.get('option_mode')} score={_safe_float(row.get('score')):.2f}",
+                        flush=True,
+                    )
+                    continue
+
                 if _upsert_c_ops_candidate(conn, row):
                     ready += 1
                     print(
                         f"[C READY] {row.get('symbol')} mode={row.get('option_mode')} "
-                        f"score={_safe_float(row.get('score')):.2f}",
+                        f"score={_safe_float(row.get('score')):.2f} "
+                        f"final={_safe_float(row.get('final_score')):.2f} {reason}",
                         flush=True,
                     )
             except Exception as e:
                 print(f"[C READY] {row.get('symbol')} failed: {e}", flush=True)
-                traceback.print_exc()
+                if C_DEBUG:
+                    traceback.print_exc()
         return ready
     finally:
         conn.close()
@@ -1248,6 +1821,50 @@ def _days_to_expiry(spread: dict) -> Optional[int]:
     if not expiry:
         return None
     return (expiry - datetime.now().date()).days
+
+
+def _is_same_day_open(spread: dict) -> bool:
+    opened = (
+        _parse_date(spread.get("opened_at"))
+        or _parse_date(spread.get("submitted_at"))
+        or _parse_date(spread.get("created_at"))
+    )
+    if not opened:
+        return False
+    return opened == _now_local().date()
+
+
+def _is_take_profit_close_reason(reason: str) -> bool:
+    reason = (reason or "").upper()
+    return "TAKE_PROFIT" in reason
+
+
+def _is_emergency_close_reason(reason: str) -> bool:
+    reason = (reason or "").upper()
+    emergency_keys = (
+        "STOP_LOSS",
+        "SHORT_STRIKE_THREAT",
+        "DTE_EXIT",
+    )
+    return any(k in reason for k in emergency_keys)
+
+
+def _block_same_day_close(spread: dict, reason: str) -> tuple[bool, str]:
+    """
+    小账户规避 PDT：
+    - 同日开仓默认不做普通趋势失效平仓，减少无意义 day trade。
+    - 如果当天已经达到预定收益，允许当天止盈落袋。
+    - 如果允许紧急出口，则止损/short strike 威胁/到期风险仍可平仓。
+    """
+    if C_BLOCK_SAME_DAY_CLOSE != 1:
+        return False, "same-day close allowed by config"
+    if not _is_same_day_open(spread):
+        return False, "not same-day open"
+    if C_ALLOW_SAME_DAY_TAKE_PROFIT_CLOSE == 1 and _is_take_profit_close_reason(reason):
+        return False, f"same-day take-profit close allowed: {reason}"
+    if C_ALLOW_SAME_DAY_EMERGENCY_CLOSE == 1 and _is_emergency_close_reason(reason):
+        return False, f"same-day emergency close allowed: {reason}"
+    return True, f"same-day close blocked to avoid PDT: {reason}"
 
 
 def _short_leg_strike(legs: list[dict], cp: str) -> Optional[float]:
@@ -1478,12 +2095,40 @@ def strategy_C_buy(code: str) -> bool:
     conn = None
     try:
         conn = _connect()
+        direct_test = False
+
+        buy_time_ok, buy_time_reason = _is_c_buy_time()
+        if not buy_time_ok:
+            print(f"[C] {code} skip: {buy_time_reason}", flush=True)
+            return False
+
+        if _is_reserved_ops_symbol(code) and C_ALLOW_RESERVED_SYMBOL_TRADE != 1:
+            allow_direct_real_order = (
+                C_ENABLE_REAL_ORDER == 1
+                and C_ALLOW_DIRECT_TEST_REAL_ORDER == 1
+                and TRADE_ENV == "paper"
+            )
+            if C_ALLOW_DIRECT_TEST == 1 and (C_ENABLE_REAL_ORDER != 1 or allow_direct_real_order):
+                direct_test = True
+                print(
+                    f"[C] {code} direct test mode: reserved symbol, "
+                    f"will not update {OPS_TABLE}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[C] {code} skip: reserved symbol for control row. "
+                    f"Use C_ALLOW_DIRECT_TEST=1 with C_ENABLE_REAL_ORDER=0 for planning only, "
+                    f"or paper-only C_ALLOW_DIRECT_TEST_REAL_ORDER=1 for order testing.",
+                    flush=True,
+                )
+                return False
 
         row = _load_c_ops_row(conn, code)
-        if not row:
+        if not row and not direct_test:
             print(f"[C] {code} skip: no C row in stock_operations", flush=True)
             return False
-        if int(row.get("can_buy") or 0) != 1:
+        if row and not direct_test and int(row.get("can_buy") or 0) != 1:
             print(f"[C] {code} skip: can_buy={row.get('can_buy')}", flush=True)
             return False
 
@@ -1491,16 +2136,25 @@ def strategy_C_buy(code: str) -> bool:
         if active_n >= C_MAX_OPEN_SPREADS:
             print(f"[C] {code} skip: active_spreads={active_n} >= max={C_MAX_OPEN_SPREADS}", flush=True)
             return False
-        if _has_active_plan(conn, code):
-            print(f"[C] {code} skip: active plan already exists", flush=True)
-            _update_ops_fields(
-                conn,
-                code,
-                can_buy=0,
-                last_order_side="buy",
-                last_order_intent=_intent_short("C:SKIP active_plan_exists"),
-                last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        active_usage = _sum_active_options_usage(conn)
+        if active_usage >= C_MAX_OPTIONS_BP_USAGE:
+            print(
+                f"[C] {code} skip: active_options_usage={active_usage:.2f} "
+                f">= cap={C_MAX_OPTIONS_BP_USAGE:.2f}",
+                flush=True,
             )
+            return False
+        if _has_active_plan(conn, code) and not direct_test:
+            print(f"[C] {code} skip: active plan already exists", flush=True)
+            if not direct_test:
+                _update_ops_fields(
+                    conn,
+                    code,
+                    can_buy=0,
+                    last_order_side="buy",
+                    last_order_intent=_intent_short("C:SKIP active_plan_exists"),
+                    last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
             return False
 
         candidate = _load_latest_candidate_for_symbol(conn, code)
@@ -1523,14 +2177,15 @@ def strategy_C_buy(code: str) -> bool:
             )
 
         if mode == MODE_NO_TRADE:
-            _update_ops_fields(
-                conn,
-                code,
-                can_buy=0,
-                last_order_side="buy",
-                last_order_intent=_intent_short("C:NO_TRADE signal faded"),
-                last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            )
+            if not direct_test:
+                _update_ops_fields(
+                    conn,
+                    code,
+                    can_buy=0,
+                    last_order_side="buy",
+                    last_order_intent=_intent_short("C:NO_TRADE signal faded"),
+                    last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
             return False
 
         plan = build_spread_plan(code, mode, price, market)
@@ -1544,9 +2199,12 @@ def strategy_C_buy(code: str) -> bool:
         pricing = None
         if C_ENABLE_REAL_ORDER == 1:
             try:
-                option_symbols = [str(leg.option_symbol) for leg in plan.legs if leg.option_symbol]
-                quote_map = _get_option_quotes(option_symbols)
-                pricing = _price_spread_from_quotes(plan, quote_map)
+                plan, pricing = _price_plan_from_option_chain(
+                    plan,
+                    active_options_usage=active_usage,
+                )
+                if pricing is None:
+                    raise RuntimeError("failed to price spread: missing quote or invalid pricing")
 
                 for leg in plan.legs:
                     leg.qty = int(pricing.qty)
@@ -1554,26 +2212,27 @@ def strategy_C_buy(code: str) -> bool:
                 plan.max_loss = float(pricing.max_loss_per_spread) * int(pricing.qty)
                 plan.signal_reason = (
                     f"{plan.signal_reason}; entry={pricing.entry_price:.2f} "
-                    f"limit={pricing.alpaca_limit_price:.2f} bp={pricing.buying_power:.2f} "
+                    f"limit={pricing.alpaca_limit_price:.2f} options_bp={pricing.buying_power:.2f} "
                     f"{pricing.reason}"
                 )
                 print(
                     f"[C] pricing {code}: entry={pricing.entry_price:.2f} "
                     f"limit={pricing.alpaca_limit_price:.2f} "
                     f"risk_per_spread={pricing.max_loss_per_spread:.2f} "
-                    f"qty={pricing.qty} bp={pricing.buying_power:.2f}",
+                    f"qty={pricing.qty} options_bp={pricing.buying_power:.2f}",
                     flush=True,
                 )
             except Exception as e:
                 print(f"[C] {code} real order blocked before submit: {e}", flush=True)
-                _update_ops_fields(
-                    conn,
-                    code,
-                    can_buy=0,
-                    last_order_side="buy",
-                    last_order_intent=_intent_short(f"C:BLOCK {str(e)[:60]}"),
-                    last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                )
+                if not direct_test:
+                    _update_ops_fields(
+                        conn,
+                        code,
+                        can_buy=0,
+                        last_order_side="buy",
+                        last_order_intent=_intent_short(f"C:BLOCK {str(e)[:60]}"),
+                        last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    )
                 return False
 
         spread_id = None
@@ -1591,16 +2250,17 @@ def strategy_C_buy(code: str) -> bool:
                             max_loss=float(pricing.max_loss_per_spread) * int(pricing.qty),
                             status="SUBMITTED",
                         )
-                    _update_ops_fields(
-                        conn,
-                        code,
-                        can_buy=0,
-                        can_sell=0,
-                        is_bought=0,
-                        last_order_side="buy",
-                        last_order_intent=_intent_short(f"C:PLAN spread_id={spread_id} {mode}"),
-                        last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    )
+                    if not direct_test:
+                        _update_ops_fields(
+                            conn,
+                            code,
+                            can_buy=0,
+                            can_sell=0,
+                            is_bought=0,
+                            last_order_side="buy",
+                            last_order_intent=_intent_short(f"C:PLAN spread_id={spread_id} {mode}"),
+                            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        )
             except Exception as e:
                 print(f"[C] record plan failed: {e}", flush=True)
                 return False
@@ -1649,14 +2309,15 @@ def strategy_C_buy(code: str) -> bool:
             print(f"[C] real order submit failed {code}: {e}", flush=True)
             if spread_id:
                 _update_spread_existing_fields(conn, spread_id, status="FAILED", close_reason=str(e)[:500])
-            _update_ops_fields(
-                conn,
-                code,
-                can_buy=0,
-                last_order_side="buy",
-                last_order_intent=_intent_short(f"C:ORDER_FAIL {str(e)[:60]}"),
-                last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            )
+            if not direct_test:
+                _update_ops_fields(
+                    conn,
+                    code,
+                    can_buy=0,
+                    last_order_side="buy",
+                    last_order_intent=_intent_short(f"C:ORDER_FAIL {str(e)[:60]}"),
+                    last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
             return False
 
     except Exception as e:
@@ -1722,6 +2383,13 @@ def strategy_C_sell(code: str) -> bool:
 
             if not should_close:
                 continue
+
+            block_same_day, block_reason = _block_same_day_close(spread, reason)
+            if block_same_day:
+                print(f"[C SELL] spread_id={spread_id} skip close: {block_reason}", flush=True)
+                continue
+            elif _is_same_day_open(spread):
+                print(f"[C SELL] spread_id={spread_id} same-day close check: {block_reason}", flush=True)
 
             close_legs = build_close_legs(legs)
             print_close_plan(spread, close_legs, reason, metric, current_value)

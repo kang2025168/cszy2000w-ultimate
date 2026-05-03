@@ -4,7 +4,7 @@ PyMySQL==1.1.1
 yfinance==0.2.54
 cryptography==43.0.3
 python-dotenv==1.0.1
-alpaca-py==0.29.0
+alpaca-py==0.43.2
 pandas-datareader>=0.10.0
 pandas-datareader>=0.10.0
 requests-cache

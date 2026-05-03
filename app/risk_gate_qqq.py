@@ -104,14 +104,27 @@ def _calc_gate(rows):
 def _ensure_gate_row(cur):
     """
     确保 stock_operations 里存在 QQQ + N 这条记录
-    不存在就插入一条
+    不存在就插入一条。
+
+    注意：
+    - QQQ/N 是系统风控开关，不允许参与任何买卖队列。
+    - stock_operations 迁移到 UNIQUE(stock_code, stock_type) 后，QQQ/N 可以和 QQQ/C 共存。
+    - 如果数据库还没迁移，ON DUPLICATE KEY 会把误写的 QQQ 行修回 N。
     """
     sql = f"""
     INSERT INTO `{OPS_TABLE}` (stock_code, stock_type, is_bought, can_buy, can_sell, entry_open)
     VALUES (%s, %s, 0, 0, 0, 0)
-    ON DUPLICATE KEY UPDATE stock_code=stock_code;
+    ON DUPLICATE KEY UPDATE
+        stock_type=%s,
+        is_bought=0,
+        can_buy=0,
+        can_sell=0,
+        last_order_side=NULL,
+        last_order_id=NULL,
+        last_order_time=NULL,
+        last_order_intent='N:GATE control row';
     """
-    cur.execute(sql, (GATE_SYMBOL, GATE_TYPE))
+    cur.execute(sql, (GATE_SYMBOL, GATE_TYPE, GATE_TYPE))
 
 
 def _write_gate(cur, gate):
