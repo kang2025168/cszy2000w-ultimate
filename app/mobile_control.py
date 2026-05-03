@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html
 import os
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -40,9 +41,117 @@ TABLE = os.getenv("OPS_TABLE", "stock_operations")
 SPREADS_TABLE = os.getenv("C_SPREADS_TABLE", "option_spreads")
 LEGS_TABLE = os.getenv("C_LEGS_TABLE", "option_spread_legs")
 
+POSITION_CACHE_SEC = int(os.getenv("MOBILE_POSITION_CACHE_SEC", "30"))
+_position_cache = {
+    "ts": 0.0,
+    "env": "",
+    "rows": [],
+    "error": "",
+}
+_trading_client = None
+_trading_client_key = None
+
 
 def _connect():
     return pymysql.connect(**DB)
+
+
+def _trade_env() -> str:
+    env = (os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper").strip().lower()
+    return "live" if env == "live" else "paper"
+
+
+def _alpaca_keys_for_env():
+    """
+    手机控制台需要自己选择 Alpaca key。
+
+    trade_bot_main.py 会在启动时把 PAPER/LIVE key 注入到 APCA_API_KEY_ID，
+    但 monitor 是独立进程，不能依赖主程序已经注入过的环境变量。
+    所以这里按 TRADE_ENV/ALPACA_MODE 主动选择：
+      - live  -> LIVE_APCA_API_KEY_ID / LIVE_APCA_API_SECRET_KEY
+      - paper -> PAPER_APCA_API_KEY_ID / PAPER_APCA_API_SECRET_KEY
+    最后再兼容 APCA_API_KEY_ID / ALPACA_KEY 这些通用变量。
+    """
+    env = _trade_env()
+    if env == "live":
+        key = os.getenv("LIVE_APCA_API_KEY_ID", "")
+        secret = os.getenv("LIVE_APCA_API_SECRET_KEY", "")
+    else:
+        key = os.getenv("PAPER_APCA_API_KEY_ID", "")
+        secret = os.getenv("PAPER_APCA_API_SECRET_KEY", "")
+
+    key = key or os.getenv("APCA_API_KEY_ID", "") or os.getenv("ALPACA_KEY", "")
+    secret = secret or os.getenv("APCA_API_SECRET_KEY", "") or os.getenv("ALPACA_SECRET", "")
+    return env, key, secret
+
+
+def _get_trading_client():
+    global _trading_client, _trading_client_key
+    env, key, secret = _alpaca_keys_for_env()
+    if not key or not secret:
+        raise RuntimeError("Alpaca key missing for mobile positions")
+
+    cache_key = (env, key[:8])
+    if _trading_client is not None and _trading_client_key == cache_key:
+        return _trading_client
+
+    from alpaca.trading.client import TradingClient
+
+    _trading_client = TradingClient(key, secret, paper=(env != "live"))
+    _trading_client_key = cache_key
+    return _trading_client
+
+
+def _money(v):
+    try:
+        return f"{float(v):.2f}"
+    except Exception:
+        return ""
+
+
+def _pct(v):
+    try:
+        return f"{float(v) * 100:.2f}%"
+    except Exception:
+        return ""
+
+
+def _get_positions_cached():
+    """
+    Alpaca 持仓接口 30 秒查一次。
+
+    页面刷新很频繁时直接用缓存，避免手机控制台把交易接口打得太密。
+    """
+    now = time.time()
+    env = _trade_env()
+    if (
+        _position_cache["rows"]
+        and _position_cache["env"] == env
+        and now - float(_position_cache["ts"] or 0) < POSITION_CACHE_SEC
+    ):
+        return _position_cache["rows"], _position_cache["error"], int(now - float(_position_cache["ts"] or 0))
+
+    try:
+        tc = _get_trading_client()
+        positions = tc.get_all_positions() or []
+        rows = []
+        for p in positions:
+            rows.append({
+                "symbol": getattr(p, "symbol", ""),
+                "asset_class": getattr(p, "asset_class", ""),
+                "qty": getattr(p, "qty", ""),
+                "avg_entry_price": _money(getattr(p, "avg_entry_price", "")),
+                "current_price": _money(getattr(p, "current_price", "")),
+                "market_value": _money(getattr(p, "market_value", "")),
+                "unrealized_pl": _money(getattr(p, "unrealized_pl", "")),
+                "unrealized_plpc": _pct(getattr(p, "unrealized_plpc", "")),
+            })
+        rows.sort(key=lambda r: abs(float(r.get("market_value") or 0.0)), reverse=True)
+        _position_cache.update({"ts": now, "env": env, "rows": rows, "error": ""})
+        return rows, "", 0
+    except Exception as e:
+        _position_cache.update({"ts": now, "env": env, "rows": [], "error": str(e)})
+        return [], str(e), 0
 
 
 def _esc(v) -> str:
@@ -283,12 +392,19 @@ class Handler(BaseHTTPRequestHandler):
             """)
 
         gate_val = int(float(gate.get("entry_open") or 0))
-        env = os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper"
+        env = _trade_env()
+        positions, positions_error, pos_age = _get_positions_cached()
+        pos_status = (
+            f'<span class="pill">持仓接口: <b class="bad">{_esc(positions_error[:80])}</b></span>'
+            if positions_error
+            else f'<span class="pill">持仓缓存: {pos_age}s / {POSITION_CACHE_SEC}s</span>'
+        )
         status = f"""
         <div class="status-line">
           <span class="pill">env: {_esc(env)}</span>
           <span class="pill">QQQ gate: <b class="{'ok' if gate_val == 1 else 'bad'}">{gate_val}</b></span>
           <span class="pill">updated: {_esc(control.get('updated_at'))}</span>
+          {pos_status}
         </div>
         """
 
@@ -318,9 +434,13 @@ class Handler(BaseHTTPRequestHandler):
             <section class="card"><h2>状态</h2>{status}{_table(counts, [('策略','stock_type'),('待买','buy_q'),('待卖','sell_q')])}</section>
             <section class="card"><h2>控制</h2>{control_form}</section>
           </div>
+          <section class="card" style="margin-top:12px"><h2>券商持仓</h2>{_table(positions, [('代码','symbol'),('类型','asset_class'),('数量','qty'),('成本','avg_entry_price'),('现价','current_price'),('市值','market_value'),('浮盈亏','unrealized_pl'),('浮盈亏%','unrealized_plpc')])}</section>
           <section class="card" style="margin-top:12px"><h2>策略队列</h2>{_table(ops, [('代码','stock_code'),('类','stock_type'),('持仓','is_bought'),('买','can_buy'),('卖','can_sell'),('qty','qty'),('cost','cost_price'),('side','last_order_side'),('intent','last_order_intent'),('更新','updated_at')])}</section>
           <section class="card" style="margin-top:12px"><h2>期权组合</h2>{_table(spreads, [('ID','id'),('标的','underlying'),('模式','mode'),('到期','expiry'),('状态','status'),('入场','entry_price'),('风险','max_loss'),('更新','updated_at')])}</section>
         </main>
+        <script>
+          setTimeout(function() {{ window.location.reload(); }}, {POSITION_CACHE_SEC * 1000});
+        </script>
         """
         self._send(_page(body))
 
