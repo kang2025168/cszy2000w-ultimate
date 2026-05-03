@@ -164,6 +164,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Location", path)
         self.end_headers()
 
+    def _redirect_with_cookie(self, path: str, cookie: str):
+        self.send_response(302)
+        self.send_header("Location", path)
+        self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+
     def _login_page(self, msg=""):
         body = f"""
         <header><h1>TradeBot 登录</h1></header>
@@ -206,7 +212,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/login":
             token = (data.get("token") or [""])[0]
             if token == TOKEN:
-                self._send(_page("<main>登录成功</main>"), headers={"Set-Cookie": f"token={token}; Path=/; HttpOnly; SameSite=Lax"})
+                self._redirect_with_cookie("/", f"token={token}; Path=/; HttpOnly; SameSite=Lax")
             else:
                 self._login_page("密码不对")
             return
