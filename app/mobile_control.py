@@ -18,12 +18,17 @@ import html
 import json
 import os
 import time
+from datetime import datetime, time as dt_time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlparse
 
 import pymysql
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 
 DB = dict(
     host=os.getenv("DB_HOST", "mysql"),
@@ -41,9 +46,13 @@ TOKEN = os.getenv("MOBILE_CONTROL_TOKEN", "change-me-please")
 TABLE = os.getenv("OPS_TABLE", "stock_operations")
 SPREADS_TABLE = os.getenv("C_SPREADS_TABLE", "option_spreads")
 LEGS_TABLE = os.getenv("C_LEGS_TABLE", "option_spread_legs")
+POSITION_CLOSE_TABLE = os.getenv("MOBILE_POSITION_CLOSE_TABLE", "broker_position_close_snapshots")
 
 POSITION_CACHE_SEC = int(os.getenv("MOBILE_POSITION_CACHE_SEC", "30"))
 SELL_LIMIT_BUFFER_PCT = float(os.getenv("MOBILE_SELL_LIMIT_BUFFER_PCT", "0.005"))
+CLOSE_CAPTURE_TZ = os.getenv("MOBILE_CLOSE_CAPTURE_TZ", "America/Los_Angeles")
+CLOSE_CAPTURE_TIME = os.getenv("MOBILE_CLOSE_CAPTURE_TIME", "12:59")
+CLOSE_CAPTURE_WINDOW_MIN = int(os.getenv("MOBILE_CLOSE_CAPTURE_WINDOW_MIN", "10"))
 _position_cache = {
     "ts": 0.0,
     "env": "",
@@ -56,6 +65,12 @@ _trading_client_key = None
 
 def _connect():
     return pymysql.connect(**DB)
+
+
+def _now_capture_tz():
+    if ZoneInfo:
+        return datetime.now(ZoneInfo(CLOSE_CAPTURE_TZ))
+    return datetime.now()
 
 
 def _trade_env() -> str:
@@ -109,6 +124,15 @@ def _money(v):
         return f"{float(v):.2f}"
     except Exception:
         return ""
+
+
+def _float_or_none(v):
+    try:
+        if v is None or str(v).strip() == "":
+            return None
+        return float(v)
+    except Exception:
+        return None
 
 
 def _limit_price_for_stock(price: float) -> float:
@@ -212,6 +236,8 @@ def _get_positions_cached():
         positions = tc.get_all_positions() or []
         rows = []
         for p in positions:
+            unrealized_pl = _float_or_none(getattr(p, "unrealized_pl", None))
+            unrealized_plpc = _float_or_none(getattr(p, "unrealized_plpc", None))
             rows.append({
                 "symbol": getattr(p, "symbol", ""),
                 "asset_class": getattr(p, "asset_class", ""),
@@ -219,8 +245,10 @@ def _get_positions_cached():
                 "avg_entry_price": _money(getattr(p, "avg_entry_price", "")),
                 "current_price": _money(getattr(p, "current_price", "")),
                 "market_value": _money(getattr(p, "market_value", "")),
-                "unrealized_pl": _money(getattr(p, "unrealized_pl", "")),
-                "unrealized_plpc": _pct(getattr(p, "unrealized_plpc", "")),
+                "unrealized_pl": _money(unrealized_pl),
+                "unrealized_plpc": _pct(unrealized_plpc),
+                "_unrealized_pl": unrealized_pl,
+                "_unrealized_plpc": unrealized_plpc,
             })
         rows.sort(key=lambda r: abs(float(r.get("market_value") or 0.0)), reverse=True)
         _position_cache.update({"ts": now, "env": env, "rows": rows, "error": ""})
@@ -251,6 +279,153 @@ def _ensure_control(conn):
     with conn.cursor() as cur:
         cur.execute(sql)
         cur.execute("INSERT IGNORE INTO bot_control (id) VALUES (1);")
+
+
+def _ensure_position_close_table(conn):
+    """
+    记录每天收盘前的券商持仓盈亏快照。
+
+    不写入 stock_operations，是因为券商持仓可能来自策略 B/C/F，
+    也可能来自手动交易。单独建表可以按日期保留历史快照，
+    第二天盘前仍然能拿“上一收盘”的值做对比。
+    """
+    sql = f"""
+    CREATE TABLE IF NOT EXISTS `{POSITION_CLOSE_TABLE}` (
+        id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        env VARCHAR(16) NOT NULL,
+        trade_date DATE NOT NULL,
+        symbol VARCHAR(32) NOT NULL,
+        qty DECIMAL(20,6) NULL,
+        avg_entry_price DECIMAL(20,6) NULL,
+        current_price DECIMAL(20,6) NULL,
+        market_value DECIMAL(20,2) NULL,
+        close_pl DECIMAL(20,2) NULL,
+        close_plpc DECIMAL(12,6) NULL,
+        captured_at DATETIME NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_env_date_symbol (env, trade_date, symbol),
+        KEY idx_env_symbol_date (env, symbol, trade_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+
+
+def _capture_time_parts():
+    try:
+        hh, mm = CLOSE_CAPTURE_TIME.split(":", 1)
+        return int(hh), int(mm)
+    except Exception:
+        return 12, 59
+
+
+def _in_close_capture_window(now_dt: datetime) -> bool:
+    if now_dt.weekday() >= 5:
+        return False
+    hh, mm = _capture_time_parts()
+    start = now_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    end_ts = start.timestamp() + CLOSE_CAPTURE_WINDOW_MIN * 60
+    return start.timestamp() <= now_dt.timestamp() <= end_ts
+
+
+def _maybe_capture_close_snapshot(rows, force: bool = False):
+    """
+    在收盘前 1 分钟附近记录一次持仓盈亏。
+
+    默认美西时间 12:59 到 13:09 之间，页面/接口刷新触发一次 UPSERT。
+    如果你希望绝对准时，后面也可以把同样逻辑拆成 cron 脚本跑。
+    """
+    if not rows:
+        return
+    now_dt = _now_capture_tz()
+    if (not force) and (not _in_close_capture_window(now_dt)):
+        return
+
+    env = _trade_env()
+    trade_date = now_dt.date().isoformat()
+    captured_at = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    args = []
+    for r in rows:
+        symbol = str(r.get("symbol") or "").strip().upper()
+        if not symbol or not _is_equity_position(r):
+            continue
+        args.append((
+            env,
+            trade_date,
+            symbol,
+            _float_or_none(r.get("qty")),
+            _float_or_none(r.get("avg_entry_price")),
+            _float_or_none(r.get("current_price")),
+            _float_or_none(r.get("market_value")),
+            _float_or_none(r.get("_unrealized_pl")),
+            _float_or_none(r.get("_unrealized_plpc")),
+            captured_at,
+        ))
+    if not args:
+        return
+
+    sql = f"""
+    INSERT INTO `{POSITION_CLOSE_TABLE}` (
+        env, trade_date, symbol, qty, avg_entry_price, current_price,
+        market_value, close_pl, close_plpc, captured_at
+    )
+    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+    ON DUPLICATE KEY UPDATE
+        qty=VALUES(qty),
+        avg_entry_price=VALUES(avg_entry_price),
+        current_price=VALUES(current_price),
+        market_value=VALUES(market_value),
+        close_pl=VALUES(close_pl),
+        close_plpc=VALUES(close_plpc),
+        captured_at=VALUES(captured_at);
+    """
+    with _connect() as conn:
+        _ensure_position_close_table(conn)
+        with conn.cursor() as cur:
+            cur.executemany(sql, args)
+
+
+def _attach_latest_close_snapshot(rows):
+    if not rows:
+        return rows
+
+    symbols = [str(r.get("symbol") or "").strip().upper() for r in rows if str(r.get("symbol") or "").strip()]
+    symbols = sorted(set(symbols))
+    if not symbols:
+        return rows
+
+    env = _trade_env()
+    placeholders = ",".join(["%s"] * len(symbols))
+    sql = f"""
+    SELECT s.symbol, s.trade_date, s.close_pl, s.close_plpc
+    FROM `{POSITION_CLOSE_TABLE}` s
+    JOIN (
+        SELECT symbol, MAX(trade_date) AS trade_date
+        FROM `{POSITION_CLOSE_TABLE}`
+        WHERE env=%s AND symbol IN ({placeholders})
+        GROUP BY symbol
+    ) t
+      ON s.symbol=t.symbol AND s.trade_date=t.trade_date
+    WHERE s.env=%s;
+    """
+    try:
+        with _connect() as conn:
+            _ensure_position_close_table(conn)
+            snap_rows = _fetch_all(conn, sql, tuple([env] + symbols + [env]))
+    except Exception:
+        snap_rows = []
+
+    by_symbol = {str(r.get("symbol") or "").upper(): r for r in snap_rows}
+    for r in rows:
+        snap = by_symbol.get(str(r.get("symbol") or "").upper())
+        if snap:
+            r["close_pl"] = _money(snap.get("close_pl"))
+            r["close_plpc"] = _pct(snap.get("close_plpc"))
+        else:
+            r["close_pl"] = ""
+            r["close_plpc"] = ""
+    return rows
 
 
 def _fetch_one(conn, sql, args=None):
@@ -298,7 +473,9 @@ def _positions_table(rows) -> str:
         ("现价", "current_price"),
         ("市值", "market_value"),
         ("浮盈亏", "unrealized_pl"),
+        ("收盘盈亏", "close_pl"),
         ("浮盈亏%", "unrealized_plpc"),
+        ("收盘盈亏%", "close_plpc"),
     ]
     head = "".join(f"<th>{_esc(c)}</th>" for c, _ in cols) + "<th>操作</th>"
     body = []
@@ -530,6 +707,9 @@ class Handler(BaseHTTPRequestHandler):
         gate_val = int(float(gate.get("entry_open") or 0))
         env = _trade_env()
         positions, positions_error, pos_age = _get_positions_cached()
+        if not positions_error:
+            _maybe_capture_close_snapshot(positions)
+            positions = _attach_latest_close_snapshot(positions)
         pos_status = (
             f'<span class="pill">持仓接口: <b class="bad">{_esc(positions_error[:80])}</b></span>'
             if positions_error
