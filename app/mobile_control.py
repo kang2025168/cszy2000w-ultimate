@@ -59,6 +59,12 @@ _position_cache = {
     "rows": [],
     "error": "",
 }
+_account_cache = {
+    "ts": 0.0,
+    "env": "",
+    "row": {},
+    "error": "",
+}
 _trading_client = None
 _trading_client_key = None
 
@@ -147,6 +153,22 @@ def _limit_price_for_stock(price: float) -> float:
     return round(price, 4 if price < 1 else 2)
 
 
+def _signed_class(v) -> str:
+    n = _float_or_none(v)
+    if n is None:
+        return ""
+    if n > 0:
+        return "pos"
+    if n < 0:
+        return "neg"
+    return ""
+
+
+def _signed_td(display, raw=None) -> str:
+    cls = _signed_class(raw if raw is not None else display)
+    return f'<td class="{cls}">{_esc(display)}</td>'
+
+
 def _pct(v):
     try:
         return f"{float(v) * 100:.2f}%"
@@ -216,6 +238,62 @@ def _submit_sell_position(symbol: str):
     }
 
 
+def _submit_sell_all_positions():
+    """
+    一键清仓：只处理股票持仓。
+
+    每只股票都按“当前价下方 buffer”的扩展时段 DAY 限价卖单提交。
+    如果某只失败，不影响其它股票继续提交，最后把成功/失败汇总返回。
+    """
+    tc = _get_trading_client()
+    positions = tc.get_all_positions() or []
+    symbols = []
+    for p in positions:
+        asset_class = str(getattr(p, "asset_class", "") or "").upper()
+        symbol = str(getattr(p, "symbol", "") or "").strip().upper()
+        qty = _float_or_none(getattr(p, "qty", None))
+        if symbol and qty and qty > 0 and ("EQUITY" in asset_class or asset_class in ("US_EQUITY", "US_EQUITIES")):
+            symbols.append(symbol)
+
+    results = []
+    for symbol in symbols:
+        try:
+            results.append(("ok", _submit_sell_position(symbol)))
+        except Exception as e:
+            results.append(("err", {"symbol": symbol, "error": str(e)}))
+
+    _position_cache["ts"] = 0.0
+    ok_n = sum(1 for status, _ in results if status == "ok")
+    err_n = sum(1 for status, _ in results if status != "ok")
+    return ok_n, err_n, results
+
+
+def _get_account_cached():
+    now = time.time()
+    env = _trade_env()
+    if (
+        _account_cache["row"]
+        and _account_cache["env"] == env
+        and now - float(_account_cache["ts"] or 0) < POSITION_CACHE_SEC
+    ):
+        return _account_cache["row"], _account_cache["error"], int(now - float(_account_cache["ts"] or 0))
+
+    try:
+        acct = _get_trading_client().get_account()
+        row = {
+            "cash": _money(getattr(acct, "cash", "")),
+            "buying_power": _money(getattr(acct, "buying_power", "")),
+            "options_buying_power": _money(getattr(acct, "options_buying_power", "")),
+            "portfolio_value": _money(getattr(acct, "portfolio_value", "")),
+            "equity": _money(getattr(acct, "equity", "")),
+        }
+        _account_cache.update({"ts": now, "env": env, "row": row, "error": ""})
+        return row, "", 0
+    except Exception as e:
+        _account_cache.update({"ts": now, "env": env, "row": {}, "error": str(e)})
+        return {}, str(e), 0
+
+
 def _get_positions_cached():
     """
     Alpaca 持仓接口 30 秒查一次。
@@ -238,15 +316,18 @@ def _get_positions_cached():
         for p in positions:
             unrealized_pl = _float_or_none(getattr(p, "unrealized_pl", None))
             unrealized_plpc = _float_or_none(getattr(p, "unrealized_plpc", None))
+            current_price = _float_or_none(getattr(p, "current_price", None))
+            sell_limit = _limit_price_for_stock(float(current_price or 0) * (1.0 - SELL_LIMIT_BUFFER_PCT))
             rows.append({
                 "symbol": getattr(p, "symbol", ""),
                 "asset_class": getattr(p, "asset_class", ""),
                 "qty": getattr(p, "qty", ""),
                 "avg_entry_price": _money(getattr(p, "avg_entry_price", "")),
-                "current_price": _money(getattr(p, "current_price", "")),
+                "current_price": _money(current_price),
                 "market_value": _money(getattr(p, "market_value", "")),
                 "unrealized_pl": _money(unrealized_pl),
                 "unrealized_plpc": _pct(unrealized_plpc),
+                "sell_limit": sell_limit,
                 "_unrealized_pl": unrealized_pl,
                 "_unrealized_plpc": unrealized_plpc,
             })
@@ -480,11 +561,23 @@ def _positions_table(rows) -> str:
     head = "".join(f"<th>{_esc(c)}</th>" for c, _ in cols) + "<th>操作</th>"
     body = []
     for r in rows:
-        tds = "".join(f"<td>{_esc(r.get(k))}</td>" for _, k in cols)
+        tds_parts = []
+        for _, k in cols:
+            if k in ("unrealized_pl", "unrealized_plpc", "close_pl", "close_plpc"):
+                raw_key = {
+                    "unrealized_pl": "_unrealized_pl",
+                    "unrealized_plpc": "_unrealized_plpc",
+                }.get(k, k)
+                tds_parts.append(_signed_td(r.get(k), r.get(raw_key)))
+            else:
+                tds_parts.append(f"<td>{_esc(r.get(k))}</td>")
+        tds = "".join(tds_parts)
         symbol = str(r.get("symbol") or "").strip().upper()
         if symbol and _is_equity_position(r):
+            limit_price = r.get("sell_limit") or ""
+            current_price = r.get("current_price") or ""
             action = f"""
-            <form method="post" action="/sell_position" onsubmit="return confirm('确认卖出 {symbol} 全部持仓？扩展时段会用当前价下方一点点的限价单提交。');">
+            <form method="post" action="/sell_position" onsubmit="return confirm('确认卖出 {symbol} 全部持仓？\\n当前价: {current_price}\\n卖出限价: {limit_price}\\n订单: DAY + extended_hours=True');">
               <input type="hidden" name="symbol" value="{_esc(symbol)}">
               <button class="danger mini" type="submit">卖出</button>
             </form>
@@ -493,6 +586,20 @@ def _positions_table(rows) -> str:
             action = '<span class="muted">-</span>'
         body.append(f"<tr>{tds}<td>{action}</td></tr>")
     return f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+
+
+def _account_panel(account: dict, error: str = "") -> str:
+    if error:
+        return f'<div class="status-line"><span class="pill">账户资金: <b class="bad">{_esc(error[:100])}</b></span></div>'
+    return f"""
+    <div class="status-line">
+      <span class="pill">现金: {_esc(account.get('cash'))}</span>
+      <span class="pill">股票购买力: {_esc(account.get('buying_power'))}</span>
+      <span class="pill">期权购买力: {_esc(account.get('options_buying_power'))}</span>
+      <span class="pill">总权益: {_esc(account.get('equity'))}</span>
+      <span class="pill">账户市值: {_esc(account.get('portfolio_value'))}</span>
+    </div>
+    """
 
 
 def _page(body: str) -> bytes:
@@ -509,6 +616,8 @@ def _page(body: str) -> bytes:
       .muted { color:var(--muted); font-size:13px; }
       .pill { display:inline-block; padding:3px 8px; border-radius:999px; background:#1f2937; font-size:12px; }
       .ok { color:var(--green); } .bad { color:var(--red); } .blue { color:var(--blue); }
+      .pos { color:var(--green); font-weight:700; }
+      .neg { color:var(--red); font-weight:700; }
       .switch-row { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--line); gap:12px; }
       .switch-row:last-child { border-bottom:0; }
       input[type=checkbox] { width:26px; height:26px; }
@@ -672,6 +781,15 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect(f"/?msg={quote(msg)}")
             return
 
+        if path == "/sell_all_positions":
+            try:
+                ok_n, err_n, _ = _submit_sell_all_positions()
+                msg = f"一键清仓已提交: 成功={ok_n} 失败={err_n}"
+            except Exception as e:
+                msg = f"一键清仓失败: {str(e)[:120]}"
+            self._redirect(f"/?msg={quote(msg)}")
+            return
+
         self._send(_page("<main>Not found</main>"), HTTPStatus.NOT_FOUND)
 
     def _load_dashboard_parts(self):
@@ -706,6 +824,7 @@ class Handler(BaseHTTPRequestHandler):
 
         gate_val = int(float(gate.get("entry_open") or 0))
         env = _trade_env()
+        account, account_error, _ = _get_account_cached()
         positions, positions_error, pos_age = _get_positions_cached()
         if not positions_error:
             _maybe_capture_close_snapshot(positions)
@@ -727,6 +846,7 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "control": control,
             "status": status,
+            "account": _account_panel(account, account_error),
             "counts": _table(counts, [('策略','stock_type'),('待买','buy_q'),('待卖','sell_q')]),
             "positions": _positions_table(positions),
             "ops": _table(ops, [('代码','stock_code'),('类','stock_type'),('持仓','is_bought'),('买','can_buy'),('卖','can_sell'),('qty','qty'),('cost','cost_price'),('side','last_order_side'),('intent','last_order_intent'),('更新','updated_at')]),
@@ -739,6 +859,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "ok": True,
                 "status": parts["status"],
+                "account": parts["account"],
                 "counts": parts["counts"],
                 "positions": parts["positions"],
                 "ops": parts["ops"],
@@ -778,7 +899,15 @@ class Handler(BaseHTTPRequestHandler):
           {f'<section class="card"><b>{_esc(msg)}</b></section>' if msg else ''}
           <details class="card" style="margin-top:12px"><summary>状态</summary><div id="status-box">{parts["status"]}</div><div id="counts-box">{parts["counts"]}</div></details>
           <details class="card" style="margin-top:12px"><summary>控制</summary>{control_form}</details>
-          <details class="card" style="margin-top:12px" open><summary>券商持仓</summary><p class="muted">卖出按钮会提交 extended_hours=True 的 DAY 限价卖单，限价≈当前价*(1-{SELL_LIMIT_BUFFER_PCT:.2%})。</p><div id="positions-box">{parts["positions"]}</div></details>
+          <details class="card" style="margin-top:12px" open>
+            <summary>券商持仓</summary>
+            <div id="account-box">{parts["account"]}</div>
+            <p class="muted">卖出按钮会提交 extended_hours=True 的 DAY 限价卖单，限价≈当前价*(1-{SELL_LIMIT_BUFFER_PCT:.2%})。</p>
+            <form method="post" action="/sell_all_positions" onsubmit="return confirm('确认一键清仓全部股票持仓？\\n每只股票都会按 当前价*(1-{SELL_LIMIT_BUFFER_PCT:.2%}) 提交 DAY + extended_hours=True 限价卖单。');">
+              <button class="danger" type="submit">一键清仓</button>
+            </form>
+            <div id="positions-box" style="margin-top:10px">{parts["positions"]}</div>
+          </details>
           <details class="card" style="margin-top:12px"><summary>策略队列</summary><div id="ops-box">{parts["ops"]}</div></details>
           <details class="card" style="margin-top:12px"><summary>期权组合</summary><div id="spreads-box">{parts["spreads"]}</div></details>
         </main>
@@ -789,6 +918,7 @@ class Handler(BaseHTTPRequestHandler):
               const data = await resp.json();
               if (!data.ok) return;
               document.getElementById('status-box').innerHTML = data.status;
+              document.getElementById('account-box').innerHTML = data.account;
               document.getElementById('counts-box').innerHTML = data.counts;
               document.getElementById('positions-box').innerHTML = data.positions;
               document.getElementById('ops-box').innerHTML = data.ops;
