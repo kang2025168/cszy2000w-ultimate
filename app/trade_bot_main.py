@@ -169,7 +169,7 @@ ERROR_BACKOFF_MIN     = int(os.getenv("ERROR_BACKOFF_MIN", "3"))
 ERROR_BACKOFF_MAX     = int(os.getenv("ERROR_BACKOFF_MAX", "15"))
 ROUND_JITTER_MAX      = float(os.getenv("ROUND_JITTER_MAX", "1.2"))
 
-MIN_BUYING_POWER = float(os.getenv("MIN_BUYING_POWER", "2100"))
+MIN_BUYING_POWER = float(os.getenv("MIN_BUYING_POWER", "2500"))
 BUYPOWER_REFRESH_SECS = int(os.getenv("BUYPOWER_REFRESH_SECS", "300"))
 
 # =========================
@@ -410,13 +410,13 @@ def dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed: bool) -
         elif buy_allowed and can_buy == 1 and _strategy_buy_enabled("B"):
             r = safe_call(strategy_B_buy, code)
             traded = (r is True)
-    elif stype == "C":
-        if is_bought == 1 and can_sell == 1:
-            r = safe_call(strategy_C_sell, code)
-            traded = (r is True)
-        elif buy_allowed and can_buy == 1 and _strategy_buy_enabled("C"):
-            r = safe_call(strategy_C_buy, code)
-            traded = (r is True)
+    # elif stype == "C":
+    #     if is_bought == 1 and can_sell == 1:
+    #         r = safe_call(strategy_C_sell, code)
+    #         traded = (r is True)
+    #     elif buy_allowed and can_buy == 1 and _strategy_buy_enabled("C"):
+    #         r = safe_call(strategy_C_buy, code)
+    #         traded = (r is True)
     elif stype == "F":
         if is_bought == 1 and can_sell == 1:
             r = safe_call(strategy_F_sell, code)
