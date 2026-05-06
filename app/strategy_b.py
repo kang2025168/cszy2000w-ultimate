@@ -454,6 +454,61 @@ def _submit_limit_buy_qty(trading_client, code: str, qty: int, limit_price: floa
     )
     return trading_client.submit_order(order_data=req)
 
+
+def _submit_limit_qty_ext(trading_client, code: str, qty: int, side: str, limit_price: float):
+    from alpaca.trading.requests import LimitOrderRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce
+
+    side = (side or "").strip().lower()
+    req = LimitOrderRequest(
+        symbol=code,
+        qty=int(qty),
+        side=(OrderSide.BUY if side == "buy" else OrderSide.SELL),
+        limit_price=round(float(limit_price), 2),
+        time_in_force=TimeInForce.DAY,
+        extended_hours=True,
+    )
+    return trading_client.submit_order(order_data=req)
+
+
+def _get_extended_quote_realtime(code: str):
+    code = (code or "").strip().upper()
+    if not code:
+        raise RuntimeError("empty symbol")
+
+    _sleep_for_rate_limit()
+    r = _snapshot_http(code, B_DATA_FEED)
+    if r.status_code != 200:
+        raise RuntimeError(f"snapshot http {r.status_code}: {r.text[:200]}")
+
+    js = r.json()
+    lt = js.get("latestTrade") or {}
+    lq = js.get("latestQuote") or {}
+    db = js.get("dailyBar") or {}
+    pb = js.get("prevDailyBar") or {}
+
+    last = float(lt.get("p") or 0.0)
+    bid = float(lq.get("bp") or 0.0)
+    ask = float(lq.get("ap") or 0.0)
+    if last <= 0 and bid > 0 and ask > 0:
+        last = (bid + ask) / 2.0
+
+    regular_close = float(db.get("c") or 0.0)
+    prev_close = float(pb.get("c") or 0.0)
+    if regular_close <= 0:
+        regular_close = prev_close
+    if last <= 0 or regular_close <= 0:
+        raise RuntimeError(f"extended quote missing fields: last={last} regular_close={regular_close}")
+
+    return {
+        "last": last,
+        "bid": bid,
+        "ask": ask,
+        "regular_close": regular_close,
+        "prev_close": prev_close,
+        "feed": B_DATA_FEED,
+    }
+
 def _cancel_open_buy_orders(tc, code: str) -> int:
     """提交新买单前，取消该 symbol 下所有 open 的 buy 单。返回取消数量。"""
     try:
@@ -553,6 +608,208 @@ def _write_buy_cooldown(conn, code: str, order_id, reason: str):
         )
     except Exception as e:
         print(f"[B BUY] {code} write cooldown failed: {e}", flush=True)
+
+
+def strategy_B_extended_record(code: str, phase: str = "") -> bool:
+    code = (code or "").strip().upper()
+    conn = None
+    try:
+        conn = _connect()
+        row = _load_one_b_row(conn, code)
+        if not row or int(row.get("is_bought") or 0) != 1:
+            return False
+        q = _get_extended_quote_realtime(code)
+        price = float(q["last"])
+        regular_close = float(q["prev_close"] or q["regular_close"])
+        qty = int(float(row.get("qty") or 0))
+        cost = float(row.get("cost_price") or 0.0)
+        old_peak = float(row.get("b_peak_price") or cost or regular_close)
+        peak_price = max(old_peak, price)
+        gain = (price - regular_close) / regular_close if regular_close > 0 else 0.0
+        updates = {
+            "b_last_profit": round((price - cost) * qty, 4) if cost > 0 and qty > 0 else 0,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        if peak_price > old_peak + 0.005:
+            updates["b_peak_price"] = round(peak_price, 4)
+            updates["b_peak_profit"] = round(max((peak_price - cost) * qty, 0.0), 4) if cost > 0 and qty > 0 else 0
+        _update_ops_fields(conn, code, **updates)
+        print(
+            f"[B EXT RECORD] {code} phase={phase} price={price:.2f} regular_close={regular_close:.2f} "
+            f"ext_gain={gain:.2%} peak={peak_price:.2f}",
+            flush=True,
+        )
+        return False
+    except Exception as e:
+        print(f"[B EXT RECORD] {code} error: {e}", flush=True)
+        return False
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def strategy_B_premarket_manage(code: str) -> bool:
+    code = (code or "").strip().upper()
+    conn = None
+    try:
+        conn = _connect()
+        row = _load_one_b_row(conn, code)
+        if not row or int(row.get("is_bought") or 0) != 1:
+            return False
+        qty = int(float(row.get("qty") or 0))
+        cost = float(row.get("cost_price") or 0.0)
+        stage = int(float(row.get("b_stage") or 0))
+        if qty <= 0:
+            return False
+
+        q = _get_extended_quote_realtime(code)
+        price = float(q["last"])
+        regular_close = float(q["prev_close"] or q["regular_close"])
+        old_peak = float(row.get("b_peak_price") or cost or regular_close)
+        peak_price = max(old_peak, price)
+        gain = (price - regular_close) / regular_close if regular_close > 0 else 0.0
+        peak_gain = (peak_price - regular_close) / regular_close if regular_close > 0 else 0.0
+        if peak_price > old_peak + 0.005:
+            _update_ops_fields(
+                conn, code,
+                b_peak_price=round(peak_price, 4),
+                b_peak_profit=round(max((peak_price - cost) * qty, 0.0), 4) if cost > 0 else 0,
+                updated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+
+        print(
+            f"[B PRE] {code} price={price:.2f} regular_close={regular_close:.2f} "
+            f"gain={gain:.2%} peak_gain={peak_gain:.2%} stage={stage}",
+            flush=True,
+        )
+
+        if peak_gain >= 0.10:
+            trigger = round(peak_price * 0.97, 2)
+            if price <= trigger:
+                reason = f"PREMARKET_GIVEBACK price={price:.2f} <= trigger={trigger:.2f} peak={peak_price:.2f}"
+                return _sell_qty_limit_ext(conn, code, qty, limit_price=trigger, reason=reason)
+
+            if stage < 1 and gain >= 0.10:
+                sell_qty = max(int(math.floor(qty * 0.20)), 1)
+                reason = f"PREMARKET_STAGE1_SELL20 price={price:.2f} gain={gain:.2%}"
+                ok = _sell_qty_limit_ext(conn, code, sell_qty, limit_price=round(price * 0.997, 2), reason=reason)
+                if ok:
+                    _update_ops_fields(conn, code, b_stage=1, take_profit_price=1)
+                return ok
+
+        return False
+    except Exception as e:
+        print(f"[B PRE] {code} error: {e}", flush=True)
+        traceback.print_exc()
+        return False
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def strategy_B_afterhours_add(code: str) -> bool:
+    code = (code or "").strip().upper()
+    conn = None
+    try:
+        conn = _connect()
+        row = _load_one_b_row(conn, code)
+        if not row or int(row.get("is_bought") or 0) != 1:
+            return False
+        last_intent = str(row.get("last_order_intent") or "")
+        last_time = row.get("last_order_time")
+        if "AH_ADD" in last_intent and last_time:
+            try:
+                if (last_time.date() if hasattr(last_time, "date") else datetime.fromisoformat(str(last_time)[:19]).date()) == datetime.now().date():
+                    print(f"[B AH ADD] {code} skip: already attempted today", flush=True)
+                    return False
+            except Exception:
+                pass
+
+        tc = _get_trading_client()
+        real_qty = _get_real_position_qty(tc, code)
+        if real_qty is None or real_qty <= 0:
+            return False
+
+        q = _get_extended_quote_realtime(code)
+        price = float(q["last"])
+        regular_close = float(q["regular_close"])
+        after_gain = (price - regular_close) / regular_close if regular_close > 0 else 0.0
+        limit_price = round(regular_close * 1.03, 2)
+        add_qty = max(int(math.floor(real_qty * 0.50)), 1)
+
+        print(
+            f"[B AH ADD] {code} price={price:.2f} regular_close={regular_close:.2f} "
+            f"after_gain={after_gain:.2%} add_qty={add_qty} limit={limit_price:.2f}",
+            flush=True,
+        )
+
+        if after_gain < 0.05:
+            return False
+
+        _cancel_open_buy_orders(tc, code)
+        order = _submit_limit_qty_ext(tc, code, add_qty, side="buy", limit_price=limit_price)
+        order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
+        status = str(getattr(order, "status", "") or "")
+        if status.lower() in ("rejected", "expired"):
+            _update_ops_fields(
+                conn, code,
+                last_order_side="buy",
+                last_order_intent=_intent_short(f"B:AH_ADD_REJECT status={status} limit={limit_price:.2f}"),
+                last_order_id=str(order_id or ""),
+                last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            return False
+
+        filled_qty, filled_avg = _reconcile_fill(tc, code, str(order_id), wait_sec=12.0)
+        if filled_qty <= 0 or filled_avg <= 0:
+            _write_buy_cooldown(conn, code, order_id, f"AH_ADD_NO_FILL limit={limit_price:.2f}")
+            return False
+
+        try:
+            pos = tc.get_open_position(code)
+            new_qty = int(float(getattr(pos, "qty", 0) or 0))
+            new_cost = float(getattr(pos, "avg_entry_price", 0) or 0)
+        except Exception:
+            old_qty = int(float(row.get("qty") or real_qty))
+            old_cost = float(row.get("cost_price") or filled_avg)
+            new_qty = old_qty + int(filled_qty)
+            new_cost = (old_qty * old_cost + int(filled_qty) * float(filled_avg)) / float(new_qty)
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _update_ops_fields(
+            conn, code,
+            qty=int(new_qty),
+            cost_price=round(float(new_cost), 2),
+            base_qty=max(int(row.get("base_qty") or 0), int(new_qty)),
+            is_bought=1,
+            can_sell=1,
+            can_buy=0,
+            last_order_side="buy",
+            last_order_intent=_intent_short(
+                f"B:AH_ADD filled={filled_qty}@{filled_avg:.2f} limit={limit_price:.2f} after_gain={after_gain:.2%}"
+            ),
+            last_order_id=str(order_id or ""),
+            last_order_time=now_str,
+            updated_at=now_str,
+        )
+        print(f"[B AH ADD] {code} ✅ filled={filled_qty}@{filled_avg:.2f} new_qty={new_qty}", flush=True)
+        return True
+    except Exception as e:
+        print(f"[B AH ADD] {code} error: {e}", flush=True)
+        traceback.print_exc()
+        return False
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 
 
@@ -734,6 +991,92 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
     if remaining_qty == 0:
         _write_monster_watchlist(conn, code, reason, sell_price, row)
 
+    return True
+
+
+def _sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason: str) -> bool:
+    qty = int(qty or 0)
+    limit_price = float(limit_price or 0.0)
+    if qty <= 0 or limit_price <= 0:
+        return False
+
+    tc = _get_trading_client()
+    real_qty = _get_real_position_qty(tc, code)
+    if real_qty is None:
+        print(f"[B EXT SELL] {code} skip: failed to query real position reason={reason}", flush=True)
+        return False
+    if real_qty == 0:
+        _update_ops_fields(
+            conn, code,
+            qty=0, is_bought=0, can_sell=0, can_buy=0,
+            stop_loss_price=None, take_profit_price=None,
+            b_stage=0, base_qty=0,
+            b_peak_price=None, b_peak_profit=0, b_last_profit=0,
+            last_order_side="sell",
+            last_order_intent=_intent_short(f"B:EXT_SELL_SKIP no_real_pos {reason}"),
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return False
+    qty = min(qty, real_qty)
+
+    row = _load_one_b_row(conn, code) or {}
+    old_sl = row.get("stop_loss_price")
+    old_tp = row.get("take_profit_price")
+    old_b_stage = int(row.get("b_stage") or 0)
+    old_base_qty = int(row.get("base_qty") or 0)
+    old_peak_price = float(row.get("b_peak_price") or 0.0)
+    old_cost = float(row.get("cost_price") or 0.0)
+
+    order = _submit_limit_qty_ext(tc, code, qty, side="sell", limit_price=limit_price)
+    order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
+    status = str(getattr(order, "status", "") or "")
+    print(f"[B EXT SELL] {code} limit sell submitted id={order_id} status={status} qty={qty} limit={limit_price:.2f}", flush=True)
+    if status.lower() in ("rejected", "expired"):
+        _update_ops_fields(
+            conn, code,
+            last_order_side="sell",
+            last_order_intent=_intent_short(f"B:EXT_SELL_REJECT {reason} status={status}"),
+            last_order_id=str(order_id or ""),
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return False
+
+    sold_qty = _reconcile_sell_fill(tc, code, str(order_id), expected_real_qty=real_qty, wait_sec=12.0)
+    if sold_qty <= 0:
+        _update_ops_fields(
+            conn, code,
+            last_order_side="sell",
+            last_order_intent=_intent_short(f"B:EXT_SELL_NO_FILL {reason} status={status}"),
+            last_order_id=str(order_id or ""),
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return False
+
+    sold_qty = min(sold_qty, qty)
+    remaining_qty = max(real_qty - sold_qty, 0)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _update_ops_fields(
+        conn, code,
+        qty=int(remaining_qty),
+        last_order_side="sell",
+        last_order_intent=_intent_short(f"{reason} limit={limit_price:.2f} sold={sold_qty}"),
+        last_order_id=str(order_id or ""),
+        last_order_time=now_str,
+        is_bought=1 if remaining_qty > 0 else 0,
+        can_sell=1 if remaining_qty > 0 else 0,
+        can_buy=0,
+        stop_loss_price=old_sl if remaining_qty > 0 else None,
+        take_profit_price=old_tp if remaining_qty > 0 else None,
+        b_stage=old_b_stage if remaining_qty > 0 else 0,
+        base_qty=old_base_qty if remaining_qty > 0 else 0,
+        b_peak_price=old_peak_price if remaining_qty > 0 else None,
+        b_peak_profit=max((old_peak_price - old_cost) * remaining_qty, 0.0) if remaining_qty > 0 else 0,
+        b_last_profit=0,
+        updated_at=now_str,
+    )
+    print(f"[B EXT SELL] {code} ✅ sold={sold_qty} remain={remaining_qty} reason={reason}", flush=True)
+    if remaining_qty == 0:
+        _write_monster_watchlist(conn, code, reason, limit_price, row)
     return True
 
 

@@ -53,6 +53,13 @@ SELL_LIMIT_BUFFER_PCT = float(os.getenv("MOBILE_SELL_LIMIT_BUFFER_PCT", "0.005")
 CLOSE_CAPTURE_TZ = os.getenv("MOBILE_CLOSE_CAPTURE_TZ", "America/Los_Angeles")
 CLOSE_CAPTURE_TIME = os.getenv("MOBILE_CLOSE_CAPTURE_TIME", "12:59")
 CLOSE_CAPTURE_WINDOW_MIN = int(os.getenv("MOBILE_CLOSE_CAPTURE_WINDOW_MIN", "10"))
+LA_TZ_NAME = os.getenv("TZ", "America/Los_Angeles")
+LA_TZ = ZoneInfo(LA_TZ_NAME) if ZoneInfo else None
+PREMARKET_OPEN = dt_time(4, 0)
+PREOPEN_RECORD_START = dt_time(6, 30)
+MARKET_OPEN = dt_time(6, 40)
+MARKET_CLOSE = dt_time(13, 0)
+AFTERHOURS_CLOSE = dt_time(17, 0)
 _position_cache = {
     "ts": 0.0,
     "env": "",
@@ -77,6 +84,84 @@ def _now_capture_tz():
     if ZoneInfo:
         return datetime.now(ZoneInfo(CLOSE_CAPTURE_TZ))
     return datetime.now()
+
+
+def _now_la():
+    if LA_TZ:
+        return datetime.now(LA_TZ)
+    return datetime.now()
+
+
+def _trade_phase(now_dt: datetime | None = None) -> str:
+    if now_dt is None:
+        now_dt = _now_la()
+    if now_dt.weekday() >= 5:
+        return "closed"
+    tnow = now_dt.time()
+    if PREMARKET_OPEN <= tnow < PREOPEN_RECORD_START:
+        return "premarket_sell"
+    if PREOPEN_RECORD_START <= tnow < MARKET_OPEN:
+        return "preopen_record"
+    if MARKET_OPEN <= tnow <= MARKET_CLOSE:
+        return "regular"
+    if MARKET_CLOSE < tnow <= AFTERHOURS_CLOSE:
+        return "afterhours_add"
+    return "closed"
+
+
+def _phase_label(phase: str) -> str:
+    return {
+        "premarket_sell": "盘前保护",
+        "preopen_record": "开盘前记录",
+        "regular": "盘中主策略",
+        "afterhours_add": "盘后加仓",
+        "closed": "休眠",
+    }.get(phase, phase)
+
+
+def _phase_class(phase: str) -> str:
+    if phase == "regular":
+        return "ok"
+    if phase in ("premarket_sell", "afterhours_add"):
+        return "blue"
+    if phase == "preopen_record":
+        return "warn"
+    return "bad"
+
+
+def _phase_panel() -> str:
+    now_dt = _now_la()
+    phase = _trade_phase(now_dt)
+    rules = [
+        ("04:00-06:30", "盘前保护", "B/F 持仓若盘前涨幅>=10%，先限价卖20%；若从盘前最高价回撤3%，按回撤价限价清仓。"),
+        ("06:30-06:40", "只记录", "只记录盘前实时价、最高价和浮盈，不买不卖，等 06:40 后交给盘中规则。"),
+        ("06:40-13:00", "盘中主策略", "保持原 B/F/C 主逻辑：B/F 卖出管理、F 候选刷新、盘中买入仍受总开关/大盘 gate/资金 gate 控制。"),
+        ("13:00-17:00", "盘后加仓", "已持有 B/F 若盘后实时价>=正常收盘价*1.05，则挂买单：limit=正常收盘价*1.03，qty=当前真实持仓*50%。"),
+    ]
+    rows = []
+    for time_range, title, desc in rules:
+        active = (
+            (phase == "premarket_sell" and time_range == "04:00-06:30")
+            or (phase == "preopen_record" and time_range == "06:30-06:40")
+            or (phase == "regular" and time_range == "06:40-13:00")
+            or (phase == "afterhours_add" and time_range == "13:00-17:00")
+        )
+        rows.append(
+            f"""
+            <div class="phase-row {'active' if active else ''}">
+              <div><b>{_esc(time_range)}</b><span>{_esc(title)}</span></div>
+              <p>{_esc(desc)}</p>
+            </div>
+            """
+        )
+    return f"""
+    <div class="status-line">
+      <span class="pill">美西时间: {_esc(now_dt.strftime('%Y-%m-%d %H:%M:%S'))}</span>
+      <span class="pill">当前阶段: <b class="{_phase_class(phase)}">{_esc(_phase_label(phase))}</b></span>
+      <span class="pill">阶段代码: {_esc(phase)}</span>
+    </div>
+    <div class="phase-grid">{''.join(rows)}</div>
+    """
 
 
 def _trade_env() -> str:
@@ -615,7 +700,7 @@ def _page(body: str) -> bytes:
       .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
       .muted { color:var(--muted); font-size:13px; }
       .pill { display:inline-block; padding:3px 8px; border-radius:999px; background:#1f2937; font-size:12px; }
-      .ok { color:var(--green); } .bad { color:var(--red); } .blue { color:var(--blue); }
+      .ok { color:var(--green); } .bad { color:var(--red); } .blue { color:var(--blue); } .warn { color:#f59e0b; }
       .pos { color:var(--green); font-weight:700; }
       .neg { color:var(--red); font-weight:700; }
       .switch-row { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--line); gap:12px; }
@@ -633,6 +718,12 @@ def _page(body: str) -> bytes:
       th { color:#cbd5e1; font-weight:600; }
       .empty { color:var(--muted); padding:12px 0; }
       .status-line { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+      .phase-grid { display:grid; gap:8px; margin-top:10px; }
+      .phase-row { border:1px solid var(--line); border-radius:8px; padding:10px; background:#0b1220; }
+      .phase-row.active { border-color:var(--blue); box-shadow:0 0 0 1px rgba(56,189,248,.25) inset; }
+      .phase-row div { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+      .phase-row span { color:var(--muted); font-size:13px; }
+      .phase-row p { margin:6px 0 0; color:#cbd5e1; font-size:13px; line-height:1.45; }
       details.card { display:block; }
       summary { cursor:pointer; list-style:none; display:flex; justify-content:space-between; align-items:center; font-weight:700; font-size:16px; color:#f8fafc; }
       summary::-webkit-details-marker { display:none; }
@@ -837,6 +928,7 @@ class Handler(BaseHTTPRequestHandler):
         status = f"""
         <div class="status-line">
           <span class="pill">env: {_esc(env)}</span>
+          <span class="pill">阶段: <b class="{_phase_class(_trade_phase())}">{_esc(_phase_label(_trade_phase()))}</b></span>
           <span class="pill">QQQ gate: <b class="{'ok' if gate_val == 1 else 'bad'}">{gate_val}</b></span>
           <span class="pill">updated: {_esc(control.get('updated_at'))}</span>
           {pos_status}
@@ -846,6 +938,7 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "control": control,
             "status": status,
+            "phase": _phase_panel(),
             "account": _account_panel(account, account_error),
             "counts": _table(counts, [('策略','stock_type'),('待买','buy_q'),('待卖','sell_q')]),
             "positions": _positions_table(positions),
@@ -859,6 +952,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "ok": True,
                 "status": parts["status"],
+                "phase": parts["phase"],
                 "account": parts["account"],
                 "counts": parts["counts"],
                 "positions": parts["positions"],
@@ -898,6 +992,7 @@ class Handler(BaseHTTPRequestHandler):
         <main>
           {f'<section class="card"><b>{_esc(msg)}</b></section>' if msg else ''}
           <details class="card" style="margin-top:12px"><summary>状态</summary><div id="status-box">{parts["status"]}</div><div id="counts-box">{parts["counts"]}</div></details>
+          <details class="card" style="margin-top:12px" open><summary>交易阶段</summary><div id="phase-box">{parts["phase"]}</div></details>
           <details class="card" style="margin-top:12px"><summary>控制</summary>{control_form}</details>
           <details class="card" style="margin-top:12px" open>
             <summary>券商持仓</summary>
@@ -918,6 +1013,7 @@ class Handler(BaseHTTPRequestHandler):
               const data = await resp.json();
               if (!data.ok) return;
               document.getElementById('status-box').innerHTML = data.status;
+              document.getElementById('phase-box').innerHTML = data.phase;
               document.getElementById('account-box').innerHTML = data.account;
               document.getElementById('counts-box').innerHTML = data.counts;
               document.getElementById('positions-box').innerHTML = data.positions;

@@ -26,6 +26,7 @@ import pymysql
 from app.strategy_b import (
     B_DATA_FEED,
     _cancel_open_buy_orders,
+    _get_extended_quote_realtime,
     _get_buying_power,
     _get_real_position_qty,
     _get_trading_client,
@@ -35,6 +36,7 @@ from app.strategy_b import (
     _sleep_for_rate_limit,
     _snapshot_http,
     _submit_limit_buy_qty,
+    _submit_limit_qty_ext,
     _submit_market_qty,
     get_snapshot_realtime,
 )
@@ -836,6 +838,274 @@ def _f_next_stage_rule(last_stage: int, up_pct: float):
         if stage == next_stage and up_pct >= threshold:
             return stage, threshold, sell_ratio
     return None
+
+
+def strategy_F_extended_record(code: str, phase: str = "") -> bool:
+    code = (code or "").strip().upper()
+    conn = None
+    try:
+        conn = _connect()
+        row = _load_one_f_row(conn, code)
+        if not row or int(row.get("is_bought") or 0) != 1:
+            return False
+        q = _get_extended_quote_realtime(code)
+        price = float(q["last"])
+        regular_close = float(q["prev_close"] or q["regular_close"])
+        qty = int(float(row.get("qty") or 0))
+        cost = float(row.get("cost_price") or 0.0)
+        old_peak = float(row.get("b_peak_price") or cost or regular_close)
+        peak_price = max(old_peak, price)
+        gain = (price - regular_close) / regular_close if regular_close > 0 else 0.0
+        updates = {
+            "b_last_profit": round((price - cost) * qty, 4) if cost > 0 and qty > 0 else 0,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        if peak_price > old_peak + 0.005:
+            updates["b_peak_price"] = round(peak_price, 4)
+            updates["b_peak_profit"] = round(max((peak_price - cost) * qty, 0.0), 4) if cost > 0 and qty > 0 else 0
+        _update_ops_f_fields(conn, code, **updates)
+        print(
+            f"[F EXT RECORD] {code} phase={phase} price={price:.2f} regular_close={regular_close:.2f} "
+            f"ext_gain={gain:.2%} peak={peak_price:.2f}",
+            flush=True,
+        )
+        return False
+    except Exception as e:
+        print(f"[F EXT RECORD] {code} error: {e}", flush=True)
+        return False
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def _f_sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason: str) -> bool:
+    qty = int(qty or 0)
+    if qty <= 0 or float(limit_price or 0) <= 0:
+        return False
+    tc = _get_trading_client()
+    real_qty = _get_real_position_qty(tc, code)
+    if real_qty is None:
+        return False
+    if real_qty == 0:
+        _update_ops_f_fields(
+            conn, code,
+            qty=0, is_bought=0, can_sell=0, can_buy=0,
+            stop_loss_price=None, b_peak_price=None, b_peak_profit=0, b_last_profit=0,
+            last_order_side="sell",
+            last_order_intent="F:EXT_SELL_SKIP no_real_pos",
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return False
+    qty = min(qty, real_qty)
+    row = _load_one_f_row(conn, code) or {}
+    cost = float(row.get("cost_price") or 0.0)
+    peak_price = float(row.get("b_peak_price") or cost)
+    stage = int(float(row.get("b_stage") or 0))
+    sl = row.get("stop_loss_price")
+
+    order = _submit_limit_qty_ext(tc, code, qty, side="sell", limit_price=limit_price)
+    order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
+    status = str(getattr(order, "status", "") or "")
+    if status.lower() in ("rejected", "expired"):
+        _update_ops_f_fields(
+            conn, code,
+            last_order_side="sell",
+            last_order_intent=_intent_short(f"F:EXT_SELL_REJECT {reason} status={status}"),
+            last_order_id=str(order_id or ""),
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return False
+
+    sold_qty = _reconcile_sell_fill(tc, code, str(order_id), expected_real_qty=real_qty, wait_sec=12.0)
+    if sold_qty <= 0:
+        _update_ops_f_fields(
+            conn, code,
+            last_order_side="sell",
+            last_order_intent=_intent_short(f"F:EXT_SELL_NO_FILL {reason}"),
+            last_order_id=str(order_id or ""),
+            last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return False
+    sold_qty = min(sold_qty, qty)
+    remaining_qty = max(real_qty - sold_qty, 0)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _update_ops_f_fields(
+        conn, code,
+        qty=int(remaining_qty),
+        is_bought=1 if remaining_qty > 0 else 0,
+        can_sell=1 if remaining_qty > 0 else 0,
+        can_buy=0,
+        stop_loss_price=sl if remaining_qty > 0 else None,
+        b_peak_price=peak_price if remaining_qty > 0 else None,
+        b_peak_profit=max((peak_price - cost) * remaining_qty, 0.0) if remaining_qty > 0 else 0,
+        b_last_profit=0,
+        b_stage=stage if remaining_qty > 0 else 0,
+        last_order_side="sell",
+        last_order_intent=_intent_short(f"{reason} limit={limit_price:.2f} sold={sold_qty}"),
+        last_order_id=str(order_id or ""),
+        last_order_time=now_str,
+        updated_at=now_str,
+    )
+    print(f"[F EXT SELL] {code} ✅ sold={sold_qty} remain={remaining_qty} reason={reason}", flush=True)
+    return True
+
+
+def strategy_F_premarket_manage(code: str) -> bool:
+    code = (code or "").strip().upper()
+    conn = None
+    try:
+        conn = _connect()
+        row = _load_one_f_row(conn, code)
+        if not row or int(row.get("is_bought") or 0) != 1:
+            return False
+        qty = int(float(row.get("qty") or 0))
+        cost = float(row.get("cost_price") or 0.0)
+        stage = int(float(row.get("b_stage") or 0))
+        if qty <= 0:
+            return False
+        q = _get_extended_quote_realtime(code)
+        price = float(q["last"])
+        regular_close = float(q["prev_close"] or q["regular_close"])
+        old_peak = float(row.get("b_peak_price") or cost or regular_close)
+        peak_price = max(old_peak, price)
+        gain = (price - regular_close) / regular_close if regular_close > 0 else 0.0
+        peak_gain = (peak_price - regular_close) / regular_close if regular_close > 0 else 0.0
+        if peak_price > old_peak + 0.005:
+            _update_ops_f_fields(
+                conn, code,
+                b_peak_price=round(peak_price, 4),
+                b_peak_profit=round(max((peak_price - cost) * qty, 0.0), 4) if cost > 0 else 0,
+                updated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        print(
+            f"[F PRE] {code} price={price:.2f} regular_close={regular_close:.2f} "
+            f"gain={gain:.2%} peak_gain={peak_gain:.2%} stage={stage}",
+            flush=True,
+        )
+        if peak_gain >= 0.10:
+            trigger = round(peak_price * 0.97, 2)
+            if price <= trigger:
+                reason = f"F_PREMARKET_GIVEBACK price={price:.2f} <= trigger={trigger:.2f} peak={peak_price:.2f}"
+                return _f_sell_qty_limit_ext(conn, code, qty, trigger, reason)
+            if stage < 1 and gain >= 0.10:
+                sell_qty = max(int(math.floor(qty * 0.20)), 1)
+                reason = f"F_PREMARKET_STAGE1_SELL20 price={price:.2f} gain={gain:.2%}"
+                ok = _f_sell_qty_limit_ext(conn, code, sell_qty, round(price * 0.997, 2), reason)
+                if ok:
+                    _update_ops_f_fields(conn, code, b_stage=1, take_profit_price=1)
+                return ok
+        return False
+    except Exception as e:
+        print(f"[F PRE] {code} error: {e}", flush=True)
+        traceback.print_exc()
+        return False
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def strategy_F_afterhours_add(code: str) -> bool:
+    code = (code or "").strip().upper()
+    conn = None
+    try:
+        conn = _connect()
+        row = _load_one_f_row(conn, code)
+        if not row or int(row.get("is_bought") or 0) != 1:
+            return False
+        last_intent = str(row.get("last_order_intent") or "")
+        last_time = row.get("last_order_time")
+        if "F:AH_ADD" in last_intent and last_time:
+            try:
+                if (last_time.date() if hasattr(last_time, "date") else datetime.fromisoformat(str(last_time)[:19]).date()) == datetime.now().date():
+                    print(f"[F AH ADD] {code} skip: already attempted today", flush=True)
+                    return False
+            except Exception:
+                pass
+        tc = _get_trading_client()
+        real_qty = _get_real_position_qty(tc, code)
+        if real_qty is None or real_qty <= 0:
+            return False
+        q = _get_extended_quote_realtime(code)
+        price = float(q["last"])
+        regular_close = float(q["regular_close"])
+        after_gain = (price - regular_close) / regular_close if regular_close > 0 else 0.0
+        limit_price = round(regular_close * 1.03, 2)
+        add_qty = max(int(math.floor(real_qty * 0.50)), 1)
+        print(
+            f"[F AH ADD] {code} price={price:.2f} regular_close={regular_close:.2f} "
+            f"after_gain={after_gain:.2%} add_qty={add_qty} limit={limit_price:.2f}",
+            flush=True,
+        )
+        if after_gain < 0.05:
+            return False
+
+        _cancel_open_buy_orders(tc, code)
+        order = _submit_limit_qty_ext(tc, code, add_qty, side="buy", limit_price=limit_price)
+        order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
+        status = str(getattr(order, "status", "") or "")
+        if status.lower() in ("rejected", "expired"):
+            _update_ops_f_fields(
+                conn, code,
+                last_order_side="buy",
+                last_order_intent=_intent_short(f"F:AH_ADD_REJECT status={status} limit={limit_price:.2f}"),
+                last_order_id=str(order_id or ""),
+                last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            return False
+        filled_qty, filled_avg = _reconcile_fill(tc, code, str(order_id), wait_sec=12.0)
+        if filled_qty <= 0 or filled_avg <= 0:
+            _update_ops_f_fields(
+                conn, code,
+                last_order_side="buy",
+                last_order_intent=_intent_short(f"F:AH_ADD_NO_FILL limit={limit_price:.2f}"),
+                last_order_id=str(order_id or ""),
+                last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            return False
+        try:
+            pos = tc.get_open_position(code)
+            new_qty = int(float(getattr(pos, "qty", 0) or 0))
+            new_cost = float(getattr(pos, "avg_entry_price", 0) or 0)
+        except Exception:
+            old_qty = int(float(row.get("qty") or real_qty))
+            old_cost = float(row.get("cost_price") or filled_avg)
+            new_qty = old_qty + int(filled_qty)
+            new_cost = (old_qty * old_cost + int(filled_qty) * float(filled_avg)) / float(new_qty)
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _update_ops_f_fields(
+            conn, code,
+            qty=int(new_qty),
+            cost_price=round(float(new_cost), 2),
+            base_qty=max(int(row.get("base_qty") or 0), int(new_qty)),
+            is_bought=1,
+            can_sell=1,
+            can_buy=0,
+            last_order_side="buy",
+            last_order_intent=_intent_short(
+                f"F:AH_ADD filled={filled_qty}@{filled_avg:.2f} limit={limit_price:.2f} after_gain={after_gain:.2%}"
+            ),
+            last_order_id=str(order_id or ""),
+            last_order_time=now_str,
+            updated_at=now_str,
+        )
+        print(f"[F AH ADD] {code} ✅ filled={filled_qty}@{filled_avg:.2f} new_qty={new_qty}", flush=True)
+        return True
+    except Exception as e:
+        print(f"[F AH ADD] {code} error: {e}", flush=True)
+        traceback.print_exc()
+        return False
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 
 def strategy_F_sell(code: str) -> bool:

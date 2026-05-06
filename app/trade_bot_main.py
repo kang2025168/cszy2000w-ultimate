@@ -128,21 +128,35 @@ from app.strategy_a_pick import *  # noqa
 LA_TZ_NAME = os.getenv("TZ", "America/Los_Angeles")
 LA_TZ = ZoneInfo(LA_TZ_NAME) if ZoneInfo else None
 
+PREMARKET_OPEN = dt_time(4, 0)
+PREOPEN_RECORD_START = dt_time(6, 30)
 MARKET_OPEN = dt_time(6, 40)
 MARKET_CLOSE = dt_time(13, 0)
+AFTERHOURS_CLOSE = dt_time(17, 0)
 
 def now_la():
     if LA_TZ:
         return datetime.now(LA_TZ)
     return datetime.now()
 
-def is_trading_time(now=None) -> bool:
+def get_trade_phase(now=None) -> str:
     if now is None:
         now = now_la()
     if now.weekday() >= 5:
-        return False
+        return "closed"
     tnow = now.time()
-    return MARKET_OPEN <= tnow <= MARKET_CLOSE
+    if PREMARKET_OPEN <= tnow < PREOPEN_RECORD_START:
+        return "premarket_sell"
+    if PREOPEN_RECORD_START <= tnow < MARKET_OPEN:
+        return "preopen_record"
+    if MARKET_OPEN <= tnow <= MARKET_CLOSE:
+        return "regular"
+    if MARKET_CLOSE < tnow <= AFTERHOURS_CLOSE:
+        return "afterhours_add"
+    return "closed"
+
+def is_trading_time(now=None) -> bool:
+    return get_trade_phase(now) != "closed"
 
 # =========================
 # 8) DB 配置
@@ -400,14 +414,22 @@ def safe_call(fn, *args, **kwargs):
         traceback.print_exc()
         return None
 
-def dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed: bool) -> bool:
+def dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed: bool, phase: str = "regular") -> bool:
     traded = False
 
     if stype == "B":
-        if is_bought == 1 and can_sell == 1:
+        if phase == "premarket_sell" and is_bought == 1 and can_sell == 1:
+            r = safe_call(strategy_B_premarket_manage, code)
+            traded = (r is True)
+        elif phase == "preopen_record" and is_bought == 1 and can_sell == 1:
+            safe_call(strategy_B_extended_record, code, phase)
+        elif phase == "afterhours_add" and is_bought == 1:
+            r = safe_call(strategy_B_afterhours_add, code)
+            traded = (r is True)
+        elif phase == "regular" and is_bought == 1 and can_sell == 1:
             r = safe_call(strategy_B_sell, code)
             traded = (r is True)
-        elif buy_allowed and can_buy == 1 and _strategy_buy_enabled("B"):
+        elif phase == "regular" and buy_allowed and can_buy == 1 and _strategy_buy_enabled("B"):
             r = safe_call(strategy_B_buy, code)
             traded = (r is True)
     # elif stype == "C":
@@ -418,10 +440,18 @@ def dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed: bool) -
     #         r = safe_call(strategy_C_buy, code)
     #         traded = (r is True)
     elif stype == "F":
-        if is_bought == 1 and can_sell == 1:
+        if phase == "premarket_sell" and is_bought == 1 and can_sell == 1:
+            r = safe_call(strategy_F_premarket_manage, code)
+            traded = (r is True)
+        elif phase == "preopen_record" and is_bought == 1 and can_sell == 1:
+            safe_call(strategy_F_extended_record, code, phase)
+        elif phase == "afterhours_add" and is_bought == 1:
+            r = safe_call(strategy_F_afterhours_add, code)
+            traded = (r is True)
+        elif phase == "regular" and is_bought == 1 and can_sell == 1:
             r = safe_call(strategy_F_sell, code)
             traded = (r is True)
-        elif buy_allowed and can_buy == 1 and _strategy_buy_enabled("F"):
+        elif phase == "regular" and buy_allowed and can_buy == 1 and _strategy_buy_enabled("F"):
             r = safe_call(strategy_F_buy, code)
             traded = (r is True)
     else:
@@ -514,7 +544,7 @@ def get_market_gate(conn) -> int:
 #
 #     return conn, traded_any# =========================
 
-def one_round(conn, buy_allowed):
+def one_round(conn, buy_allowed, phase: str = "regular"):
     global _BUY_CURSOR, _SELL_CURSOR
 
     conn = ensure_conn_alive(conn)
@@ -543,7 +573,7 @@ def one_round(conn, buy_allowed):
             if not code or stype not in ("A", "B", "C", "D", "E", "F"):
                 continue
 
-            traded = dispatch_one(code, stype, is_bought, can_sell, 0, True)
+            traded = dispatch_one(code, stype, is_bought, can_sell, 0, True, phase=phase)
             if traded:
                 traded_any = True
                 last_sell_hit_idx = idx
@@ -561,6 +591,10 @@ def one_round(conn, buy_allowed):
     # ===============================
     # 2) BUY PHASE（买：全扫一遍，但从游标开始）
     # ===============================
+    if phase != "regular":
+        log.info(f"[ROUND] BUY skipped (phase={phase})")
+        return conn, traded_any
+
     if not buy_allowed:
         log.info("[ROUND] BUY skipped (gate closed)")
         return conn, traded_any
@@ -591,7 +625,7 @@ def one_round(conn, buy_allowed):
             if not code or stype not in ("A", "B", "C", "D", "E", "F"):
                 continue
 
-            traded = dispatch_one(code, stype, 0, 0, can_buy, True)
+            traded = dispatch_one(code, stype, 0, 0, can_buy, True, phase=phase)
             if traded:
                 traded_any = True
                 last_buy_hit_idx = idx
@@ -673,7 +707,10 @@ def main_loop():
 
     while not _STOP:
         try:
-            if not is_trading_time():
+            phase = get_trade_phase()
+            os.environ["TRADE_PHASE"] = phase
+
+            if phase == "closed":
                 log.info("非交易时段，休眠 60s..........")
                 t.sleep(60)
                 continue
@@ -699,13 +736,16 @@ def main_loop():
 
             # 3) 最终买入开关：资金允许 且 大盘允许
             buy_allowed = (
-                bp_buy_allowed
+                phase == "regular"
+                and bp_buy_allowed
                 and market_buy_allowed
                 and control.get("global_buy_enabled") == 1
                 and control.get("sell_only_mode") != 1
             )
 
-            if control.get("sell_only_mode") == 1:
+            if phase != "regular":
+                log.info(f"[PHASE] {phase}: extended-hours rules active, regular buy phase disabled")
+            elif control.get("sell_only_mode") == 1:
                 log.info("[CONTROL] sell_only_mode=1，仅允许卖出...")
             elif control.get("global_buy_enabled") != 1:
                 log.info("[CONTROL] global_buy_enabled=0，禁止买入，仅允许卖出...")
@@ -715,13 +755,13 @@ def main_loop():
                 log.info("账户资金不足，禁止买入，仅允许卖出...")
             else:
                 log.info(
-                    "买入条件允许：资金开关=1，大盘开关=1 "
+                    f"买入条件允许：phase={phase} 资金开关=1，大盘开关=1 "
                     f"B={control.get('strategy_b_enabled')} "
                     f"C={control.get('strategy_c_enabled')} "
                     f"F={control.get('strategy_f_enabled')}"
                 )
 
-            conn, traded_once = one_round(conn, buy_allowed)
+            conn, traded_once = one_round(conn, buy_allowed, phase=phase)
 
             if traded_once:
                 t.sleep(float(os.getenv("AFTER_ROUND_TRADE_SLEEP_SEC", "0.5")))
