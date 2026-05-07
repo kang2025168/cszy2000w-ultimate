@@ -13,6 +13,11 @@ from datetime import datetime, timedelta
 import pymysql
 import requests
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
 # =========================
 # DB
 # =========================
@@ -51,6 +56,9 @@ HTTP_TIMEOUT = float(os.getenv("B_HTTP_TIMEOUT", "6"))
 B_MONSTER_MIN_PEAK_GAIN_PCT = float(os.getenv("B_MONSTER_MIN_PEAK_GAIN_PCT", "0.03"))
 
 B_BP_USE_CASH = int(os.getenv("B_BP_USE_CASH", "0"))  # 0=buying_power,1=cash
+B_BUY_WINDOW_START_LA = os.getenv("B_BUY_WINDOW_START_LA", "06:40")
+B_BUY_WINDOW_END_LA = os.getenv("B_BUY_WINDOW_END_LA", "10:40")
+LA_TZ = ZoneInfo("America/Los_Angeles") if ZoneInfo else None
 
 # 买入后同步 position
 B_POS_WAIT_SEC = int(os.getenv("B_POS_WAIT_SEC", "20"))
@@ -88,6 +96,34 @@ def _intent_short(s: str) -> str:
     if len(s) <= MAX_INTENT_LEN:
         return s
     return s[: MAX_INTENT_LEN - 3] + "..."
+
+
+def _hhmm_to_minutes(s: str, default: str) -> int:
+    raw = (s or default or "").strip()
+    try:
+        hh, mm = raw.split(":", 1)
+        return int(hh) * 60 + int(mm)
+    except Exception:
+        hh, mm = default.split(":", 1)
+        return int(hh) * 60 + int(mm)
+
+
+def _now_la():
+    if LA_TZ:
+        return datetime.now(LA_TZ)
+    return datetime.now()
+
+
+def _is_b_buy_window_open():
+    now_la = _now_la()
+    now_min = now_la.hour * 60 + now_la.minute
+    start_min = _hhmm_to_minutes(B_BUY_WINDOW_START_LA, "06:40")
+    end_min = _hhmm_to_minutes(B_BUY_WINDOW_END_LA, "10:40")
+    if start_min <= end_min:
+        is_open = start_min <= now_min <= end_min
+    else:
+        is_open = now_min >= start_min or now_min <= end_min
+    return is_open, now_la.strftime("%H:%M"), B_BUY_WINDOW_START_LA, B_BUY_WINDOW_END_LA
 
 
 def _alpaca_headers():
@@ -1348,6 +1384,15 @@ def strategy_B_buy(code: str) -> bool:
     code = (code or "").strip().upper()
     print(f"[B BUY] {code}", flush=True)
 
+    buy_window_open, now_la, window_start, window_end = _is_b_buy_window_open()
+    if not buy_window_open:
+        print(
+            f"[B BUY] {code} skip: outside LA buy window now={now_la} "
+            f"window={window_start}-{window_end}",
+            flush=True,
+        )
+        return False
+
     conn = None
     order_id = None
     try:
@@ -2329,7 +2374,6 @@ def strategy_B_sell(code: str) -> bool:
 
     BLOCK_SAME_DAY_SELL_AFTER_BUY = True
     SAME_DAY_FORCE_SELL_LOSS_PCT = -0.05
-    SAME_DAY_FORCE_SELL_WIN_PCT = 0.05
 
     # Stage 规则：纯减仓阶梯（add_ratio 永远 None,sl_mult 永远 None）
     # 总落袋: 20+16+10+5+4 ≈ 55%,留 45% 仓位裸奔到天上
@@ -2429,9 +2473,6 @@ def strategy_B_sell(code: str) -> bool:
             return True
         if up_pct_ <= SAME_DAY_FORCE_SELL_LOSS_PCT:
             print(f"[B SELL] {code} same-day lock overridden by loss {up_pct_:.2%}", flush=True)
-            return True
-        if up_pct_ >= SAME_DAY_FORCE_SELL_WIN_PCT:
-            print(f"[B SELL] {code} same-day lock overridden by win {up_pct_:.2%}", flush=True)
             return True
         return False
 
