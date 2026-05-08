@@ -36,6 +36,10 @@ case "$cmd" in
     echo "$(ts) ===== START independent sell bot ====="
     exec python -u app/sell_bot.py
     ;;
+  ops_volume)
+    echo "$(ts) ===== START local ops intraday volume sync ====="
+    exec python -u app/sync_ops_intraday_volume.py
+    ;;
   unlock_can_sell)
     exec python -u app/unlock_can_sell.py
     ;;
@@ -44,7 +48,7 @@ case "$cmd" in
     exit 0
     ;;
   *)
-    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|buy_bot|sell_bot|unlock_can_sell|healthcheck}" >&2
+    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|buy_bot|sell_bot|ops_volume|unlock_can_sell|healthcheck}" >&2
     exit 2
     ;;
 esac

@@ -48,6 +48,12 @@ B_MIN_AVG_DOLLAR_VOL20 = float(os.getenv("B_MIN_AVG_DOLLAR_VOL20", "20000000"))
 B_MAX_ACTIVE_POSITIONS = int(os.getenv("B_MAX_ACTIVE_POSITIONS", "4"))
 B_MAX_BELOW_OPEN_PCT = float(os.getenv("B_MAX_BELOW_OPEN_PCT", "0.015"))
 B_MAX_PULLBACK_FROM_HIGH_PCT = float(os.getenv("B_MAX_PULLBACK_FROM_HIGH_PCT", "0.03"))
+B_REQUIRE_INTRADAY_VOLUME = int(os.getenv("B_REQUIRE_INTRADAY_VOLUME", "1"))
+B_VOLUME_RATIO_EARLY = float(os.getenv("B_VOLUME_RATIO_EARLY", "0.15"))
+B_VOLUME_RATIO_MID = float(os.getenv("B_VOLUME_RATIO_MID", "0.30"))
+B_VOLUME_RATIO_LATE = float(os.getenv("B_VOLUME_RATIO_LATE", "0.45"))
+B_VOLUME_T1_LA = os.getenv("B_VOLUME_T1_LA", "07:30")
+B_VOLUME_T2_LA = os.getenv("B_VOLUME_T2_LA", "09:30")
 B_SCORE_TABLE = os.getenv("B_SCORE_TABLE", "strategy_b_buy_scores")
 B_SCORE_TOP_N = int(os.getenv("B_SCORE_TOP_N", "3"))
 B_SCORE_INTERVAL_MINUTES = int(os.getenv("B_SCORE_INTERVAL_MINUTES", "5"))
@@ -1433,6 +1439,82 @@ def _get_avg_dollar_vol20(conn, code: str) -> float:
         return 0.0
 
 
+def _get_avg_volume20(conn, code: str) -> float:
+    sql = f"""
+    SELECT AVG(volume) AS avg_vol
+    FROM (
+        SELECT volume
+        FROM `{PRICES_TABLE}`
+        WHERE symbol=%s
+          AND volume > 0
+        ORDER BY date DESC
+        LIMIT 20
+    ) x;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (code,))
+        row = cur.fetchone() or {}
+    try:
+        return float(row.get("avg_vol") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _get_ops_intraday_volume(conn, code: str) -> int:
+    sql = f"""
+    SELECT intraday_volume
+    FROM `{OPS_TABLE}`
+    WHERE stock_code=%s AND stock_type='B'
+    LIMIT 1;
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (code,))
+            row = cur.fetchone() or {}
+        return int(float(row.get("intraday_volume") or 0))
+    except Exception:
+        return 0
+
+
+def _required_intraday_volume_ratio(now_dt=None) -> float:
+    now_dt = now_dt or _now_la()
+    now_min = now_dt.hour * 60 + now_dt.minute
+    t1 = _hhmm_to_minutes(B_VOLUME_T1_LA, "07:30")
+    t2 = _hhmm_to_minutes(B_VOLUME_T2_LA, "09:30")
+    if now_min < t1:
+        return B_VOLUME_RATIO_EARLY
+    if now_min < t2:
+        return B_VOLUME_RATIO_MID
+    return B_VOLUME_RATIO_LATE
+
+
+def _intraday_volume_check(conn, code: str):
+    if B_REQUIRE_INTRADAY_VOLUME != 1:
+        return True, 0, 0.0, 0.0, 0.0, "disabled"
+
+    intraday_volume = _get_ops_intraday_volume(conn, code)
+    avg_volume20 = _get_avg_volume20(conn, code)
+    required_ratio = _required_intraday_volume_ratio()
+
+    if intraday_volume <= 0:
+        return False, intraday_volume, avg_volume20, required_ratio, 0.0, "missing_intraday_volume"
+    if avg_volume20 <= 0:
+        return False, intraday_volume, avg_volume20, required_ratio, 0.0, "missing_avg_volume20"
+
+    volume_ratio = float(intraday_volume) / float(avg_volume20)
+    if volume_ratio < required_ratio:
+        return (
+            False,
+            intraday_volume,
+            avg_volume20,
+            required_ratio,
+            volume_ratio,
+            f"volume_ratio={volume_ratio:.2%} < required={required_ratio:.2%}",
+        )
+
+    return True, intraday_volume, avg_volume20, required_ratio, volume_ratio, "ok"
+
+
 def _intraday_reversal_reject(ref_price: float, day_open: float, day_high: float):
     ref_price = float(ref_price or 0.0)
     day_open = float(day_open or 0.0)
@@ -1553,6 +1635,17 @@ def _score_b_candidate(conn, code: str):
     if avg_dollar_vol20 > 0 and avg_dollar_vol20 < B_MIN_AVG_DOLLAR_VOL20:
         return None
 
+    (
+        volume_ok,
+        intraday_volume,
+        avg_volume20,
+        required_volume_ratio,
+        volume_ratio,
+        _volume_reason,
+    ) = _intraday_volume_check(conn, code)
+    if not volume_ok:
+        return None
+
     spread_pct = 0.0
     if bid > 0 and ask > 0:
         mid = (bid + ask) / 2.0
@@ -1568,8 +1661,17 @@ def _score_b_candidate(conn, code: str):
     reversal_penalty = max(pullback_from_high, 0.0) * 700.0 + max(below_open, 0.0) * 700.0
     spread_penalty = spread_pct * 800.0
     liquidity_score = min(avg_dollar_vol20 / 1_000_000.0, 120.0) * 0.15
+    volume_score = min(volume_ratio / max(required_volume_ratio, 0.01), 2.0) * 18.0
     trigger_score = min(max((price - trigger) / trigger, 0.0), 0.08) * 180.0 if trigger > 0 else 0.0
-    score = momentum_score + liquidity_score + trigger_score - entry_penalty - spread_penalty - reversal_penalty
+    score = (
+        momentum_score
+        + liquidity_score
+        + volume_score
+        + trigger_score
+        - entry_penalty
+        - spread_penalty
+        - reversal_penalty
+    )
 
     return {
         "symbol": code,
@@ -1582,6 +1684,7 @@ def _score_b_candidate(conn, code: str):
         "reason": (
             f"day_up={day_up_pct:.2%} entry_up={entry_up_pct:.2%} "
             f"pullback={pullback_from_high:.2%} below_open={below_open:.2%} "
+            f"vol={intraday_volume}/{avg_volume20:.0f}({volume_ratio:.2%}>={required_volume_ratio:.2%}) "
             f"spread={spread_pct:.2%} adv20={avg_dollar_vol20:.0f}"
         )[:255],
     }
@@ -1876,6 +1979,29 @@ def strategy_B_buy(code: str) -> bool:
                 flush=True,
             )
             return False
+
+        (
+            volume_ok,
+            intraday_volume,
+            avg_volume20,
+            required_volume_ratio,
+            volume_ratio,
+            volume_reason,
+        ) = _intraday_volume_check(conn, code)
+        if not volume_ok:
+            print(
+                f"[B BUY] {code} skip: intraday volume {volume_reason} "
+                f"vol={intraday_volume} avg20={avg_volume20:.0f} "
+                f"required={required_volume_ratio:.2%}",
+                flush=True,
+            )
+            return False
+        print(
+            f"[B BUY] {code} volume ok: intraday={intraday_volume} "
+            f"avg20={avg_volume20:.0f} ratio={volume_ratio:.2%} "
+            f"required={required_volume_ratio:.2%}",
+            flush=True,
+        )
 
         # spread 保护
         if bid > 0 and ask > 0:
