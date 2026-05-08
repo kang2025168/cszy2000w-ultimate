@@ -274,10 +274,10 @@ def main_loop(role: str) -> None:
                     )
             os.environ["TRADE_PHASE"] = phase
 
-            # if phase == "closed":
-            #     tb.log.info(f"[{role.upper()} BOT] market closed, sleep 60s")
-            #     t.sleep(60)
-            #     continue
+            if phase == "closed":
+                tb.log.info(f"[{role.upper()} BOT] market closed, sleep 60s")
+                t.sleep(60)
+                continue
 
             if conn is None:
                 conn = tb.get_conn()
