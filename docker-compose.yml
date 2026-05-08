@@ -68,6 +68,82 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  buybot:
+    profiles: ["split-bots"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cszy_buybot
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      TZ: America/Los_Angeles
+      TRADE_ENV: ${ALPACA_MODE}
+      BOT_PROCESS_NAME: buy_bot
+      PAPER_APCA_API_KEY_ID: ${PAPER_APCA_API_KEY_ID}
+      PAPER_APCA_API_SECRET_KEY: ${PAPER_APCA_API_SECRET_KEY}
+      PAPER_ALPACA_BASE_URL: ${PAPER_ALPACA_BASE_URL}
+      LIVE_APCA_API_KEY_ID: ${LIVE_APCA_API_KEY_ID}
+      LIVE_APCA_API_SECRET_KEY: ${LIVE_APCA_API_SECRET_KEY}
+      LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./scripts:/app/scripts
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["bash", "-lc", "./scripts/run.sh buy_bot"]
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  sellbot:
+    profiles: ["split-bots"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cszy_sellbot
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      TZ: America/Los_Angeles
+      TRADE_ENV: ${ALPACA_MODE}
+      BOT_PROCESS_NAME: sell_bot
+      SELL_BOT_FORCE_PHASE: ${SELL_BOT_FORCE_PHASE:-}
+      SPLIT_BOT_LOG_EACH_SYMBOL: ${SPLIT_BOT_LOG_EACH_SYMBOL:-1}
+      PAPER_APCA_API_KEY_ID: ${PAPER_APCA_API_KEY_ID}
+      PAPER_APCA_API_SECRET_KEY: ${PAPER_APCA_API_SECRET_KEY}
+      PAPER_ALPACA_BASE_URL: ${PAPER_ALPACA_BASE_URL}
+      LIVE_APCA_API_KEY_ID: ${LIVE_APCA_API_KEY_ID}
+      LIVE_APCA_API_SECRET_KEY: ${LIVE_APCA_API_SECRET_KEY}
+      LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./scripts:/app/scripts
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["bash", "-lc", "./scripts/run.sh sell_bot"]
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   monitor:
     build:
       context: .

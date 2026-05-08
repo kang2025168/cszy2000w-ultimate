@@ -27,8 +27,9 @@ D) 入池筛选条件：
    3) vol_today > 1,000,000
    4) MA3 > MA10
    5) vol_today > avg(vol_prev_20) * 1.5
-   6) up_pct_today > 2%
-   7) (ma3-ma8)_today > (ma3-ma8)_yesterday > (ma3-ma8)_daybefore
+  6) up_pct_today > 2%
+     且 up_pct_today <= 20%，避免前一日已经暴涨后继续追高
+  7) (ma3-ma8)_today > (ma3-ma8)_yesterday > (ma3-ma8)_daybefore
    8) ma3 > ma8
    9) 从近20日低点涨幅 < 35%
   10) close_today > open_today，过滤高开低走/收阴线
@@ -61,6 +62,7 @@ HIGH_PCT = float(os.getenv("B_HIGH_PCT", "1.10"))
 
 VOL_MULT      = float(os.getenv("B_VOL_MULT", "1.5"))
 UP_PCT_MIN    = float(os.getenv("B_UP_PCT_MIN", "0.02"))
+UP_PCT_MAX    = float(os.getenv("B_UP_PCT_MAX", "0.20"))
 MIN_PRICE     = float(os.getenv("B_MIN_PRICE", "2.0"))
 MIN_VOL_TODAY = float(os.getenv("B_MIN_VOL_TODAY", "1000000"))
 
@@ -320,6 +322,7 @@ def main():
                 f"[INFO] as_of_date={as_of} range=[{LOW_PCT},{HIGH_PCT}] "
                 f"min_price={MIN_PRICE} min_vol={int(MIN_VOL_TODAY)} "
                 f"vol_mult={VOL_MULT} min_up={UP_PCT_MIN} "
+                f"max_up={UP_PCT_MAX} "
                 f"max_rise_from_low={MAX_RISE_FROM_LOW_PCT} "
                 f"max_upper_shadow={MAX_UPPER_SHADOW_PCT}",
                 flush=True,
@@ -367,6 +370,9 @@ def main():
                     continue
 
                 if not (m["up_pct"] > UP_PCT_MIN):
+                    continue
+
+                if m["up_pct"] > UP_PCT_MAX:
                     continue
 
                 if m["rise_from_low"] >= MAX_RISE_FROM_LOW_PCT:

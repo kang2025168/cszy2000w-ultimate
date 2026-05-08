@@ -41,6 +41,16 @@ DB = dict(
 # =========================
 B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.03"))
 B_MAX_BUY_UP_PCT = float(os.getenv("B_MAX_BUY_UP_PCT", "0.10"))
+B_MAX_ENTRY_UP_PCT = float(os.getenv("B_MAX_ENTRY_UP_PCT", "0.04"))
+B_MIN_PRICE = float(os.getenv("B_MIN_PRICE", "5.0"))
+B_MAX_SPREAD_PCT = float(os.getenv("B_MAX_SPREAD_PCT", "0.015"))
+B_MIN_AVG_DOLLAR_VOL20 = float(os.getenv("B_MIN_AVG_DOLLAR_VOL20", "20000000"))
+B_MAX_ACTIVE_POSITIONS = int(os.getenv("B_MAX_ACTIVE_POSITIONS", "4"))
+B_SCORE_TABLE = os.getenv("B_SCORE_TABLE", "strategy_b_buy_scores")
+B_SCORE_TOP_N = int(os.getenv("B_SCORE_TOP_N", "3"))
+B_SCORE_INTERVAL_MINUTES = int(os.getenv("B_SCORE_INTERVAL_MINUTES", "5"))
+B_SCORE_CONFIRMATIONS = int(os.getenv("B_SCORE_CONFIRMATIONS", "3"))
+B_SCORE_LOOKBACK_MINUTES = int(os.getenv("B_SCORE_LOOKBACK_MINUTES", "30"))
 B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "2500"))
 B_MIN_OPEN_BUYING_POWER = float(os.getenv("B_MIN_OPEN_BUYING_POWER", "2500"))
 
@@ -56,7 +66,7 @@ HTTP_TIMEOUT = float(os.getenv("B_HTTP_TIMEOUT", "6"))
 B_MONSTER_MIN_PEAK_GAIN_PCT = float(os.getenv("B_MONSTER_MIN_PEAK_GAIN_PCT", "0.03"))
 
 B_BP_USE_CASH = int(os.getenv("B_BP_USE_CASH", "0"))  # 0=buying_power,1=cash
-B_BUY_WINDOW_START_LA = os.getenv("B_BUY_WINDOW_START_LA", "06:40")
+B_BUY_WINDOW_START_LA = os.getenv("B_BUY_WINDOW_START_LA", "06:50")
 B_BUY_WINDOW_END_LA = os.getenv("B_BUY_WINDOW_END_LA", "10:40")
 LA_TZ = ZoneInfo("America/Los_Angeles") if ZoneInfo else None
 
@@ -117,7 +127,7 @@ def _now_la():
 def _is_b_buy_window_open():
     now_la = _now_la()
     now_min = now_la.hour * 60 + now_la.minute
-    start_min = _hhmm_to_minutes(B_BUY_WINDOW_START_LA, "06:40")
+    start_min = _hhmm_to_minutes(B_BUY_WINDOW_START_LA, "06:50")
     end_min = _hhmm_to_minutes(B_BUY_WINDOW_END_LA, "10:40")
     if start_min <= end_min:
         is_open = start_min <= now_min <= end_min
@@ -1376,6 +1386,303 @@ def _get_prev_close_from_db(conn, code: str):
         return 0.0
 
 
+def _count_active_b_positions(conn) -> int:
+    sql = f"""
+    SELECT COUNT(*) AS n
+    FROM `{OPS_TABLE}`
+    WHERE stock_type='B'
+      AND is_bought=1
+      AND can_sell=1
+      AND qty > 0;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        row = cur.fetchone() or {}
+    try:
+        return int(row.get("n") or 0)
+    except Exception:
+        return 0
+
+
+def _get_avg_dollar_vol20(conn, code: str) -> float:
+    sql = f"""
+    SELECT AVG(close * volume) AS adv
+    FROM (
+        SELECT close, volume
+        FROM `{PRICES_TABLE}`
+        WHERE symbol=%s
+          AND close > 0
+          AND volume > 0
+        ORDER BY date DESC
+        LIMIT 20
+    ) x;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (code,))
+        row = cur.fetchone() or {}
+    try:
+        return float(row.get("adv") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _ensure_b_score_table(conn):
+    sql = f"""
+    CREATE TABLE IF NOT EXISTS `{B_SCORE_TABLE}` (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        bucket_time DATETIME NOT NULL,
+        symbol VARCHAR(20) NOT NULL,
+        rank_no INT NOT NULL,
+        score DOUBLE NOT NULL,
+        price DOUBLE NULL,
+        day_up_pct DOUBLE NULL,
+        entry_up_pct DOUBLE NULL,
+        spread_pct DOUBLE NULL,
+        avg_dollar_vol20 DOUBLE NULL,
+        reason VARCHAR(255) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_bucket_symbol (bucket_time, symbol),
+        KEY idx_symbol_bucket (symbol, bucket_time),
+        KEY idx_bucket_rank (bucket_time, rank_no)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+
+
+def _score_bucket_time(now_dt=None) -> datetime:
+    now_dt = now_dt or datetime.now()
+    interval = max(int(B_SCORE_INTERVAL_MINUTES), 1)
+    minute = (now_dt.minute // interval) * interval
+    return now_dt.replace(minute=minute, second=0, microsecond=0)
+
+
+def _latest_score_bucket(conn):
+    _ensure_b_score_table(conn)
+    sql = f"SELECT MAX(bucket_time) AS bucket_time FROM `{B_SCORE_TABLE}`;"
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        row = cur.fetchone() or {}
+    return row.get("bucket_time")
+
+
+def _score_b_candidate(conn, code: str):
+    code = (code or "").strip().upper()
+    row = _load_one_b_row(conn, code)
+    if not row:
+        return None
+
+    if int(row.get("can_buy") or 0) != 1:
+        return None
+    if int(row.get("is_bought") or 0) == 1:
+        return None
+    if _is_cooldown(row.get("last_order_time"), row.get("last_order_side")):
+        return None
+
+    trigger = float(row.get("trigger_price") or 0)
+    entry_close = float(row.get("entry_close") or row.get("close_price") or trigger or 0)
+    if trigger <= 0 or entry_close <= 0:
+        return None
+
+    snap = get_snapshot_quote_realtime(code)
+    price = float(snap.get("last_price") or 0.0)
+    bid = float(snap.get("bid") or 0.0)
+    ask = float(snap.get("ask") or 0.0)
+    prev_close = float(snap.get("prev_close") or 0.0)
+    if prev_close <= 0:
+        prev_close = _get_prev_close_from_db(conn, code)
+
+    if price <= 0 or prev_close <= 0:
+        return None
+    if price < B_MIN_PRICE:
+        return None
+    if not (price > trigger):
+        return None
+
+    day_up_pct = (price - prev_close) / prev_close if prev_close > 0 else 0.0
+    entry_up_pct = (price - entry_close) / entry_close if entry_close > 0 else 0.0
+    if not (day_up_pct > B_MIN_UP_PCT):
+        return None
+    if day_up_pct >= B_MAX_BUY_UP_PCT:
+        return None
+    if entry_up_pct >= B_MAX_ENTRY_UP_PCT:
+        return None
+
+    avg_dollar_vol20 = _get_avg_dollar_vol20(conn, code)
+    if avg_dollar_vol20 > 0 and avg_dollar_vol20 < B_MIN_AVG_DOLLAR_VOL20:
+        return None
+
+    spread_pct = 0.0
+    if bid > 0 and ask > 0:
+        mid = (bid + ask) / 2.0
+        spread_pct = (ask - bid) / mid if mid > 0 else 0.0
+        if spread_pct > B_MAX_SPREAD_PCT:
+            return None
+
+    # 越接近 3%-8% 的强势突破、越接近入选价、流动性越好、价差越小，分越高。
+    momentum_score = max(0.0, min(day_up_pct, 0.08)) * 1000.0
+    entry_penalty = max(entry_up_pct, 0.0) * 450.0
+    spread_penalty = spread_pct * 800.0
+    liquidity_score = min(avg_dollar_vol20 / 1_000_000.0, 120.0) * 0.15
+    trigger_score = min(max((price - trigger) / trigger, 0.0), 0.08) * 180.0 if trigger > 0 else 0.0
+    score = momentum_score + liquidity_score + trigger_score - entry_penalty - spread_penalty
+
+    return {
+        "symbol": code,
+        "score": round(float(score), 4),
+        "price": price,
+        "day_up_pct": day_up_pct,
+        "entry_up_pct": entry_up_pct,
+        "spread_pct": spread_pct,
+        "avg_dollar_vol20": avg_dollar_vol20,
+        "reason": (
+            f"day_up={day_up_pct:.2%} entry_up={entry_up_pct:.2%} "
+            f"spread={spread_pct:.2%} adv20={avg_dollar_vol20:.0f}"
+        )[:255],
+    }
+
+
+def strategy_B_rank_and_confirm(codes) -> list[str]:
+    """
+    B 买入选择器：
+    1) 每 5 分钟给全池 can_buy 股票打分。
+    2) 只记录 Top3。
+    3) 同一只股票在最近窗口里进入 Top3 满 3 次，才交给 strategy_B_buy 下单。
+    """
+    codes = sorted({(c or "").strip().upper() for c in (codes or []) if (c or "").strip()})
+    if not codes:
+        return []
+
+    buy_window_open, now_la, window_start, window_end = _is_b_buy_window_open()
+    if not buy_window_open:
+        print(
+            f"[B SCORE] skip: outside LA buy window now={now_la} "
+            f"window={window_start}-{window_end}",
+            flush=True,
+        )
+        return []
+
+    conn = None
+    try:
+        conn = _connect()
+        active_b = _count_active_b_positions(conn)
+        if active_b >= B_MAX_ACTIVE_POSITIONS:
+            print(
+                f"[B SCORE] skip: active_b_positions={active_b} "
+                f">= max_active={B_MAX_ACTIVE_POSITIONS}",
+                flush=True,
+            )
+            return []
+
+        _ensure_b_score_table(conn)
+        bucket_time = _score_bucket_time()
+        latest_bucket = _latest_score_bucket(conn)
+        should_record = latest_bucket is None or latest_bucket < bucket_time
+
+        if should_record:
+            scored = []
+            for code in codes:
+                try:
+                    item = _score_b_candidate(conn, code)
+                    if item:
+                        scored.append(item)
+                except Exception as e:
+                    print(f"[B SCORE] {code} skip score error: {e}", flush=True)
+
+            scored.sort(key=lambda x: x["score"], reverse=True)
+            top = scored[: max(int(B_SCORE_TOP_N), 1)]
+
+            sql = f"""
+            INSERT INTO `{B_SCORE_TABLE}` (
+                bucket_time, symbol, rank_no, score, price,
+                day_up_pct, entry_up_pct, spread_pct, avg_dollar_vol20, reason
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+                rank_no=VALUES(rank_no),
+                score=VALUES(score),
+                price=VALUES(price),
+                day_up_pct=VALUES(day_up_pct),
+                entry_up_pct=VALUES(entry_up_pct),
+                spread_pct=VALUES(spread_pct),
+                avg_dollar_vol20=VALUES(avg_dollar_vol20),
+                reason=VALUES(reason);
+            """
+            args = [
+                (
+                    bucket_time,
+                    item["symbol"],
+                    idx,
+                    item["score"],
+                    item["price"],
+                    item["day_up_pct"],
+                    item["entry_up_pct"],
+                    item["spread_pct"],
+                    item["avg_dollar_vol20"],
+                    item["reason"],
+                )
+                for idx, item in enumerate(top, start=1)
+            ]
+            if args:
+                with conn.cursor() as cur:
+                    cur.executemany(sql, args)
+            print(
+                f"[B SCORE] bucket={bucket_time} scored={len(scored)} "
+                f"top={','.join([x['symbol'] for x in top]) or '-'}",
+                flush=True,
+            )
+        else:
+            print(f"[B SCORE] wait next bucket latest={latest_bucket}", flush=True)
+
+        confirm_sql = f"""
+        SELECT
+            s.symbol,
+            COUNT(DISTINCT s.bucket_time) AS hits,
+            MAX(CASE WHEN s.bucket_time=(SELECT MAX(bucket_time) FROM `{B_SCORE_TABLE}`) THEN s.rank_no END) AS latest_rank,
+            AVG(s.score) AS avg_score
+        FROM `{B_SCORE_TABLE}` s
+        JOIN (
+            SELECT DISTINCT bucket_time
+            FROM `{B_SCORE_TABLE}`
+            WHERE bucket_time >= DATE_SUB(%s, INTERVAL %s MINUTE)
+            ORDER BY bucket_time DESC
+            LIMIT %s
+        ) b
+          ON b.bucket_time = s.bucket_time
+        GROUP BY s.symbol
+        HAVING hits >= %s
+           AND latest_rank IS NOT NULL
+        ORDER BY latest_rank ASC, avg_score DESC;
+        """
+        with conn.cursor() as cur:
+            cur.execute(
+                confirm_sql,
+                (
+                    bucket_time,
+                    int(B_SCORE_LOOKBACK_MINUTES),
+                    int(B_SCORE_CONFIRMATIONS),
+                    int(B_SCORE_CONFIRMATIONS),
+                ),
+            )
+            rows = cur.fetchall() or []
+
+        confirmed = [str(r.get("symbol") or "").upper() for r in rows if r.get("symbol")]
+        if confirmed:
+            print(f"[B SCORE] confirmed={','.join(confirmed)}", flush=True)
+        return confirmed
+
+    except Exception as e:
+        print(f"[B SCORE] error: {e}", flush=True)
+        traceback.print_exc()
+        return []
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
 def strategy_B_buy(code: str) -> bool:
     import math
     import traceback
@@ -1434,6 +1741,15 @@ def strategy_B_buy(code: str) -> bool:
             )
             return False
 
+        active_b = _count_active_b_positions(conn)
+        if active_b >= B_MAX_ACTIVE_POSITIONS:
+            print(
+                f"[B BUY] {code} skip: active_b_positions={active_b} "
+                f">= max_active={B_MAX_ACTIVE_POSITIONS}",
+                flush=True,
+            )
+            return False
+
         # ============================================================
         # 2) 行情 + 信号校验
         # ============================================================
@@ -1463,6 +1779,12 @@ def strategy_B_buy(code: str) -> bool:
         if price <= 0:
             print(f"[B BUY] {code} skip: invalid price={price:.2f}", flush=True)
             return False
+        if price < B_MIN_PRICE:
+            print(
+                f"[B BUY] {code} skip: price={price:.2f} < min_price={B_MIN_PRICE:.2f}",
+                flush=True,
+            )
+            return False
         if prev_close <= 0:
             print(f"[B BUY] {code} skip: invalid prev_close={prev_close:.2f}", flush=True)
             return False
@@ -1476,14 +1798,40 @@ def strategy_B_buy(code: str) -> bool:
                 flush=True,
             )
             return False
+        if day_up_pct >= B_MAX_BUY_UP_PCT:
+            max_buy_price = prev_close * (1.0 + float(B_MAX_BUY_UP_PCT)) if prev_close > 0 else 0.0
+            print(
+                f"[B BUY] {code} skip: day_up={day_up_pct*100:.2f}% "
+                f">= max_buy_up={B_MAX_BUY_UP_PCT*100:.2f}% "
+                f"(max_buy_price<{max_buy_price:.2f})",
+                flush=True,
+            )
+            return False
+        if entry_up_pct >= B_MAX_ENTRY_UP_PCT:
+            print(
+                f"[B BUY] {code} skip: entry_up={entry_up_pct*100:.2f}% "
+                f">= max_entry_up={B_MAX_ENTRY_UP_PCT*100:.2f}%",
+                flush=True,
+            )
+            return False
+
+        avg_dollar_vol20 = _get_avg_dollar_vol20(conn, code)
+        if avg_dollar_vol20 > 0 and avg_dollar_vol20 < B_MIN_AVG_DOLLAR_VOL20:
+            print(
+                f"[B BUY] {code} skip: avg_dollar_vol20={avg_dollar_vol20:.0f} "
+                f"< min={B_MIN_AVG_DOLLAR_VOL20:.0f}",
+                flush=True,
+            )
+            return False
+
         # spread 保护
         if bid > 0 and ask > 0:
             mid = (bid + ask) / 2.0
             spread_pct = (ask - bid) / mid if mid > 0 else 0.0
-            if spread_pct > 0.03:
+            if spread_pct > B_MAX_SPREAD_PCT:
                 print(
                     f"[B BUY] {code} skip: spread too wide bid={bid:.2f} ask={ask:.2f} "
-                    f"spread={spread_pct*100:.2f}%",
+                    f"spread={spread_pct*100:.2f}% max={B_MAX_SPREAD_PCT*100:.2f}%",
                     flush=True,
                 )
                 return False

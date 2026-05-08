@@ -7,6 +7,7 @@
 2) 最新成交量 volume > MIN_VOLUME（默认 1,000,000）
 3) 连续3天上涨：close[-3] < close[-2] < close[-1]
 4) 价格必须在压力位范围：pressure*LOW_PCT <= close <= pressure*HIGH_PCT（默认 0.9~1.3）
+5) 最新交易日涨幅 <= MAX_UP_PCT（默认 20%），避免昨日已暴涨后追高
 
 写入字段：
 - stock_code
@@ -40,6 +41,7 @@ OPS_TABLE = os.getenv("OPS_TABLE", "stock_operations")
 
 MIN_PRICE = float(os.getenv("B_MIN_PRICE", "2.0"))
 MIN_VOLUME = int(float(os.getenv("B_MIN_VOLUME", "1000000")))
+MAX_UP_PCT = float(os.getenv("B_UP_PCT_MAX", "0.20"))
 
 LOW_PCT = float(os.getenv("B_LOW_PCT", "0.90"))
 HIGH_PCT = float(os.getenv("B_HIGH_PCT", "1.30"))
@@ -58,7 +60,7 @@ def main():
 
     print(
         f"[INFO] as_of_date={as_of}  MIN_PRICE>{MIN_PRICE}  MIN_VOLUME>{MIN_VOLUME}  "
-        f"RANGE=[{LOW_PCT},{HIGH_PCT}]"
+        f"RANGE=[{LOW_PCT},{HIGH_PCT}] MAX_UP_PCT<={MAX_UP_PCT}"
     )
 
     # 拉最近窗口（只拉 levels 里的票）
@@ -99,9 +101,14 @@ def main():
         c1, c2, c3 = last3["close"].iloc[0], last3["close"].iloc[1], last3["close"].iloc[2]
         last_close = float(c3)
         last_vol = float(last3["volume"].iloc[2])
+        prev_close = float(c2)
+        up_pct = (last_close - prev_close) / prev_close if prev_close > 0 else 0.0
 
         # 3连涨
         if not (c1 < c2 < c3):
+            continue
+
+        if up_pct > MAX_UP_PCT:
             continue
 
         # 价/量阈值

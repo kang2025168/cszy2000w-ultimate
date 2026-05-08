@@ -28,6 +28,14 @@ case "$cmd" in
     echo "$(ts) ===== START tradebot main (strategy_a) ====="
     exec python -u app/trade_bot_main.py
     ;;
+  buy_bot)
+    echo "$(ts) ===== START independent buy bot ====="
+    exec python -u app/buy_bot.py
+    ;;
+  sell_bot)
+    echo "$(ts) ===== START independent sell bot ====="
+    exec python -u app/sell_bot.py
+    ;;
   unlock_can_sell)
     exec python -u app/unlock_can_sell.py
     ;;
@@ -36,7 +44,7 @@ case "$cmd" in
     exit 0
     ;;
   *)
-    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|unlock_can_sell|healthcheck}" >&2
+    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|buy_bot|sell_bot|unlock_can_sell|healthcheck}" >&2
     exit 2
     ;;
 esac

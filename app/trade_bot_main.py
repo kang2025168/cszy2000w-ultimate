@@ -30,6 +30,7 @@ TRADE_ENV = (os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper").stri
 if TRADE_ENV not in ("paper", "live"):
     raise RuntimeError(f"❌ 非法 TRADE_ENV/ALPACA_MODE={TRADE_ENV}，只能是 paper 或 live")
 print(f"===== 当前运行环境: {TRADE_ENV} =====", flush=True)
+BOT_PROCESS_NAME = (os.getenv("BOT_PROCESS_NAME") or "tradebot").strip().lower()
 
 # =========================
 # ✅ 强制注入：把 PAPER/LIVE 的 key 写进通用变量名（必须在 import strategy 之前）
@@ -50,12 +51,16 @@ os.environ["ALPACA_SECRET"] = os.environ.get("APCA_API_SECRET_KEY", "")
 print(f"[ENV] key_prefix={os.environ.get('APCA_API_KEY_ID','')[:5]} env={TRADE_ENV}", flush=True)
 
 # ✅ 现在再 import strategy
-from app.strategy_a import *  # noqa
-from app.strategy_b import *  # noqa
-from app.strategy_c import *  # noqa
-from app.strategy_d import *  # noqa
-from app.strategy_e import *  # noqa
-from app.strategy_f import *  # noqa
+# 拆分后的 buy_bot/sell_bot 只需要 B/F，避免启动时加载无关策略。
+if BOT_PROCESS_NAME in ("buy_bot", "sell_bot"):
+    from app.strategy_b import *  # noqa
+    from app.strategy_f import *  # noqa
+else:
+    from app.strategy_a import *  # noqa
+    from app.strategy_b import *  # noqa
+    from app.strategy_d import *  # noqa
+    from app.strategy_e import *  # noqa
+    from app.strategy_f import *  # noqa
 
 # =========================
 # 4) 强制 stdout/stderr UTF-8
@@ -71,7 +76,7 @@ except Exception:
 #    ✅ Docker 里建议禁用 PID 文件锁：DISABLE_PID_LOCK=1
 # =========================
 DISABLE_PID_LOCK = int(os.getenv("DISABLE_PID_LOCK", "1"))  # Docker 默认禁用
-PID_FILE = f"/tmp/tradebot_{TRADE_ENV}.pid"
+PID_FILE = f"/tmp/{BOT_PROCESS_NAME}_{TRADE_ENV}.pid"
 
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
@@ -195,7 +200,7 @@ _STOP = False
 # 11) Logger（按环境区分日志）
 # =========================
 def setup_logger():
-    logger = logging.getLogger(f"trade_bot_{TRADE_ENV}")
+    logger = logging.getLogger(f"{BOT_PROCESS_NAME}_{TRADE_ENV}")
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
@@ -206,7 +211,11 @@ def setup_logger():
 
     log_dir = os.getenv("LOG_DIR", "/tmp/logs")
     Path(log_dir).mkdir(parents=True, exist_ok=True)
-    log_name = os.path.join(log_dir, f"AAA_trade_bot_{TRADE_ENV}.log")
+    if BOT_PROCESS_NAME == "tradebot":
+        log_file = f"AAA_trade_bot_{TRADE_ENV}.log"
+    else:
+        log_file = f"AAA_{BOT_PROCESS_NAME}_{TRADE_ENV}.log"
+    log_name = os.path.join(log_dir, log_file)
 
     file_handler = TimedRotatingFileHandler(
         log_name,
@@ -317,7 +326,6 @@ _SELL_CURSOR = 0
 _CONTROL = {
     "global_buy_enabled": 1,
     "strategy_b_enabled": 1,
-    "strategy_c_enabled": 1,
     "strategy_f_enabled": 1,
     "sell_only_mode": 0,
     "emergency_stop": 0,
@@ -330,7 +338,6 @@ def ensure_bot_control_table(conn):
         id INT NOT NULL PRIMARY KEY DEFAULT 1,
         global_buy_enabled TINYINT NOT NULL DEFAULT 1,
         strategy_b_enabled TINYINT NOT NULL DEFAULT 1,
-        strategy_c_enabled TINYINT NOT NULL DEFAULT 1,
         strategy_f_enabled TINYINT NOT NULL DEFAULT 1,
         sell_only_mode TINYINT NOT NULL DEFAULT 0,
         emergency_stop TINYINT NOT NULL DEFAULT 0,
@@ -353,7 +360,6 @@ def load_bot_control(conn):
     _CONTROL = {
         "global_buy_enabled": int(row.get("global_buy_enabled") or 0),
         "strategy_b_enabled": int(row.get("strategy_b_enabled") or 0),
-        "strategy_c_enabled": int(row.get("strategy_c_enabled") or 0),
         "strategy_f_enabled": int(row.get("strategy_f_enabled") or 0),
         "sell_only_mode": int(row.get("sell_only_mode") or 0),
         "emergency_stop": int(row.get("emergency_stop") or 0),
@@ -365,8 +371,6 @@ def _strategy_buy_enabled(stype: str) -> bool:
     stype = (stype or "").strip().upper()
     if stype == "B":
         return _CONTROL.get("strategy_b_enabled", 1) == 1
-    if stype == "C":
-        return _CONTROL.get("strategy_c_enabled", 1) == 1
     if stype == "F":
         return _CONTROL.get("strategy_f_enabled", 1) == 1
     return True
@@ -384,7 +388,7 @@ def load_rows(conn, mode: str):
         sql = f"""
         SELECT stock_code, stock_type, is_bought, can_sell, can_buy
         FROM {TABLE}
-        WHERE stock_type IN ('A','B','C','D','E','F')
+        WHERE stock_type IN ('A','B','D','E','F')
           AND is_bought=1 AND can_sell=1
         ORDER BY stock_type, stock_code
         """
@@ -392,7 +396,7 @@ def load_rows(conn, mode: str):
         sql = f"""
         SELECT stock_code, stock_type, is_bought, can_sell, can_buy
         FROM {TABLE}
-        WHERE stock_type IN ('A','B','C','D','E','F')
+        WHERE stock_type IN ('A','B','D','E','F')
           AND can_buy=1 AND (is_bought IS NULL OR is_bought<>1)
         ORDER BY stock_type, stock_code
         """
@@ -432,13 +436,6 @@ def dispatch_one(code, stype, is_bought, can_sell, can_buy, buy_allowed: bool, p
         elif phase == "regular" and buy_allowed and can_buy == 1 and _strategy_buy_enabled("B"):
             r = safe_call(strategy_B_buy, code)
             traded = (r is True)
-    # elif stype == "C":
-    #     if is_bought == 1 and can_sell == 1:
-    #         r = safe_call(strategy_C_sell, code)
-    #         traded = (r is True)
-    #     elif buy_allowed and can_buy == 1 and _strategy_buy_enabled("C"):
-    #         r = safe_call(strategy_C_buy, code)
-    #         traded = (r is True)
     elif stype == "F":
         if phase == "premarket_sell" and is_bought == 1 and can_sell == 1:
             r = safe_call(strategy_F_premarket_manage, code)
@@ -502,7 +499,7 @@ def get_market_gate(conn) -> int:
 #         is_bought = int(row.get("is_bought") or 0)
 #         can_sell  = int(row.get("can_sell") or 0)
 #
-#         if not code or stype not in ("A","B","C","D","E"):
+#         if not code or stype not in ("A","B","D","E"):
 #             continue
 #
 #         traded = dispatch_one(code, stype, is_bought, can_sell, 0, True)
@@ -531,7 +528,7 @@ def get_market_gate(conn) -> int:
 #         stype = (row.get("stock_type") or "").strip().upper()
 #         can_buy = int(row.get("can_buy") or 0)
 #
-#         if not code or stype not in ("A","B","C","D","E"):
+#         if not code or stype not in ("A","B","D","E"):
 #             continue
 #
 #         traded = dispatch_one(code, stype, 0, 0, can_buy, True)
@@ -570,7 +567,7 @@ def one_round(conn, buy_allowed, phase: str = "regular"):
             is_bought = int(row.get("is_bought") or 0)
             can_sell  = int(row.get("can_sell") or 0)
 
-            if not code or stype not in ("A", "B", "C", "D", "E", "F"):
+            if not code or stype not in ("A", "B", "D", "E", "F"):
                 continue
 
             traded = dispatch_one(code, stype, is_bought, can_sell, 0, True, phase=phase)
@@ -600,9 +597,6 @@ def one_round(conn, buy_allowed, phase: str = "regular"):
         return conn, traded_any
 
     # F 是 B 被利润回吐洗出去后的二次启动观察池。
-    # 买入阶段开始前先刷新 C/F 候选，只写入 can_buy=1，真正下单仍由各策略买入函数执行。
-    safe_call(strategy_C_refresh_candidates)
-
     # F：只把满足二次启动的 WATCHING 股票写成 F/can_buy=1。
     safe_call(strategy_F_refresh_candidates)
 
@@ -612,6 +606,8 @@ def one_round(conn, buy_allowed, phase: str = "regular"):
     if buy_n > 0:
         buy_order = _rotate_indices(buy_n, _BUY_CURSOR)
         last_buy_hit_idx = None
+        b_codes = []
+        other_buy_items = []
 
         for idx in buy_order:
             if _STOP:
@@ -622,9 +618,30 @@ def one_round(conn, buy_allowed, phase: str = "regular"):
             stype = (row.get("stock_type") or "").strip().upper()
             can_buy = int(row.get("can_buy") or 0)
 
-            if not code or stype not in ("A", "B", "C", "D", "E", "F"):
+            if not code or stype not in ("A", "B", "D", "E", "F"):
                 continue
+            if can_buy != 1:
+                continue
+            if stype == "B":
+                b_codes.append(code)
+                continue
+            other_buy_items.append((idx, code, stype, can_buy))
 
+        confirmed_b = safe_call(strategy_B_rank_and_confirm, b_codes) if b_codes else []
+        for code in confirmed_b or []:
+            if _STOP:
+                break
+            traded = dispatch_one(code, "B", 0, 0, 1, True, phase=phase)
+            if traded:
+                traded_any = True
+                t.sleep(float(os.getenv("AFTER_TRADE_SLEEP_SEC", "2")))
+                refresh_buy_gate(force=True)
+
+            t.sleep(SLEEP_BETWEEN_SYMBOLS + random.uniform(0, 0.08))
+
+        for idx, code, stype, can_buy in other_buy_items:
+            if _STOP:
+                break
             traded = dispatch_one(code, stype, 0, 0, can_buy, True, phase=phase)
             if traded:
                 traded_any = True
@@ -757,7 +774,6 @@ def main_loop():
                 log.info(
                     f"买入条件允许：phase={phase} 资金开关=1，大盘开关=1 "
                     f"B={control.get('strategy_b_enabled')} "
-                    f"C={control.get('strategy_c_enabled')} "
                     f"F={control.get('strategy_f_enabled')}"
                 )
 
