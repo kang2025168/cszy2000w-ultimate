@@ -39,6 +39,8 @@ docker compose --profile split-bots up -d --build buybot sellbot
 - `B_MAX_SPREAD_PCT=0.015`：买入价差超过 1.5% 不买。
 - `B_MIN_AVG_DOLLAR_VOL20=20000000`：20 日均成交额低于 2000 万美元不买。
 - `B_MAX_ACTIVE_POSITIONS=4`：B 策略同时持仓上限。
+- `B_MAX_BELOW_OPEN_PCT=0.015`：实时价/限价低于当日开盘价超过 1.5% 不买。
+- `B_MAX_PULLBACK_FROM_HIGH_PCT=0.03`：实时价/限价距离当日最高价回落超过 3% 不买。
 - `B_SCORE_TOP_N=3`：B 买入每轮只记录评分前三。
 - `B_SCORE_INTERVAL_MINUTES=5`：B 买入评分记录间隔，默认每 5 分钟一次。
 - `B_SCORE_CONFIRMATIONS=3`：同一股票进入 Top3 满 3 次才允许买入。

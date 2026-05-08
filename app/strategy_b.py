@@ -46,6 +46,8 @@ B_MIN_PRICE = float(os.getenv("B_MIN_PRICE", "5.0"))
 B_MAX_SPREAD_PCT = float(os.getenv("B_MAX_SPREAD_PCT", "0.015"))
 B_MIN_AVG_DOLLAR_VOL20 = float(os.getenv("B_MIN_AVG_DOLLAR_VOL20", "20000000"))
 B_MAX_ACTIVE_POSITIONS = int(os.getenv("B_MAX_ACTIVE_POSITIONS", "4"))
+B_MAX_BELOW_OPEN_PCT = float(os.getenv("B_MAX_BELOW_OPEN_PCT", "0.015"))
+B_MAX_PULLBACK_FROM_HIGH_PCT = float(os.getenv("B_MAX_PULLBACK_FROM_HIGH_PCT", "0.03"))
 B_SCORE_TABLE = os.getenv("B_SCORE_TABLE", "strategy_b_buy_scores")
 B_SCORE_TOP_N = int(os.getenv("B_SCORE_TOP_N", "3"))
 B_SCORE_INTERVAL_MINUTES = int(os.getenv("B_SCORE_INTERVAL_MINUTES", "5"))
@@ -466,17 +468,22 @@ def get_snapshot_quote_realtime(code: str):
 
     lt = js.get("latestTrade") or {}
     lq = js.get("latestQuote") or {}
+    db = js.get("dailyBar") or {}
     pb = js.get("prevDailyBar") or {}
 
     last_price = float(lt["p"]) if lt.get("p") is not None else None
     bid = float(lq["bp"]) if lq.get("bp") is not None else None
     ask = float(lq["ap"]) if lq.get("ap") is not None else None
+    day_open = float(db["o"]) if db.get("o") is not None else None
+    day_high = float(db["h"]) if db.get("h") is not None else None
     prev_close = float(pb["c"]) if pb.get("c") is not None else None
 
     return {
         "last_price": last_price,
         "bid": bid,
         "ask": ask,
+        "day_open": day_open,
+        "day_high": day_high,
         "prev_close": prev_close,
         "feed": B_DATA_FEED,
     }
@@ -1426,6 +1433,35 @@ def _get_avg_dollar_vol20(conn, code: str) -> float:
         return 0.0
 
 
+def _intraday_reversal_reject(ref_price: float, day_open: float, day_high: float):
+    ref_price = float(ref_price or 0.0)
+    day_open = float(day_open or 0.0)
+    day_high = float(day_high or 0.0)
+
+    if ref_price <= 0:
+        return True, "invalid_ref_price"
+
+    if day_open > 0:
+        below_open_pct = (day_open - ref_price) / day_open
+        if below_open_pct > B_MAX_BELOW_OPEN_PCT:
+            return (
+                True,
+                f"below_open={below_open_pct:.2%} > max={B_MAX_BELOW_OPEN_PCT:.2%} "
+                f"open={day_open:.2f} ref={ref_price:.2f}",
+            )
+
+    if day_high > 0:
+        pullback_pct = (day_high - ref_price) / day_high
+        if pullback_pct > B_MAX_PULLBACK_FROM_HIGH_PCT:
+            return (
+                True,
+                f"pullback_from_high={pullback_pct:.2%} > max={B_MAX_PULLBACK_FROM_HIGH_PCT:.2%} "
+                f"high={day_high:.2f} ref={ref_price:.2f}",
+            )
+
+    return False, ""
+
+
 def _ensure_b_score_table(conn):
     sql = f"""
     CREATE TABLE IF NOT EXISTS `{B_SCORE_TABLE}` (
@@ -1488,6 +1524,8 @@ def _score_b_candidate(conn, code: str):
     price = float(snap.get("last_price") or 0.0)
     bid = float(snap.get("bid") or 0.0)
     ask = float(snap.get("ask") or 0.0)
+    day_open = float(snap.get("day_open") or 0.0)
+    day_high = float(snap.get("day_high") or 0.0)
     prev_close = float(snap.get("prev_close") or 0.0)
     if prev_close <= 0:
         prev_close = _get_prev_close_from_db(conn, code)
@@ -1507,6 +1545,9 @@ def _score_b_candidate(conn, code: str):
         return None
     if entry_up_pct >= B_MAX_ENTRY_UP_PCT:
         return None
+    reject_reversal, _ = _intraday_reversal_reject(price, day_open, day_high)
+    if reject_reversal:
+        return None
 
     avg_dollar_vol20 = _get_avg_dollar_vol20(conn, code)
     if avg_dollar_vol20 > 0 and avg_dollar_vol20 < B_MIN_AVG_DOLLAR_VOL20:
@@ -1521,11 +1562,14 @@ def _score_b_candidate(conn, code: str):
 
     # 越接近 3%-8% 的强势突破、越接近入选价、流动性越好、价差越小，分越高。
     momentum_score = max(0.0, min(day_up_pct, 0.08)) * 1000.0
+    pullback_from_high = (day_high - price) / day_high if day_high > 0 else 0.0
+    below_open = (day_open - price) / day_open if day_open > 0 else 0.0
     entry_penalty = max(entry_up_pct, 0.0) * 450.0
+    reversal_penalty = max(pullback_from_high, 0.0) * 700.0 + max(below_open, 0.0) * 700.0
     spread_penalty = spread_pct * 800.0
     liquidity_score = min(avg_dollar_vol20 / 1_000_000.0, 120.0) * 0.15
     trigger_score = min(max((price - trigger) / trigger, 0.0), 0.08) * 180.0 if trigger > 0 else 0.0
-    score = momentum_score + liquidity_score + trigger_score - entry_penalty - spread_penalty
+    score = momentum_score + liquidity_score + trigger_score - entry_penalty - spread_penalty - reversal_penalty
 
     return {
         "symbol": code,
@@ -1537,6 +1581,7 @@ def _score_b_candidate(conn, code: str):
         "avg_dollar_vol20": avg_dollar_vol20,
         "reason": (
             f"day_up={day_up_pct:.2%} entry_up={entry_up_pct:.2%} "
+            f"pullback={pullback_from_high:.2%} below_open={below_open:.2%} "
             f"spread={spread_pct:.2%} adv20={avg_dollar_vol20:.0f}"
         )[:255],
     }
@@ -1757,6 +1802,8 @@ def strategy_B_buy(code: str) -> bool:
         price = float(snap.get("last_price") or 0.0)
         bid = float(snap.get("bid") or 0.0)
         ask = float(snap.get("ask") or 0.0)
+        day_open = float(snap.get("day_open") or 0.0)
+        day_high = float(snap.get("day_high") or 0.0)
         feed = snap.get("feed")
 
         prev_close = float(snap.get("prev_close") or 0.0)
@@ -1770,6 +1817,7 @@ def strategy_B_buy(code: str) -> bool:
 
         print(
             f"[B BUY] {code} quote bid={bid:.2f} ask={ask:.2f} last={price:.2f} "
+            f"open={day_open:.2f} high={day_high:.2f} "
             f"prev_close={prev_close:.2f} entry_close={entry_close:.2f} "
             f"trigger={trigger:.2f} day_up={day_up_pct*100:.2f}% "
             f"entry_up={entry_up_pct*100:.2f}% feed={feed}",
@@ -1813,6 +1861,11 @@ def strategy_B_buy(code: str) -> bool:
                 f">= max_entry_up={B_MAX_ENTRY_UP_PCT*100:.2f}%",
                 flush=True,
             )
+            return False
+
+        reject_reversal, reversal_reason = _intraday_reversal_reject(price, day_open, day_high)
+        if reject_reversal:
+            print(f"[B BUY] {code} skip: weak intraday price {reversal_reason}", flush=True)
             return False
 
         avg_dollar_vol20 = _get_avg_dollar_vol20(conn, code)
@@ -1884,6 +1937,13 @@ def strategy_B_buy(code: str) -> bool:
         if limit_price < price:
             print(
                 f"[B BUY] {code} skip: limit_price={limit_price:.2f} < last_price={price:.2f}",
+                flush=True,
+            )
+            return False
+        reject_limit_reversal, limit_reversal_reason = _intraday_reversal_reject(limit_price, day_open, day_high)
+        if reject_limit_reversal:
+            print(
+                f"[B BUY] {code} skip: weak intraday limit {limit_reversal_reason}",
                 flush=True,
             )
             return False
