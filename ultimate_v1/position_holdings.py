@@ -155,8 +155,11 @@ def update_sell_holding(
     print(f"{tag} symbol={symbol} strategy={group} realized_pnl={float(pnl or 0):.2f} status={status}", flush=True)
 
 
-def sync_open_holding_from_position(pos, strategy_group: str = "UNKNOWN") -> None:
-    """把 Alpaca 当前真实持仓同步到本地展示表。"""
+def sync_open_holding_from_position(pos, strategy_group: str = "B") -> None:
+    """把 Alpaca 当前真实持仓同步到本地展示表。
+
+    已有持仓保留原来的 strategy_group/stock_type；新持仓默认归到 B。
+    """
     symbol = str(getattr(pos, "symbol", "")).upper()
     qty = float(getattr(pos, "qty", 0) or 0)
     avg = float(getattr(pos, "avg_entry_price", 0) or 0)
@@ -168,26 +171,32 @@ def sync_open_holding_from_position(pos, strategy_group: str = "UNKNOWN") -> Non
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id FROM position_holdings
+                SELECT id, strategy_group, stock_type, capital_pool
+                FROM position_holdings
                 WHERE symbol=%s AND status='open'
-                ORDER BY FIELD(strategy_group, %s, 'UNKNOWN') DESC, id DESC LIMIT 1
+                ORDER BY FIELD(strategy_group, 'A','C','B','D','UNKNOWN') ASC, id DESC LIMIT 1
                 """,
-                (symbol, strategy_group),
+                (symbol,),
             )
             row = cur.fetchone()
             if row:
+                keep_group = (row.get("strategy_group") or row.get("stock_type") or strategy_group or "B").upper()
+                keep_type = (row.get("stock_type") or keep_group).upper()
+                keep_pool = (row.get("capital_pool") or keep_group).upper()
                 cur.execute(
                     """
                     UPDATE position_holdings
                     SET qty=%s, avg_entry_price=%s, current_price=%s, market_value=%s,
                         cost_basis=%s, unrealized_pnl=%s, unrealized_pnl_pct=%s,
                         holding_days=IF(entry_time IS NULL, 0, DATEDIFF(NOW(), entry_time)),
+                        strategy_group=%s, stock_type=%s, capital_pool=%s,
                         last_update_time=NOW()
                     WHERE id=%s
                     """,
-                    (qty, avg, current, market_value, qty * avg, unrealized, unrealized_pct, row["id"]),
+                    (qty, avg, current, market_value, qty * avg, unrealized, unrealized_pct, keep_group, keep_type, keep_pool, row["id"]),
                 )
             else:
+                group = (strategy_group or "B").upper()
                 cur.execute(
                     """
                     INSERT INTO position_holdings (
@@ -196,7 +205,7 @@ def sync_open_holding_from_position(pos, strategy_group: str = "UNKNOWN") -> Non
                         unrealized_pnl_pct, entry_time, capital_pool, last_update_time, notes
                     ) VALUES (%s,%s,%s,'open',%s,%s,%s,%s,%s,%s,%s,NOW(),%s,NOW(),%s)
                     """,
-                    (symbol, strategy_group, strategy_group, qty, avg, current, market_value, qty * avg, unrealized, unrealized_pct, strategy_group, "auto-created from Alpaca sync"),
+                    (symbol, group, group, qty, avg, current, market_value, qty * avg, unrealized, unrealized_pct, group, "auto-created from Alpaca sync default=B"),
                 )
 
 

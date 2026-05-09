@@ -22,7 +22,7 @@ def sync_position_holdings() -> bool:
             if not symbol:
                 continue
             symbols.add(symbol)
-            sync_open_holding_from_position(pos, "UNKNOWN")
+            sync_open_holding_from_position(pos, "B")
         mark_missing_from_alpaca(symbols)
         counts = summary_counts()
         print(
