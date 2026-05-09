@@ -31,6 +31,25 @@ def _column_exists(conn, table: str, column: str) -> bool:
         return int(cur.fetchone()["n"]) > 0
 
 
+def _varchar_length(conn, table: str, column: str) -> int | None:
+    """读取 VARCHAR 字段长度，用于旧表自动升级。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT CHARACTER_MAXIMUM_LENGTH AS n
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+              AND COLUMN_NAME = %s
+            """,
+            (table, column),
+        )
+        row = cur.fetchone()
+        if not row or row.get("n") is None:
+            return None
+        return int(row["n"])
+
+
 def ensure_stock_operations_columns() -> None:
     """检查旧交易控制表，缺少 V1 需要的字段就自动添加。"""
     s = settings()
@@ -58,7 +77,7 @@ def ensure_position_holdings_table() -> None:
                 """
                 CREATE TABLE IF NOT EXISTS position_holdings (
                   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                  symbol VARCHAR(16) NOT NULL,
+                  symbol VARCHAR(64) NOT NULL,
                   strategy_group VARCHAR(8) NOT NULL,
                   stock_type VARCHAR(8),
                   status VARCHAR(16) DEFAULT 'open',
@@ -89,6 +108,12 @@ def ensure_position_holdings_table() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+            # 老版本 symbol 是 VARCHAR(16)，遇到 Alpaca 期权/特殊符号会写入失败。
+            # 这里启动时自动扩容，不删除数据。
+            symbol_len = _varchar_length(conn, "position_holdings", "symbol")
+            if symbol_len is not None and symbol_len < 64:
+                cur.execute("ALTER TABLE position_holdings MODIFY COLUMN symbol VARCHAR(64) NOT NULL")
+                print("[SCHEMA] upgraded position_holdings.symbol to VARCHAR(64)", flush=True)
 
 
 def ensure_control_state_tables() -> None:
