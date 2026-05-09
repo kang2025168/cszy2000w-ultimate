@@ -52,7 +52,10 @@ def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
         "ATTACK": (0.25, 0.45, 0.30, True),
         "RISK_OFF": (0.70, 0.00, 0.30, False),
     }.get(mode, (0.35, 0.30, 0.35, True))
-    return {"A": a, "B": b, "C": c, "D": 0.0}, allow_d
+    # D 是保证金日内池，但不吃满保证金额度，只允许使用本金的 30%。
+    # SAFE/RISK_OFF 下 D 仍然为 0。
+    d = 0.30 if allow_d else 0.0
+    return {"A": a, "B": b, "C": c, "D": d}, allow_d
 
 
 def _risk_percents() -> tuple[float, dict[str, float]]:
@@ -78,13 +81,12 @@ def _risk_percents() -> tuple[float, dict[str, float]]:
 def _ensure_monthly_capital_pools(mode: str, snap) -> date:
     """当月没有资金池记录时，按当月账户资金和模式比例写入一次。"""
     month = _month_start()
-    weights, allow_d = _mode_weights(mode)
-    d_target = max(0.0, snap.buying_power - snap.equity) if allow_d else 0.0
+    weights, _allow_d = _mode_weights(mode)
     base_targets = {
         "A": snap.equity * weights["A"],
         "B": snap.equity * weights["B"],
         "C": snap.equity * weights["C"],
-        "D": d_target,
+        "D": snap.equity * weights["D"],
     }
     total_pct, pool_pct = _risk_percents()
     with db_conn() as conn:
@@ -114,6 +116,20 @@ def _ensure_monthly_capital_pools(mode: str, snap) -> date:
                         snap.buying_power,
                         "monthly allocation auto-created",
                     ),
+                )
+                # 如果本月资金池已经存在，但策略比例规则升级了，只修正比例变化的行。
+                # 这样可以把旧的 D=0 自动升级成 D=30%，同时不因为账户 equity 波动重写整月资金池。
+                cur.execute(
+                    """
+                    UPDATE capital_pools
+                    SET mode=%s, base_percent=%s, base_target_capital=%s,
+                        notes='monthly allocation policy upgraded',
+                        updated_at=NOW()
+                    WHERE allocation_month=%s
+                      AND strategy_group=%s
+                      AND (mode<>%s OR ABS(base_percent - %s) > 0.0001)
+                    """,
+                    (mode, weights[group], base_targets[group], month, group, mode, weights[group]),
                 )
     return month
 
