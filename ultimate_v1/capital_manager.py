@@ -59,8 +59,8 @@ def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
     )
 
 
-def get_strategy_used_capital(strategy_group: str) -> float:
-    """从 stock_operations 读取某个策略组当前持仓占用资金。"""
+def _get_strategy_used_capital_from_operations(strategy_group: str) -> float:
+    """兜底逻辑：从旧交易控制表读取某个策略组当前持仓占用资金。"""
     s = settings()
     group = (strategy_group or "").upper()
     with db_conn(s) as conn:
@@ -83,6 +83,50 @@ def get_strategy_used_capital(strategy_group: str) -> float:
                 if price is None:
                     price = row.get("cost_price")
                 total += qty * float(price or 0)
+            return total
+
+
+def get_strategy_used_capital(strategy_group: str) -> float:
+    """从真实持仓展示表 position_holdings 读取某个策略组当前占用资金。
+
+    stock_operations 是交易控制表，不再作为资金池展示的主要来源。
+    只有关闭 ENABLE_POSITION_HOLDINGS 时，才退回旧表兜底。
+    """
+    s = settings()
+    group = (strategy_group or "").upper()
+    if not s.enable_position_holdings:
+        return _get_strategy_used_capital_from_operations(group)
+    with db_conn(s) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT qty, avg_entry_price, current_price, market_value, cost_basis
+                FROM position_holdings
+                WHERE status = 'open'
+                  AND UPPER(
+                    CASE
+                      WHEN strategy_group IN ('A','B','C','D') THEN strategy_group
+                      WHEN stock_type IN ('A','B','C','D') THEN stock_type
+                      ELSE strategy_group
+                    END
+                  ) = %s
+                """,
+                (group,),
+            )
+            total = 0.0
+            for row in cur.fetchall():
+                market_value = row.get("market_value")
+                if market_value is not None:
+                    total += abs(float(market_value or 0))
+                    continue
+                qty = float(row.get("qty") or 0)
+                price = row.get("current_price")
+                if price is None:
+                    price = row.get("avg_entry_price")
+                if price is not None:
+                    total += abs(qty * float(price or 0))
+                    continue
+                total += abs(float(row.get("cost_basis") or 0))
             return total
 
 
