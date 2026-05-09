@@ -764,7 +764,7 @@ def _load_price_categories(selected_key: str = ""):
         meta_rows = _fetch_all(conn, f"""
             SELECT snapshot_date, category_group, category_group_label, category_key,
                    category_label, category_order, COUNT(*) AS symbol_count,
-                   MAX(updated_at) OVER () AS snapshot_updated_at
+                   MAX(updated_at) AS snapshot_updated_at
             FROM `{PRICE_CATEGORY_TABLE}`
             WHERE snapshot_date=%s
             GROUP BY snapshot_date, category_group, category_group_label,
