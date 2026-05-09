@@ -6,6 +6,9 @@ The web UI reads the snapshot table instead of recalculating on every request.
 Run it after the daily bars have been written to stock_prices_pool; before the
 next close, the UI keeps showing the previous completed snapshot.
 
+涨跌幅口径：
+    (`close` - previous trading day's `close`) / previous trading day's `close`
+
 Example:
     DB_HOST=138.197.75.51 DB_PORT=3307 DB_USER=tradebot DB_PASS='***' DB_NAME=cszy2000 \
     .venv/bin/python scripts/refresh_stock_price_categories.py
@@ -233,14 +236,18 @@ def _build_snapshot(rows, snapshot_date: date):
         if latest.get("trade_date") != snapshot_date:
             continue
 
-        open_price = _as_float(latest.get("open"))
         close_price = _as_float(latest.get("close"))
-        if not open_price or open_price <= 0 or close_price is None:
+        if close_price is None:
             continue
         if close_price <= MIN_CLOSE_PRICE:
             continue
+        if len(sym_rows) < 2:
+            continue
+        prev_close = _as_float(sym_rows[-2].get("close"))
+        if not prev_close or prev_close <= 0:
+            continue
 
-        change_pct = (close_price - open_price) / open_price
+        change_pct = (close_price - prev_close) / prev_close
         up_streak = _streak(sym_rows, "up")
         down_streak = _streak(sym_rows, "down")
         up_days = {n: _count_direction(sym_rows, n, "up") for n in (2, 3, 4, 5)}
