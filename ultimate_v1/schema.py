@@ -158,6 +158,32 @@ def ensure_control_state_tables() -> None:
             )
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS capital_pools (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  allocation_month DATE NOT NULL,
+                  strategy_group VARCHAR(8) NOT NULL,
+                  mode VARCHAR(16) NOT NULL,
+                  base_percent DECIMAL(10,4) DEFAULT 0,
+                  base_target_capital DECIMAL(18,2) DEFAULT 0,
+                  total_risk_percent DECIMAL(10,4) DEFAULT 1,
+                  pool_risk_percent DECIMAL(10,4) DEFAULT 1,
+                  risk_target_capital DECIMAL(18,2) DEFAULT 0,
+                  used_capital DECIMAL(18,2) DEFAULT 0,
+                  available_capital DECIMAL(18,2) DEFAULT 0,
+                  used_percent DECIMAL(10,4) DEFAULT 0,
+                  source_equity DECIMAL(18,2) DEFAULT 0,
+                  source_buying_power DECIMAL(18,2) DEFAULT 0,
+                  notes VARCHAR(255),
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  UNIQUE KEY uq_month_group (allocation_month, strategy_group),
+                  INDEX idx_month (allocation_month),
+                  INDEX idx_strategy_group (strategy_group)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS bot_heartbeats (
                   bot_name VARCHAR(64) PRIMARY KEY,
                   status VARCHAR(32) NOT NULL DEFAULT 'unknown',

@@ -3,16 +3,18 @@ from __future__ import annotations
 """多策略资金池管理：计算 A/B/C/D 目标资金、已用资金和开仓许可。"""
 
 from dataclasses import dataclass
+from datetime import date
 
 from . import alpaca_gateway
-from .config import settings
-from .db import db_conn
+from .config import env_float, settings
+from .db import db_conn, fetch_all
 from .risk_controller import get_risk_state
 
 
 @dataclass
 class CapitalAllocation:
     mode: str
+    allocation_month: date
     equity: float
     buying_power: float
     cash: float
@@ -21,6 +23,12 @@ class CapitalAllocation:
     B_target: float
     C_target: float
     D_target: float
+    base_targets: dict[str, float]
+    base_percents: dict[str, float]
+    total_risk_percent: float
+    pool_risk_percents: dict[str, float]
+    used: dict[str, float]
+    available: dict[str, float]
 
     def target_for(self, strategy_group: str) -> float:
         return float(getattr(self, f"{strategy_group.upper()}_target", 0.0))
@@ -30,32 +38,171 @@ def get_account_snapshot():
     return alpaca_gateway.get_account_snapshot()
 
 
-def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
-    """按 CAPITAL_MODE 计算各策略资金池，B/D 会受 risk_multiplier 影响。"""
-    s = settings()
-    snap = get_account_snapshot()
-    if snap is None:
-        return None
-    mode = (mode or s.capital_mode or "NORMAL").upper()
-    weights = {
+def _month_start(today: date | None = None) -> date:
+    """资金池按月管理，每月第一天作为分配月份。"""
+    today = today or date.today()
+    return date(today.year, today.month, 1)
+
+
+def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
+    """读取当前资金模式的基础比例。"""
+    a, b, c, allow_d = {
         "NORMAL": (0.35, 0.30, 0.35, True),
         "SAFE": (0.40, 0.20, 0.40, False),
         "ATTACK": (0.25, 0.45, 0.30, True),
         "RISK_OFF": (0.70, 0.00, 0.30, False),
     }.get(mode, (0.35, 0.30, 0.35, True))
-    a, b, c, allow_d = weights
-    d_target = max(0.0, snap.buying_power - snap.equity) if allow_d else 0.0
+    return {"A": a, "B": b, "C": c, "D": 0.0}, allow_d
+
+
+def _risk_percents() -> tuple[float, dict[str, float]]:
+    """计算风险机器人允许使用的总资金百分比和各资金池百分比。"""
     risk = get_risk_state()
+    total_pct = max(0.0, min(1.0, env_float("RISK_TOTAL_CAPITAL_PCT", 1.0)))
+    pool_pct = {
+        "A": max(0.0, min(1.0, env_float("RISK_A_POOL_PCT", total_pct))),
+        "B": max(0.0, min(1.0, env_float("RISK_B_POOL_PCT", risk.risk_multiplier))),
+        "C": max(0.0, min(1.0, env_float("RISK_C_POOL_PCT", total_pct))),
+        "D": max(0.0, min(1.0, env_float("RISK_D_POOL_PCT", risk.risk_multiplier))),
+    }
+    if risk.block_all_new:
+        total_pct = 0.0
+        pool_pct = {group: 0.0 for group in pool_pct}
+    if risk.block_b:
+        pool_pct["B"] = 0.0
+    if risk.block_d:
+        pool_pct["D"] = 0.0
+    return total_pct, pool_pct
+
+
+def _ensure_monthly_capital_pools(mode: str, snap) -> date:
+    """当月没有资金池记录时，按当月账户资金和模式比例写入一次。"""
+    month = _month_start()
+    weights, allow_d = _mode_weights(mode)
+    d_target = max(0.0, snap.buying_power - snap.equity) if allow_d else 0.0
+    base_targets = {
+        "A": snap.equity * weights["A"],
+        "B": snap.equity * weights["B"],
+        "C": snap.equity * weights["C"],
+        "D": d_target,
+    }
+    total_pct, pool_pct = _risk_percents()
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            for group in ("A", "B", "C", "D"):
+                risk_target = base_targets[group] * total_pct * pool_pct[group]
+                cur.execute(
+                    """
+                    INSERT IGNORE INTO capital_pools (
+                        allocation_month, strategy_group, mode, base_percent,
+                        base_target_capital, total_risk_percent, pool_risk_percent,
+                        risk_target_capital, used_capital, available_capital,
+                        used_percent, source_equity, source_buying_power, notes
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,0,%s,0,%s,%s,%s)
+                    """,
+                    (
+                        month,
+                        group,
+                        mode,
+                        weights[group],
+                        base_targets[group],
+                        total_pct,
+                        pool_pct[group],
+                        risk_target,
+                        risk_target,
+                        snap.equity,
+                        snap.buying_power,
+                        "monthly allocation auto-created",
+                    ),
+                )
+    return month
+
+
+def _capital_pool_rows(month: date) -> list[dict]:
+    """读取当月资金池表。"""
+    return fetch_all(
+        """
+        SELECT *
+        FROM capital_pools
+        WHERE allocation_month=%s
+        ORDER BY FIELD(strategy_group, 'A','B','C','D')
+        """,
+        (month,),
+    )
+
+
+def refresh_capital_pool_usage(month: date | None = None) -> list[dict]:
+    """把 position_holdings 汇总出的真实占用金额回写到 capital_pools。"""
+    month = month or _month_start()
+    total_pct, pool_pct = _risk_percents()
+    used = {group: get_strategy_used_capital(group) for group in ("A", "B", "C", "D")}
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            for group in ("A", "B", "C", "D"):
+                cur.execute(
+                    """
+                    SELECT base_target_capital
+                    FROM capital_pools
+                    WHERE allocation_month=%s AND strategy_group=%s
+                    """,
+                    (month, group),
+                )
+                row = cur.fetchone()
+                if not row:
+                    continue
+                base_target = float(row.get("base_target_capital") or 0)
+                risk_target = base_target * total_pct * pool_pct[group]
+                used_capital = used[group]
+                available = max(0.0, risk_target - used_capital)
+                used_percent = used_capital / risk_target if risk_target > 0 else 0.0
+                cur.execute(
+                    """
+                    UPDATE capital_pools
+                    SET total_risk_percent=%s, pool_risk_percent=%s,
+                        risk_target_capital=%s, used_capital=%s,
+                        available_capital=%s, used_percent=%s,
+                        updated_at=NOW()
+                    WHERE allocation_month=%s AND strategy_group=%s
+                    """,
+                    (total_pct, pool_pct[group], risk_target, used_capital, available, used_percent, month, group),
+                )
+    return _capital_pool_rows(month)
+
+
+def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
+    """读取月度资金池表，并用真实持仓金额刷新已用资金。"""
+    s = settings()
+    snap = get_account_snapshot()
+    if snap is None:
+        return None
+    mode = (mode or s.capital_mode or "NORMAL").upper()
+    month = _ensure_monthly_capital_pools(mode, snap)
+    rows = refresh_capital_pool_usage(month)
+    by_group = {str(row["strategy_group"]).upper(): row for row in rows}
+    targets = {group: float((by_group.get(group) or {}).get("risk_target_capital") or 0) for group in ("A", "B", "C", "D")}
+    base_targets = {group: float((by_group.get(group) or {}).get("base_target_capital") or 0) for group in ("A", "B", "C", "D")}
+    base_percents = {group: float((by_group.get(group) or {}).get("base_percent") or 0) for group in ("A", "B", "C", "D")}
+    pool_risk_percents = {group: float((by_group.get(group) or {}).get("pool_risk_percent") or 0) for group in ("A", "B", "C", "D")}
+    used = {group: float((by_group.get(group) or {}).get("used_capital") or 0) for group in ("A", "B", "C", "D")}
+    available = {group: float((by_group.get(group) or {}).get("available_capital") or 0) for group in ("A", "B", "C", "D")}
+    total_risk_percent = max((float(row.get("total_risk_percent") or 0) for row in rows), default=0.0)
     return CapitalAllocation(
         mode=mode,
+        allocation_month=month,
         equity=snap.equity,
         buying_power=snap.buying_power,
         cash=snap.cash,
         portfolio_value=snap.portfolio_value,
-        A_target=snap.equity * a,
-        B_target=snap.equity * b * risk.risk_multiplier,
-        C_target=snap.equity * c,
-        D_target=d_target * risk.risk_multiplier,
+        A_target=targets["A"],
+        B_target=targets["B"],
+        C_target=targets["C"],
+        D_target=targets["D"],
+        base_targets=base_targets,
+        base_percents=base_percents,
+        total_risk_percent=total_risk_percent,
+        pool_risk_percents=pool_risk_percents,
+        used=used,
+        available=available,
     )
 
 
@@ -135,7 +282,7 @@ def get_available_capital(strategy_group: str) -> float:
     if allocation is None:
         raise RuntimeError("资金池计算失败")
     target = allocation.target_for(strategy_group)
-    used = get_strategy_used_capital(strategy_group)
+    used = allocation.used.get((strategy_group or "").upper(), get_strategy_used_capital(strategy_group))
     return max(0.0, target - used)
 
 
@@ -156,8 +303,8 @@ def can_open_new_position(strategy_group: str, estimated_notional: float) -> tup
         if allocation is None:
             return False, "account_snapshot_failed"
         target = allocation.target_for(group)
-        used = get_strategy_used_capital(group)
-        available = max(0.0, target - used)
+        used = allocation.used.get(group, get_strategy_used_capital(group))
+        available = allocation.available.get(group, max(0.0, target - used))
         allow = float(estimated_notional or 0) <= available
         if allow:
             print(

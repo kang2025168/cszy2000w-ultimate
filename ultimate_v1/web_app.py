@@ -34,22 +34,34 @@ def _allocation_payload() -> dict:
     allocation = get_capital_allocation()
     if allocation is None:
         return {"ok": False, "error": "account_snapshot_failed"}
-    used = {g: get_strategy_used_capital(g) for g in ("A", "B", "C", "D")}
+    used = allocation.used
+    available = allocation.available
+    usable_total = sum(allocation.target_for(g) for g in ("A", "B", "C", "D"))
+    base_total = sum(allocation.base_targets.get(g, 0.0) for g in ("A", "B", "C", "D"))
+    used_total = sum(used.get(g, 0.0) for g in ("A", "B", "C", "D"))
     return {
         "ok": True,
         "mode": allocation.mode,
+        "allocation_month": allocation.allocation_month,
         "equity": allocation.equity,
         "buying_power": allocation.buying_power,
         "cash": allocation.cash,
         "portfolio_value": allocation.portfolio_value,
+        "base_total": base_total,
+        "usable_total": usable_total,
+        "used_total": used_total,
+        "total_risk_percent": allocation.total_risk_percent,
         "targets": {
             "A": allocation.A_target,
             "B": allocation.B_target,
             "C": allocation.C_target,
             "D": allocation.D_target,
         },
+        "base_targets": allocation.base_targets,
+        "base_percents": allocation.base_percents,
+        "pool_risk_percents": allocation.pool_risk_percents,
         "used": used,
-        "available": {g: max(0.0, allocation.target_for(g) - used[g]) for g in used},
+        "available": available,
     }
 
 
@@ -327,7 +339,9 @@ INDEX_HTML = r"""<!doctype html>
     function poolCard(g, cap) {
       const target = Number(cap.targets[g] || 0), used = Number(cap.used[g] || 0), av = Number(cap.available[g] || 0);
       const w = target > 0 ? Math.min(100, used / target * 100) : 0;
-      return `<div class="pool-card"><div class="pool-head"><div class="pool-name">${g} 资金池</div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(av)}</div><div class="pool-meta">target ${money(target)} / used ${money(used)}</div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
+      const basePct = Number(cap.base_percents?.[g] || 0) * 100;
+      const riskPct = Number(cap.total_risk_percent || 0) * Number(cap.pool_risk_percents?.[g] || 0) * 100;
+      return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池</div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可用 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(av)}</div><div class="pool-meta">target ${money(target)} / used ${money(used)}</div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
     function drawDonut(cap) {
       const canvas = document.getElementById('capitalDonut'), ctx = canvas.getContext('2d');
@@ -457,9 +471,11 @@ INDEX_HTML = r"""<!doctype html>
           metric('Equity', money(cap.equity)), metric('Buying Power', money(cap.buying_power)), metric('Portfolio', money(cap.portfolio_value)), metric('Cash', money(cap.cash))
         ].join('');
         document.getElementById('pools').innerHTML = ['A','B','C','D'].map(g => poolCard(g, cap)).join('');
-        const usedTotal = ['A','B','C','D'].reduce((sum, g) => sum + Number(cap.used?.[g] || 0), 0);
-        const exposurePct = Number(cap.equity || 0) > 0 ? Math.min(999, usedTotal / Number(cap.equity) * 100) : 0;
-        document.getElementById('exposureValue').textContent = `${exposurePct.toFixed(1)}% / ${money(usedTotal)}`;
+        const usedTotal = Number(cap.used_total || 0);
+        const usableTotal = Number(cap.usable_total || 0);
+        const exposurePct = usableTotal > 0 ? Math.min(999, usedTotal / usableTotal * 100) : 0;
+        const totalRiskPct = Number(cap.total_risk_percent || 0) * 100;
+        document.getElementById('exposureValue').textContent = `${exposurePct.toFixed(1)}% / 可用${totalRiskPct.toFixed(0)}% / ${money(usedTotal)}`;
         document.getElementById('exposureFill').style.width = `${Math.min(100, exposurePct)}%`;
         drawDonut(cap);
       } else {
