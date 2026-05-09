@@ -272,10 +272,11 @@ def _build_snapshot(rows, snapshot_date: date):
             if change_pct < -threshold / 100:
                 _add(out, f"loss_gt_{threshold}", latest, metrics)
 
-        if 2 <= up_streak <= 7:
-            _add(out, f"up_streak_{up_streak}", latest, metrics)
-        if 2 <= down_streak <= 7:
-            _add(out, f"down_streak_{down_streak}", latest, metrics)
+        for days in range(2, 8):
+            if up_streak >= days:
+                _add(out, f"up_streak_{days}", latest, metrics)
+            if down_streak >= days:
+                _add(out, f"down_streak_{days}", latest, metrics)
 
         for window, needed in ((2, 1), (3, 2), (4, 2), (4, 3), (5, 2), (5, 3), (5, 4)):
             if up_days.get(window) == needed:
