@@ -680,86 +680,119 @@ def _compact_number(v):
     return str(int(n))
 
 
-def _price_category_panel(rows) -> str:
+def _price_category_table(rows) -> str:
     if not rows:
-        return '<div class="empty">暂无分类快照。收盘数据入库后运行 scripts/refresh_stock_price_categories.py 生成。</div>'
+        return '<div class="empty">暂无数据</div>'
 
-    snapshot_date = rows[0].get("snapshot_date")
-    latest_update = rows[0].get("snapshot_updated_at") or ""
-    by_group = []
-    group_index = {}
+    item_rows = []
     for r in rows:
-        group_key = r.get("category_group")
-        if group_key not in group_index:
-            group_index[group_key] = {
-                "label": r.get("category_group_label"),
-                "categories": [],
-                "category_index": {},
-            }
-            by_group.append(group_index[group_key])
-        group = group_index[group_key]
-        cat_key = r.get("category_key")
-        if cat_key not in group["category_index"]:
-            category = {
-                "label": r.get("category_label"),
-                "rows": [],
-            }
-            group["category_index"][cat_key] = category
-            group["categories"].append(category)
-        group["category_index"][cat_key]["rows"].append(r)
-
-    sections = []
-    for group in by_group:
-        cards = []
-        for category in group["categories"]:
-            item_rows = []
-            for r in category["rows"]:
-                chg = _pct(r.get("change_pct"))
-                item_rows.append(
-                    f"""
-                    <tr>
-                      <td><b>{_esc(r.get('symbol'))}</b></td>
-                      {_signed_td(chg, r.get('change_pct'))}
-                      <td>{_money(r.get('open'))}</td>
-                      <td>{_money(r.get('high'))}</td>
-                      <td>{_money(r.get('low'))}</td>
-                      <td>{_money(r.get('close'))}</td>
-                      <td>{_esc(_compact_number(r.get('volume')))}</td>
-                    </tr>
-                    """
-                )
-            cards.append(
-                f"""
-                <section class="category-card">
-                  <div class="category-head">
-                    <b>{_esc(category['label'])}</b>
-                    <span>{len(category['rows'])}</span>
-                  </div>
-                  <div class="table-wrap">
-                    <table>
-                      <thead><tr><th>代码</th><th>涨跌</th><th>开</th><th>高</th><th>低</th><th>收</th><th>量</th></tr></thead>
-                      <tbody>{''.join(item_rows)}</tbody>
-                    </table>
-                  </div>
-                </section>
-                """
-            )
-        sections.append(
+        chg = _pct(r.get("change_pct"))
+        item_rows.append(
             f"""
-            <div class="category-group">
-              <h2>{_esc(group['label'])}</h2>
-              <div class="category-grid">{''.join(cards)}</div>
-            </div>
+            <tr>
+              <td><b>{_esc(r.get('symbol'))}</b></td>
+              {_signed_td(chg, r.get('change_pct'))}
+              <td>{_money(r.get('open'))}</td>
+              <td>{_money(r.get('high'))}</td>
+              <td>{_money(r.get('low'))}</td>
+              <td>{_money(r.get('close'))}</td>
+              <td>{_esc(_compact_number(r.get('volume')))}</td>
+            </tr>
             """
         )
+    return f"""
+    <div class="table-wrap category-table">
+      <table>
+        <thead><tr><th>代码</th><th>涨跌</th><th>开</th><th>高</th><th>低</th><th>收</th><th>量</th></tr></thead>
+        <tbody>{''.join(item_rows)}</tbody>
+      </table>
+    </div>
+    """
+
+
+def _price_category_panel(meta_rows, rows, selected_key: str = "") -> str:
+    if not meta_rows:
+        return '<div class="empty">暂无分类快照。收盘数据入库后运行 scripts/refresh_stock_price_categories.py 生成。</div>'
+
+    selected_key = selected_key or str(meta_rows[0].get("category_key") or "")
+    snapshot_date = meta_rows[0].get("snapshot_date")
+    latest_update = meta_rows[0].get("snapshot_updated_at") or ""
+    options = []
+    current_label = ""
+    current_count = 0
+    last_group = None
+    for r in meta_rows:
+        group = str(r.get("category_group_label") or "")
+        if group and group != last_group:
+            if last_group is not None:
+                options.append("</optgroup>")
+            options.append(f'<optgroup label="{_esc(group)}">')
+            last_group = group
+        key = str(r.get("category_key") or "")
+        selected = "selected" if key == selected_key else ""
+        label = f"{r.get('category_label')} ({int(r.get('symbol_count') or 0)})"
+        if selected:
+            current_label = str(r.get("category_label") or "")
+            current_count = int(r.get("symbol_count") or 0)
+        options.append(f'<option value="{_esc(key)}" {selected}>{_esc(label)}</option>')
+    if last_group is not None:
+        options.append("</optgroup>")
 
     return f"""
     <div class="status-line">
       <span class="pill">快照交易日: {_esc(snapshot_date)}</span>
       <span class="pill">更新时间: {_esc(latest_update)}</span>
+      <span class="pill">当前分类: {_esc(current_label)} / {current_count}</span>
     </div>
-    <div class="category-board">{''.join(sections)}</div>
+    <div class="category-toolbar">
+      <select id="category-select" onchange="loadCategory(this.value)">
+        {''.join(options)}
+      </select>
+      <button class="secondary" type="button" onclick="loadCategory(document.getElementById('category-select').value)">刷新分类</button>
+    </div>
+    <div id="category-table-box">{_price_category_table(rows)}</div>
     """
+
+
+def _load_price_categories(selected_key: str = ""):
+    with _connect() as conn:
+        _ensure_price_category_table(conn)
+        latest = _fetch_one(conn, f"SELECT MAX(snapshot_date) AS d FROM `{PRICE_CATEGORY_TABLE}`;")
+        latest_day = latest.get("d")
+        if not latest_day:
+            return [], [], ""
+        meta_rows = _fetch_all(conn, f"""
+            SELECT snapshot_date, category_group, category_group_label, category_key,
+                   category_label, category_order, COUNT(*) AS symbol_count,
+                   MAX(updated_at) OVER () AS snapshot_updated_at
+            FROM `{PRICE_CATEGORY_TABLE}`
+            WHERE snapshot_date=%s
+            GROUP BY snapshot_date, category_group, category_group_label,
+                     category_key, category_label, category_order
+            ORDER BY category_order ASC;
+        """, (latest_day,))
+        if not meta_rows:
+            return [], [], ""
+        valid_keys = {str(r.get("category_key") or "") for r in meta_rows}
+        selected_key = selected_key if selected_key in valid_keys else str(meta_rows[0].get("category_key") or "")
+        rows = _fetch_all(conn, f"""
+            SELECT snapshot_date, category_group, category_group_label, category_key,
+                   category_label, category_order, symbol,
+                   ROUND(`open`, 2) AS `open`,
+                   ROUND(high, 2) AS high,
+                   ROUND(low, 2) AS low,
+                   ROUND(`close`, 2) AS `close`,
+                   volume, change_pct, up_streak, down_streak
+            FROM `{PRICE_CATEGORY_TABLE}`
+            WHERE snapshot_date=%s AND category_key=%s
+            ORDER BY change_pct DESC, symbol ASC;
+        """, (latest_day, selected_key))
+        return meta_rows, rows, selected_key
+
+
+def _price_category_initial_panel(selected_key: str = "") -> str:
+    meta_rows, rows, selected_key = _load_price_categories(selected_key)
+    return _price_category_panel(meta_rows, rows, selected_key)
 
 
 def _positions_table(rows) -> str:
@@ -840,7 +873,7 @@ def _page(body: str) -> bytes:
       .switch-row { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--line); gap:12px; }
       .switch-row:last-child { border-bottom:0; }
       input[type=checkbox] { width:26px; height:26px; }
-      input[type=password], input[type=text] { width:100%; box-sizing:border-box; padding:12px; border-radius:8px; border:1px solid var(--line); background:#020617; color:var(--text); font-size:16px; }
+      input[type=password], input[type=text], select { width:100%; box-sizing:border-box; padding:12px; border-radius:8px; border:1px solid var(--line); background:#020617; color:var(--text); font-size:16px; }
       button, .btn { display:inline-block; border:0; border-radius:8px; padding:11px 14px; background:#2563eb; color:white; text-decoration:none; font-weight:600; font-size:15px; }
       .danger { background:#dc2626; }
       .secondary { background:#374151; }
@@ -862,6 +895,8 @@ def _page(body: str) -> bytes:
       .category-board { display:grid; gap:16px; margin-top:12px; }
       .category-group h2 { margin:0 0 8px; }
       .category-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; align-items:start; }
+      .category-toolbar { display:grid; grid-template-columns:minmax(220px,1fr) auto; gap:8px; align-items:center; margin:10px 0; }
+      .category-table { max-height:70vh; }
       .category-card { border:1px solid var(--line); border-radius:8px; background:#0b1220; overflow:hidden; }
       .category-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 10px; border-bottom:1px solid var(--line); background:#111827; }
       .category-head span { min-width:28px; text-align:center; padding:2px 8px; border-radius:999px; color:#cbd5e1; background:#1f2937; font-size:12px; }
@@ -873,7 +908,7 @@ def _page(body: str) -> bytes:
       summary::after { content:"展开"; color:var(--muted); font-size:13px; font-weight:500; }
       details[open] summary { margin-bottom:10px; }
       details[open] summary::after { content:"收起"; }
-      @media (max-width:600px) { main { padding:10px; } .card { padding:12px; } .wide-card { margin-left:0; margin-right:0; } .category-grid { grid-template-columns:minmax(240px,1fr); } }
+      @media (max-width:600px) { main { padding:10px; } .card { padding:12px; } .wide-card { margin-left:0; margin-right:0; } .category-grid { grid-template-columns:minmax(240px,1fr); } .category-toolbar { grid-template-columns:1fr; } }
     </style>
     """
     html_doc = f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>{css}<title>TradeBot</title></head><body>{body}</body></html>"
@@ -953,6 +988,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/refresh":
             self._api_refresh()
+            return
+        if path == "/api/categories":
+            qs = parse_qs(urlparse(self.path).query)
+            selected = (qs.get("category") or [""])[0]
+            try:
+                meta_rows, rows, selected_key = _load_price_categories(selected)
+                self._send_json({
+                    "ok": True,
+                    "html": _price_category_panel(meta_rows, rows, selected_key),
+                })
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
         self._send(_page("<main>Not found</main>"), HTTPStatus.NOT_FOUND)
 
@@ -1056,22 +1103,6 @@ class Handler(BaseHTTPRequestHandler):
                 ORDER BY id DESC
                 LIMIT 30;
             """)
-            latest_category_day = _fetch_one(conn, f"SELECT MAX(snapshot_date) AS d FROM `{PRICE_CATEGORY_TABLE}`;")
-            category_rows = []
-            if latest_category_day.get("d"):
-                category_rows = _fetch_all(conn, f"""
-                    SELECT snapshot_date, category_group, category_group_label, category_key,
-                           category_label, category_order, symbol,
-                           ROUND(`open`, 2) AS `open`,
-                           ROUND(high, 2) AS high,
-                           ROUND(low, 2) AS low,
-                           ROUND(`close`, 2) AS `close`,
-                           volume, change_pct, up_streak, down_streak,
-                           MAX(updated_at) OVER () AS snapshot_updated_at
-                    FROM `{PRICE_CATEGORY_TABLE}`
-                    WHERE snapshot_date=%s
-                    ORDER BY category_order ASC, change_pct DESC, symbol ASC;
-                """, (latest_category_day.get("d"),))
 
         gate_val = int(float(gate.get("entry_open") or 0))
         env = _trade_env()
@@ -1102,7 +1133,6 @@ class Handler(BaseHTTPRequestHandler):
             "account": _account_panel(account, account_error),
             "counts": _table(counts, [('策略','stock_type'),('待买','buy_q'),('待卖','sell_q')]),
             "positions": _positions_table(positions),
-            "categories": _price_category_panel(category_rows),
             "ops": _table(ops, [('代码','stock_code'),('类','stock_type'),('持仓','is_bought'),('买','can_buy'),('卖','can_sell'),('qty','qty'),('cost','cost_price'),('side','last_order_side'),('intent','last_order_intent'),('更新','updated_at')]),
             "spreads": _table(spreads, [('ID','id'),('标的','underlying'),('模式','mode'),('到期','expiry'),('状态','status'),('入场','entry_price'),('风险','max_loss'),('更新','updated_at')]),
         }
@@ -1117,7 +1147,6 @@ class Handler(BaseHTTPRequestHandler):
                 "account": parts["account"],
                 "counts": parts["counts"],
                 "positions": parts["positions"],
-                "categories": parts["categories"],
                 "ops": parts["ops"],
                 "spreads": parts["spreads"],
             })
@@ -1129,6 +1158,8 @@ class Handler(BaseHTTPRequestHandler):
         control = parts["control"]
         qs = parse_qs(urlparse(self.path).query)
         msg = (qs.get("msg") or [""])[0]
+        selected_category = (qs.get("category") or [""])[0]
+        categories_panel = _price_category_initial_panel(selected_category)
 
         control_form = f"""
         <form method="post" action="/control">
@@ -1165,7 +1196,7 @@ class Handler(BaseHTTPRequestHandler):
             </form>
             <div id="positions-box" style="margin-top:10px">{parts["positions"]}</div>
           </details>
-          <details class="card wide-card" style="margin-top:12px" open><summary>行情分类</summary><div id="categories-box">{parts["categories"]}</div></details>
+          <details class="card wide-card" style="margin-top:12px" open><summary>行情分类</summary><div id="categories-box">{categories_panel}</div></details>
           <details class="card" style="margin-top:12px"><summary>策略队列</summary><div id="ops-box">{parts["ops"]}</div></details>
           <details class="card" style="margin-top:12px"><summary>期权组合</summary><div id="spreads-box">{parts["spreads"]}</div></details>
         </main>
@@ -1180,11 +1211,20 @@ class Handler(BaseHTTPRequestHandler):
               document.getElementById('account-box').innerHTML = data.account;
               document.getElementById('counts-box').innerHTML = data.counts;
               document.getElementById('positions-box').innerHTML = data.positions;
-              document.getElementById('categories-box').innerHTML = data.categories;
               document.getElementById('ops-box').innerHTML = data.ops;
               document.getElementById('spreads-box').innerHTML = data.spreads;
             }} catch (e) {{
               console.log('refresh failed', e);
+            }}
+          }}
+          async function loadCategory(category) {{
+            try {{
+              const resp = await fetch('/api/categories?category=' + encodeURIComponent(category || ''), {{ cache: 'no-store' }});
+              const data = await resp.json();
+              if (!data.ok) return;
+              document.getElementById('categories-box').innerHTML = data.html;
+            }} catch (e) {{
+              console.log('category load failed', e);
             }}
           }}
           setInterval(refreshData, {POSITION_CACHE_SEC * 1000});

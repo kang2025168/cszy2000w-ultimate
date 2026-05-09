@@ -189,7 +189,7 @@ services:
       DB_HOST: mysql
       DB_PORT: 3306
       TZ: America/Los_Angeles
-      PRICE_CATEGORY_RUN_TIME: ${PRICE_CATEGORY_RUN_TIME:-13:20}
+      PRICE_CATEGORY_RUN_TIME: ${PRICE_CATEGORY_RUN_TIME:-18:15}
       PRICE_CATEGORY_RUN_TZ: ${PRICE_CATEGORY_RUN_TZ:-America/Los_Angeles}
     volumes:
       - ./app:/app/app

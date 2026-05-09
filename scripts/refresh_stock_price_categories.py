@@ -41,7 +41,7 @@ DB = dict(
 SRC_TABLE = os.getenv("SRC_TABLE", "stock_prices_pool")
 DST_TABLE = os.getenv("PRICE_CATEGORY_TABLE", "stock_price_category_snapshots")
 RUN_TZ_NAME = os.getenv("PRICE_CATEGORY_RUN_TZ", os.getenv("TZ", "America/Los_Angeles"))
-RUN_TIME = os.getenv("PRICE_CATEGORY_RUN_TIME", "13:20")
+RUN_TIME = os.getenv("PRICE_CATEGORY_RUN_TIME", "18:15")
 MIN_CLOSE_PRICE = float(os.getenv("PRICE_CATEGORY_MIN_CLOSE_PRICE", "3"))
 
 
