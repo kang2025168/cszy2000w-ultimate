@@ -7,9 +7,18 @@ from .config import settings
 from .position_holdings import mark_missing_from_alpaca, summary_counts, sync_open_holding_from_position
 from .schema import ensure_schema
 
+LAST_SYNC_ERROR = ""
+
+
+def last_sync_error() -> str:
+    """返回最近一次同步失败原因，供网页接口展示。"""
+    return LAST_SYNC_ERROR
+
 
 def sync_position_holdings() -> bool:
     """同步持仓：Alpaca 有但本地没有就补，本地 open 但 Alpaca 没有就标记复核。"""
+    global LAST_SYNC_ERROR
+    LAST_SYNC_ERROR = ""
     if not settings().enable_position_holdings:
         print("[POSITION] disabled=1", flush=True)
         return True
@@ -32,7 +41,8 @@ def sync_position_holdings() -> bool:
         )
         return True
     except Exception as exc:
-        print(f"[POSITION SYNC ERROR] {exc}", flush=True)
+        LAST_SYNC_ERROR = str(exc)
+        print(f"[POSITION SYNC ERROR] {LAST_SYNC_ERROR}", flush=True)
         return False
 
 
