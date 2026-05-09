@@ -6,6 +6,7 @@ import json
 from datetime import date, datetime
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .capital_manager import get_capital_allocation, get_strategy_used_capital
@@ -119,7 +120,9 @@ INDEX_HTML = r"""<!doctype html>
     h2 { font-size:15px; margin:0; }
     button { border:1px solid var(--line); background:#fff; color:var(--ink); height:34px; padding:0 12px; border-radius:6px; cursor:pointer; }
     main { padding:18px 24px 34px; max-width:1680px; margin:0 auto; }
-    .left-titlebar { height:48px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:0 8px 0 18px; }
+    .left-titlebar { height:52px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:0 8px 0 18px; }
+    .brand-lockup { display:flex; align-items:center; gap:12px; min-width:0; }
+    .brand-logo { width:42px; height:42px; border-radius:9px; object-fit:contain; background:#fff; box-shadow:0 8px 20px rgba(15,23,42,.08); }
     .refresh-btn { height:38px; padding:0 18px; border:0; border-radius:9px; background:#2563eb; color:#fff; font-weight:850; box-shadow:0 9px 22px rgba(37,99,235,.22); transition:transform .12s ease, background .12s ease, opacity .12s ease; }
     .refresh-btn:hover { background:#1d4ed8; }
     .refresh-btn:active { transform:scale(.96); }
@@ -142,7 +145,12 @@ INDEX_HTML = r"""<!doctype html>
     .risk-badge { font-size:13px; font-weight:700; padding:5px 9px; border-radius:999px; background:#e7f6ef; color:var(--green); white-space:nowrap; }
     .clear-btn { height:30px; padding:0 14px; border:0; border-radius:7px; background:#fee2e2; color:#b42318; font-weight:850; }
     .clear-btn:hover { background:#fecaca; }
-    .pool-grid { margin-top:14px; display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; }
+    .exposure-card { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:#fbfcfe; }
+    .exposure-head { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; font-weight:800; }
+    .exposure-value { color:var(--muted); font-size:12px; font-weight:700; }
+    .exposure-bar { height:12px; border-radius:999px; overflow:hidden; background:#e9edf3; margin-top:10px; }
+    .exposure-fill { height:100%; width:0%; background:linear-gradient(90deg, #15936a, #d97706); }
+    .pool-grid { margin-top:26px; display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; }
     .pool-card { border:1px solid var(--line); border-radius:8px; padding:14px; min-height:126px; }
     .pool-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
     .pool-name { font-size:13px; color:var(--muted); font-weight:700; }
@@ -168,6 +176,8 @@ INDEX_HTML = r"""<!doctype html>
     .bot-switch.on::after { transform:translateX(18px); }
     .chart-panel { flex:1; min-height:0; display:flex; flex-direction:column; }
     .chart-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
+    .chart-title { display:flex; align-items:baseline; gap:14px; }
+    .today-pnl { font-size:15px; font-weight:850; color:var(--green); }
     .tabs { display:flex; gap:6px; flex-wrap:wrap; }
     .tab { height:28px; border-radius:6px; padding:0 10px; color:var(--muted); }
     .tab.active { background:#101828; color:#fff; border-color:#101828; }
@@ -206,7 +216,7 @@ INDEX_HTML = r"""<!doctype html>
   <main>
     <section class="dash">
       <div class="left-stack">
-        <div class="left-titlebar"><h1>CSZY Ultimate V1</h1><button class="refresh-btn" onclick="loadAll()">刷新</button></div>
+        <div class="left-titlebar"><div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" /><h1>CSZY Ultimate V1</h1></div><button class="refresh-btn" onclick="loadAll()">刷新</button></div>
         <div class="panel capital-hero">
           <div class="hero-top">
             <div class="mode-card">
@@ -228,6 +238,13 @@ INDEX_HTML = r"""<!doctype html>
               <span class="risk-badge" id="riskBadge">--</span>
             </div>
           </div>
+          <div class="exposure-card">
+            <div class="exposure-head">
+              <span>总持仓比例</span>
+              <span class="exposure-value" id="exposureValue">--</span>
+            </div>
+            <div class="exposure-bar"><div class="exposure-fill" id="exposureFill"></div></div>
+          </div>
           <div class="pool-grid" id="pools"></div>
         </div>
       </div>
@@ -247,7 +264,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="panel chart-panel">
           <div class="chart-head">
-            <h2>收益曲线</h2>
+            <div class="chart-title"><h2>收益曲线</h2><span class="today-pnl" id="todayPnl">今日收益 --</span></div>
             <div class="tabs">
               <button class="tab active" data-period="week">周</button>
               <button class="tab" data-period="month">月</button>
@@ -385,11 +402,26 @@ INDEX_HTML = r"""<!doctype html>
       ctx.fillText(firstLabel, pad, h-8);
       ctx.fillText(lastLabel, w-pad, h-8);
     }
+    function renderTodayPnl(curve) {
+      const rows = curve.rows || [];
+      const today = new Date();
+      const todayKey = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+      const todayRows = rows.filter(r => String(r.snapshot_date || r.created_at || '').slice(0,10) === todayKey);
+      const source = todayRows.length > 0 ? todayRows : rows;
+      const el = document.getElementById('todayPnl');
+      if (!source.length) { el.textContent = '今日收益 --'; el.className = 'today-pnl'; return; }
+      const first = Number(source[0].equity || source[0].portfolio_value || 0);
+      const last = Number(source[source.length-1].equity || source[source.length-1].portfolio_value || 0);
+      const diff = last - first;
+      el.textContent = `今日收益 ${diff >= 0 ? '+' : ''}${money(diff)}`;
+      el.className = `today-pnl ${diff < 0 ? 'neg' : 'pos'}`;
+    }
     async function loadCurve(period=currentPeriod) {
       currentPeriod = period;
       document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.period === period));
       const curve = await api(`/api/equity_curve?period=${period}`);
       drawChart(curve);
+      renderTodayPnl(curve);
     }
     function renderHoldings() {
       const rows = currentHolding === 'ALL'
@@ -413,6 +445,10 @@ INDEX_HTML = r"""<!doctype html>
           metric('Equity', money(cap.equity)), metric('Buying Power', money(cap.buying_power)), metric('Portfolio', money(cap.portfolio_value)), metric('Cash', money(cap.cash))
         ].join('');
         document.getElementById('pools').innerHTML = ['A','B','C','D'].map(g => poolCard(g, cap)).join('');
+        const usedTotal = ['A','B','C','D'].reduce((sum, g) => sum + Number(cap.used?.[g] || 0), 0);
+        const exposurePct = Number(cap.equity || 0) > 0 ? Math.min(999, usedTotal / Number(cap.equity) * 100) : 0;
+        document.getElementById('exposureValue').textContent = `${exposurePct.toFixed(1)}% / ${money(usedTotal)}`;
+        document.getElementById('exposureFill').style.width = `${Math.min(100, exposurePct)}%`;
         drawDonut(cap);
       } else {
         document.getElementById('modeValue').textContent = 'ERROR';
@@ -475,6 +511,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_asset(self, path: str) -> None:
+        """发送项目内静态资源，目前用于 logo。"""
+        asset_root = Path(__file__).resolve().parent / "assets"
+        name = Path(path).name
+        asset_path = asset_root / name
+        if not asset_path.exists() or not asset_path.is_file():
+            self._send_json({"ok": False, "error": "asset_not_found"}, 404)
+            return
+        content_type = "image/png" if asset_path.suffix.lower() == ".png" else "application/octet-stream"
+        body = asset_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, fmt: str, *args) -> None:
         print(f"[WEB] {self.address_string()} {fmt % args}", flush=True)
 
@@ -496,6 +549,8 @@ class Handler(BaseHTTPRequestHandler):
             path = parsed.path
             if path == "/":
                 self._send_html()
+            elif path.startswith("/assets/"):
+                self._send_asset(path)
             elif path == "/api/capital":
                 self._send_json(_allocation_payload())
             elif path == "/api/risk":
