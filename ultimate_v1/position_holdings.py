@@ -180,9 +180,21 @@ def sync_open_holding_from_position(pos, strategy_group: str = "B") -> None:
             )
             row = cur.fetchone()
             if row:
-                keep_group = (row.get("strategy_group") or row.get("stock_type") or strategy_group or "B").upper()
-                keep_type = (row.get("stock_type") or keep_group).upper()
-                keep_pool = (row.get("capital_pool") or keep_group).upper()
+                # 同步券商真实仓位时，优先保留人工维护的股票类型。
+                # 旧数据常见情况是 strategy_group=UNKNOWN，但 stock_type 已经被改成 A/B/C/D。
+                raw_group = (row.get("strategy_group") or "").upper()
+                raw_type = (row.get("stock_type") or "").upper()
+                if raw_type in {"A", "B", "C", "D"}:
+                    keep_group = raw_type
+                    keep_type = raw_type
+                elif raw_group in {"A", "B", "C", "D"}:
+                    keep_group = raw_group
+                    keep_type = raw_group
+                else:
+                    keep_group = (strategy_group or "B").upper()
+                    keep_type = keep_group
+                raw_pool = (row.get("capital_pool") or "").upper()
+                keep_pool = raw_pool if raw_pool in {"A", "B", "C", "D"} else keep_group
                 cur.execute(
                     """
                     UPDATE position_holdings

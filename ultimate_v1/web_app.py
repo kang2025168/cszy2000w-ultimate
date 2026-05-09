@@ -16,6 +16,7 @@ from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import get_risk_state
 from .schema import ensure_schema
 from .state_store import add_command, bot_controls, bot_heartbeats, capital_state_rows, equity_curve, latest_risk_state, set_bot_enabled
+from .sync_positions import sync_position_holdings
 
 
 def _json_default(value):
@@ -74,7 +75,13 @@ def _holdings_payload() -> dict:
     """读取持仓展示表，供前端表格渲染。"""
     rows = fetch_all(
         """
-        SELECT symbol, strategy_group, stock_type, status, qty, avg_entry_price,
+        SELECT symbol,
+               CASE
+                   WHEN strategy_group IN ('A','B','C','D') THEN strategy_group
+                   WHEN stock_type IN ('A','B','C','D') THEN stock_type
+                   ELSE strategy_group
+               END AS strategy_group,
+               stock_type, status, qty, avg_entry_price,
                current_price, market_value, cost_basis, unrealized_pnl,
                unrealized_pnl_pct, realized_pnl, entry_time, exit_time,
                holding_days, stop_loss_price, take_profit_price, b_stage,
@@ -199,6 +206,10 @@ INDEX_HTML = r"""<!doctype html>
     .holding-tabs { display:flex; gap:6px; flex-wrap:wrap; background:#eef2f6; padding:5px; border-radius:8px; }
     .holding-tab { height:30px; min-width:58px; border-radius:7px; font-weight:750; color:var(--muted); border:0; background:transparent; }
     .holding-tab.active { background:#101828; color:#fff; border-color:#101828; }
+    .sync-positions-btn { height:34px; border:0; border-radius:8px; padding:0 14px; background:#e0f2fe; color:#075985; font-weight:850; transition:transform .12s ease, background .12s ease, opacity .12s ease; }
+    .sync-positions-btn:hover { background:#bae6fd; }
+    .sync-positions-btn:active { transform:scale(.97); }
+    .sync-positions-btn.loading { opacity:.65; pointer-events:none; }
     .modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,.36); display:none; align-items:center; justify-content:center; z-index:20; }
     .modal-backdrop.show { display:flex; }
     .modal { width:min(420px, calc(100vw - 32px)); background:#fff; border-radius:10px; border:1px solid var(--line); box-shadow:0 24px 70px rgba(15,23,42,.22); padding:18px; }
@@ -286,6 +297,7 @@ INDEX_HTML = r"""<!doctype html>
           <button class="holding-tab" data-holding="B">B</button>
           <button class="holding-tab" data-holding="D">D</button>
         </div>
+        <button class="sync-positions-btn" onclick="syncPositions()">同步仓位</button>
       </div>
       <div class="scroll"><table id="holdings"></table></div>
     </section>
@@ -487,6 +499,18 @@ INDEX_HTML = r"""<!doctype html>
       if (!result.ok) { alert(result.error || '开关失败'); return; }
       await loadAll();
     }
+    async function syncPositions() {
+      const btn = document.querySelector('.sync-positions-btn');
+      const oldText = btn ? btn.textContent : '';
+      if (btn) { btn.classList.add('loading'); btn.textContent = '同步中'; }
+      try {
+        const result = await postJson('/api/sync_positions', {});
+        if (!result.ok) { alert(result.error || '同步仓位失败'); return; }
+        await loadAll();
+      } finally {
+        if (btn) { btn.classList.remove('loading'); btn.textContent = oldText || '同步仓位'; }
+      }
+    }
     loadAll();
     setInterval(loadAll, 30000);
   </script>
@@ -588,6 +612,12 @@ class Handler(BaseHTTPRequestHandler):
                 enabled = bool(enabled_raw is True or str(enabled_raw).lower() in {"1", "true", "yes", "on"})
                 set_bot_enabled(bot_name, enabled)
                 self._send_json({"ok": True, "bot_name": bot_name, "enabled": enabled})
+            elif path == "/api/sync_positions":
+                ok = sync_position_holdings()
+                if not ok:
+                    self._send_json({"ok": False, "error": "券商仓位同步失败，请检查 Alpaca 配置和服务日志"}, 500)
+                    return
+                self._send_json({"ok": True, "message": "仓位已同步"})
             else:
                 self._send_json({"ok": False, "error": "not_found"}, 404)
         except Exception as exc:
