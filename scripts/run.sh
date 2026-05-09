@@ -51,12 +51,72 @@ case "$cmd" in
   unlock_can_sell)
     exec python -u app/unlock_can_sell.py
     ;;
+  ultimate_startup)
+    echo "$(ts) ===== START ultimate_v1 startup ====="
+    exec python -u -m ultimate_v1.main
+    ;;
+  ultimate_web)
+    echo "$(ts) ===== START ultimate_v1 web ====="
+    exec python -u -m ultimate_v1.web_app
+    ;;
+  ultimate_sync_positions)
+    echo "$(ts) ===== START ultimate_v1 position sync ====="
+    exec python -u -m ultimate_v1.sync_positions
+    ;;
+  ultimate_flatten_d)
+    echo "$(ts) ===== START ultimate_v1 D flatten ====="
+    exec python -u -m ultimate_v1.intraday_flatten
+    ;;
+  ultimate_rebalance)
+    echo "$(ts) ===== START ultimate_v1 rebalance report ====="
+    exec python -u -m ultimate_v1.rebalance_monthly
+    ;;
+  ultimate_strategy)
+    echo "$(ts) ===== START ultimate_v1 strategy runner ====="
+    shift
+    exec python -u -m ultimate_v1.strategy_runner "$@"
+    ;;
+  ultimate_dashboard_bot)
+    echo "$(ts) ===== START ultimate_v1 dashboard bot ====="
+    shift
+    exec python -u -m ultimate_v1.bots.dashboard_bot "$@"
+    ;;
+  ultimate_risk_bot)
+    echo "$(ts) ===== START ultimate_v1 risk bot ====="
+    shift
+    exec python -u -m ultimate_v1.bots.risk_bot "$@"
+    ;;
+  ultimate_ac_bot)
+    echo "$(ts) ===== START ultimate_v1 AC bot ====="
+    shift
+    exec python -u -m ultimate_v1.bots.ac_bot "$@"
+    ;;
+  ultimate_b_buy_bot)
+    echo "$(ts) ===== START ultimate_v1 B buy bot ====="
+    shift
+    exec python -u -m ultimate_v1.bots.b_buy_bot "$@"
+    ;;
+  ultimate_b_sell_bot)
+    echo "$(ts) ===== START ultimate_v1 B sell bot ====="
+    shift
+    exec python -u -m ultimate_v1.bots.b_sell_bot "$@"
+    ;;
+  ultimate_d_buy_bot)
+    echo "$(ts) ===== START ultimate_v1 D buy bot ====="
+    shift
+    exec python -u -m ultimate_v1.bots.d_buy_bot "$@"
+    ;;
+  ultimate_d_sell_bot)
+    echo "$(ts) ===== START ultimate_v1 D sell bot ====="
+    shift
+    exec python -u -m ultimate_v1.bots.d_sell_bot "$@"
+    ;;
   healthcheck)
     echo "$(ts) healthcheck only done."
     exit 0
     ;;
   *)
-    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|buy_bot|sell_bot|ops_volume|price_categories_once|price_categories_loop|unlock_can_sell|healthcheck}" >&2
+    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|buy_bot|sell_bot|ops_volume|price_categories_once|price_categories_loop|unlock_can_sell|ultimate_startup|ultimate_web|ultimate_sync_positions|ultimate_flatten_d|ultimate_rebalance|ultimate_strategy|ultimate_dashboard_bot|ultimate_risk_bot|ultimate_ac_bot|ultimate_b_buy_bot|ultimate_b_sell_bot|ultimate_d_buy_bot|ultimate_d_sell_bot|healthcheck}" >&2
     exit 2
     ;;
 esac

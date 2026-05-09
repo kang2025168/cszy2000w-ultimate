@@ -177,6 +177,46 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  ultimate_v1:
+    profiles: ["ultimate"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cszy_ultimate_v1
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      TZ: America/Los_Angeles
+      TRADE_ENV: ${ALPACA_MODE}
+      PAPER_APCA_API_KEY_ID: ${PAPER_APCA_API_KEY_ID}
+      PAPER_APCA_API_SECRET_KEY: ${PAPER_APCA_API_SECRET_KEY}
+      PAPER_ALPACA_BASE_URL: ${PAPER_ALPACA_BASE_URL}
+      LIVE_APCA_API_KEY_ID: ${LIVE_APCA_API_KEY_ID}
+      LIVE_APCA_API_SECRET_KEY: ${LIVE_APCA_API_SECRET_KEY}
+      LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
+      ULTIMATE_WEB_PORT: ${ULTIMATE_WEB_PORT:-8060}
+    ports:
+      - "${ULTIMATE_WEB_PORT:-8060}:${ULTIMATE_WEB_PORT:-8060}"
+    volumes:
+      - ./app:/app/app
+      - ./ultimate_v1:/app/ultimate_v1
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./scripts:/app/scripts
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["bash", "-lc", "./scripts/run.sh ultimate_web"]
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   price_categories:
     build:
       context: .
