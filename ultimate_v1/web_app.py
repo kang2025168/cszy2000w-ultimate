@@ -174,6 +174,8 @@ INDEX_HTML = r"""<!doctype html>
     .pool-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
     .pool-name { font-size:13px; color:var(--muted); font-weight:700; }
     .pool-value { font-size:25px; font-weight:850; margin-top:8px; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .pool-amounts { margin-top:2px; display:flex; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; }
+    .pool-amounts span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .bar { height:9px; border-radius:999px; overflow:hidden; background:#e9edf3; margin-top:11px; }
     .fill { height:100%; width:0%; background:var(--blue); }
     .right-top { display:grid; grid-template-columns:1.05fr .95fr; gap:16px; min-height:286px; }
@@ -341,7 +343,7 @@ INDEX_HTML = r"""<!doctype html>
       const w = target > 0 ? Math.min(100, used / target * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
       const riskPct = Number(cap.total_risk_percent || 0) * Number(cap.pool_risk_percents?.[g] || 0) * 100;
-      return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池</div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可用 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(av)}</div><div class="pool-meta">target ${money(target)} / used ${money(used)}</div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
+      return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池</div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可用 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>used ${money(used)}</span><span>target ${money(target)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
     function drawDonut(cap) {
       const canvas = document.getElementById('capitalDonut'), ctx = canvas.getContext('2d');
