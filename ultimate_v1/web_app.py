@@ -9,13 +9,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .bot_supervisor import managed_bot_names, process_status, set_bot_runtime, sync_from_controls
 from .capital_manager import get_capital_allocation, get_strategy_used_capital
 from .config import env_str, settings
 from .db import fetch_all
 from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import get_risk_state
 from .schema import ensure_schema
-from .state_store import add_command, bot_controls, bot_heartbeats, capital_state_rows, equity_curve, latest_risk_state, set_bot_enabled
+from .state_store import add_command, bot_controls, bot_heartbeats, capital_state_rows, equity_curve, latest_risk_state
 from .sync_positions import last_sync_error, sync_position_holdings
 
 
@@ -114,6 +115,7 @@ def _state_payload() -> dict:
         "capital_state": capital_state_rows(),
         "bot_heartbeats": bot_heartbeats(),
         "bot_controls": bot_controls(),
+        "bot_processes": process_status(),
     }
 
 
@@ -363,13 +365,15 @@ INDEX_HTML = r"""<!doctype html>
     function renderBots(bots, controls) {
       const known = ['dashboard_bot','risk_bot','ac_bot','b_buy_bot','b_sell_bot','d_buy_bot','d_sell_bot'];
       const byName = Object.fromEntries((bots || []).map(b => [b.bot_name, b]));
+      const processMap = Object.fromEntries(((window.latestBotProcesses || [])).map(b => [b.bot_name, b]));
       const controlMap = Object.fromEntries((controls || []).map(b => [b.bot_name, Number(b.enabled) === 1]));
       document.getElementById('botLights').innerHTML = known.map(name => {
         const b = byName[name];
-        const ok = b && b.status === 'running';
+        const p = processMap[name];
+        const ok = Boolean(p && p.running) || Boolean(b && b.status === 'running');
         const controllable = controlMap[name] !== undefined;
         const enabled = controlMap[name] !== false;
-        const title = b ? `${name} ${b.status} ${b.last_seen_at || ''} ${b.last_message || ''}` : `${name} no heartbeat`;
+        const title = b ? `${name} ${b.status} pid=${p?.pid || '-'} ${b.last_seen_at || ''} ${b.last_message || ''}` : `${name} no heartbeat pid=${p?.pid || '-'}`;
         return `<div class="bot-row" title="${title}"><span class="bot-name">${name}</span><span class="bot-dot ${ok ? '' : 'bad'}"></span>${controllable ? `<button class="bot-switch ${enabled ? 'on' : ''}" onclick="toggleBot('${name}', ${enabled ? 'false' : 'true'})"></button>` : '<span></span>'}</div>`;
       }).join('');
     }
@@ -489,6 +493,7 @@ INDEX_HTML = r"""<!doctype html>
         `risk=${Number(risk.risk_multiplier).toFixed(2)}`, `daily=${pct(risk.daily_pnl_pct)}`,
         `loss=${risk.loss_days}`, `drawdown=${pct(risk.max_drawdown)}`, `B=${risk.block_b?'停':'开'}`, `D=${risk.block_d?'停':'开'}`
       ].map(x => `<span>${x}</span>`).join('');
+      window.latestBotProcesses = state.bot_processes || [];
       renderBots(state.bot_heartbeats || [], state.bot_controls || []);
       latestHoldings = holdings.rows || [];
       renderHoldings();
@@ -624,11 +629,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/bot_control":
                 bot_name = str(payload.get("bot_name") or "")
                 enabled_raw = payload.get("enabled")
-                if bot_name not in {"ac_bot", "b_buy_bot", "b_sell_bot", "d_buy_bot", "d_sell_bot"}:
+                if bot_name not in managed_bot_names():
                     self._send_json({"ok": False, "error": "不支持的机器人"}, 400)
                     return
                 enabled = bool(enabled_raw is True or str(enabled_raw).lower() in {"1", "true", "yes", "on"})
-                set_bot_enabled(bot_name, enabled)
+                set_bot_runtime(bot_name, enabled)
                 self._send_json({"ok": True, "bot_name": bot_name, "enabled": enabled})
             elif path == "/api/sync_positions":
                 ok = sync_position_holdings()
@@ -649,6 +654,7 @@ def run() -> None:
     from .main import startup
 
     startup()
+    sync_from_controls()
     server = ThreadingHTTPServer((s.web_host, s.web_port), Handler)
     print(f"[WEB] http://127.0.0.1:{s.web_port}", flush=True)
     server.serve_forever()

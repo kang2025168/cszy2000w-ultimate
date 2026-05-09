@@ -3,6 +3,7 @@ from __future__ import annotations
 """A/C 低频买卖机器人：长期指数底仓和长期优质股共用。"""
 
 import argparse
+import time
 
 from ..schema import ensure_schema
 from ..state_store import heartbeat, is_bot_enabled
@@ -38,9 +39,16 @@ def main() -> None:
     parser.add_argument("action", nargs="?", default="scan", choices=["scan", "buy", "sell"])
     parser.add_argument("--group", choices=["A", "C"])
     parser.add_argument("--symbol")
+    parser.add_argument("--loop", action="store_true")
+    parser.add_argument("--interval", type=int, default=300)
     args = parser.parse_args()
-    result = run_once(args.action, args.symbol, args.group)
-    print(result, flush=True)
+    if args.loop:
+        while True:
+            print(run_once(args.action, args.symbol, args.group), flush=True)
+            time.sleep(args.interval)
+    else:
+        result = run_once(args.action, args.symbol, args.group)
+        print(result, flush=True)
 
 
 if __name__ == "__main__":

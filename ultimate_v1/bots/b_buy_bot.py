@@ -3,6 +3,7 @@ from __future__ import annotations
 """B 买入机器人：只负责寻找和执行 B 类买入机会。"""
 
 import argparse
+import time
 
 from ..schema import ensure_schema
 from ..state_store import heartbeat, is_bot_enabled
@@ -28,8 +29,15 @@ def run_once(symbol: str | None = None):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ultimate V1 B 买入机器人")
     parser.add_argument("symbol", nargs="?")
+    parser.add_argument("--loop", action="store_true")
+    parser.add_argument("--interval", type=int, default=60)
     args = parser.parse_args()
-    print(run_once(args.symbol), flush=True)
+    if args.loop:
+        while True:
+            print(run_once(args.symbol), flush=True)
+            time.sleep(args.interval)
+    else:
+        print(run_once(args.symbol), flush=True)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from __future__ import annotations
 """D 卖出机器人：负责 D 类止盈止损和收盘前强制平仓。"""
 
 import argparse
+import time
 
 from ..intraday_flatten import flatten_d_positions
 from ..schema import ensure_schema
@@ -33,8 +34,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ultimate V1 D 卖出机器人")
     parser.add_argument("symbol", nargs="?")
     parser.add_argument("--flatten", action="store_true")
+    parser.add_argument("--loop", action="store_true")
+    parser.add_argument("--interval", type=int, default=30)
     args = parser.parse_args()
-    print(run_once(args.symbol, args.flatten), flush=True)
+    if args.loop:
+        while True:
+            print(run_once(args.symbol, args.flatten), flush=True)
+            time.sleep(args.interval)
+    else:
+        print(run_once(args.symbol, args.flatten), flush=True)
 
 
 if __name__ == "__main__":
