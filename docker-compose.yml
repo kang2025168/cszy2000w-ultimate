@@ -176,3 +176,33 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  price_categories:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cszy_price_categories
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      TZ: America/Los_Angeles
+      PRICE_CATEGORY_RUN_TIME: ${PRICE_CATEGORY_RUN_TIME:-13:20}
+      PRICE_CATEGORY_RUN_TZ: ${PRICE_CATEGORY_RUN_TZ:-America/Los_Angeles}
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./scripts:/app/scripts
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["bash", "-lc", "./scripts/run.sh price_categories_loop"]
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

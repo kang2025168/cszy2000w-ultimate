@@ -328,3 +328,10 @@ def main_loop(role: str) -> None:
     except Exception:
         pass
     tb.log.info(f"===== split {role} bot stopped =====")
+
+
+
+# docker compose --profile split-bots up -d --build buybot sellbot
+# docker compose logs -f buybot
+# docker compose logs -f sellbot
+# docker compose stop buybot sellbot

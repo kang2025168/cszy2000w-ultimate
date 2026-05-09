@@ -40,6 +40,14 @@ case "$cmd" in
     echo "$(ts) ===== START local ops intraday volume sync ====="
     exec python -u app/sync_ops_intraday_volume.py
     ;;
+  price_categories_once)
+    echo "$(ts) ===== START stock price category snapshot refresh ====="
+    exec python -u scripts/refresh_stock_price_categories.py
+    ;;
+  price_categories_loop)
+    echo "$(ts) ===== START daily stock price category snapshot refresher ====="
+    exec python -u scripts/refresh_stock_price_categories.py --loop
+    ;;
   unlock_can_sell)
     exec python -u app/unlock_can_sell.py
     ;;
@@ -48,7 +56,7 @@ case "$cmd" in
     exit 0
     ;;
   *)
-    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|buy_bot|sell_bot|ops_volume|unlock_can_sell|healthcheck}" >&2
+    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|buy_bot|sell_bot|ops_volume|price_categories_once|price_categories_loop|unlock_can_sell|healthcheck}" >&2
     exit 2
     ;;
 esac

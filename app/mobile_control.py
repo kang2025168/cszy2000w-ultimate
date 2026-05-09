@@ -47,6 +47,7 @@ TABLE = os.getenv("OPS_TABLE", "stock_operations")
 SPREADS_TABLE = os.getenv("C_SPREADS_TABLE", "option_spreads")
 LEGS_TABLE = os.getenv("C_LEGS_TABLE", "option_spread_legs")
 POSITION_CLOSE_TABLE = os.getenv("MOBILE_POSITION_CLOSE_TABLE", "broker_position_close_snapshots")
+PRICE_CATEGORY_TABLE = os.getenv("PRICE_CATEGORY_TABLE", "stock_price_category_snapshots")
 
 POSITION_CACHE_SEC = int(os.getenv("MOBILE_POSITION_CACHE_SEC", "30"))
 SELL_LIMIT_BUFFER_PCT = float(os.getenv("MOBILE_SELL_LIMIT_BUFFER_PCT", "0.005"))
@@ -477,6 +478,43 @@ def _ensure_position_close_table(conn):
         cur.execute(sql)
 
 
+def _ensure_price_category_table(conn):
+    sql = f"""
+    CREATE TABLE IF NOT EXISTS `{PRICE_CATEGORY_TABLE}` (
+        snapshot_date DATE NOT NULL,
+        category_group VARCHAR(32) NOT NULL,
+        category_group_label VARCHAR(64) NOT NULL,
+        category_key VARCHAR(64) NOT NULL,
+        category_label VARCHAR(64) NOT NULL,
+        category_order INT NOT NULL,
+        symbol VARCHAR(16) NOT NULL,
+        `open` DOUBLE NULL,
+        high DOUBLE NULL,
+        low DOUBLE NULL,
+        `close` DOUBLE NULL,
+        volume BIGINT NULL,
+        change_pct DOUBLE NULL,
+        up_streak INT NOT NULL DEFAULT 0,
+        down_streak INT NOT NULL DEFAULT 0,
+        up_days_2 INT NULL,
+        up_days_3 INT NULL,
+        up_days_4 INT NULL,
+        up_days_5 INT NULL,
+        down_days_2 INT NULL,
+        down_days_3 INT NULL,
+        down_days_4 INT NULL,
+        down_days_5 INT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (snapshot_date, category_key, symbol),
+        KEY idx_snapshot_order (snapshot_date, category_order),
+        KEY idx_symbol_date (symbol, snapshot_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+
+
 def _capture_time_parts():
     try:
         hh, mm = CLOSE_CAPTURE_TIME.split(":", 1)
@@ -628,6 +666,102 @@ def _table(rows, cols) -> str:
     return f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
 
 
+def _compact_number(v):
+    try:
+        n = float(v)
+    except Exception:
+        return ""
+    if abs(n) >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.2f}B"
+    if abs(n) >= 1_000_000:
+        return f"{n / 1_000_000:.2f}M"
+    if abs(n) >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(int(n))
+
+
+def _price_category_panel(rows) -> str:
+    if not rows:
+        return '<div class="empty">暂无分类快照。收盘数据入库后运行 scripts/refresh_stock_price_categories.py 生成。</div>'
+
+    snapshot_date = rows[0].get("snapshot_date")
+    latest_update = rows[0].get("snapshot_updated_at") or ""
+    by_group = []
+    group_index = {}
+    for r in rows:
+        group_key = r.get("category_group")
+        if group_key not in group_index:
+            group_index[group_key] = {
+                "label": r.get("category_group_label"),
+                "categories": [],
+                "category_index": {},
+            }
+            by_group.append(group_index[group_key])
+        group = group_index[group_key]
+        cat_key = r.get("category_key")
+        if cat_key not in group["category_index"]:
+            category = {
+                "label": r.get("category_label"),
+                "rows": [],
+            }
+            group["category_index"][cat_key] = category
+            group["categories"].append(category)
+        group["category_index"][cat_key]["rows"].append(r)
+
+    sections = []
+    for group in by_group:
+        cards = []
+        for category in group["categories"]:
+            item_rows = []
+            for r in category["rows"]:
+                chg = _pct(r.get("change_pct"))
+                item_rows.append(
+                    f"""
+                    <tr>
+                      <td><b>{_esc(r.get('symbol'))}</b></td>
+                      {_signed_td(chg, r.get('change_pct'))}
+                      <td>{_money(r.get('open'))}</td>
+                      <td>{_money(r.get('high'))}</td>
+                      <td>{_money(r.get('low'))}</td>
+                      <td>{_money(r.get('close'))}</td>
+                      <td>{_esc(_compact_number(r.get('volume')))}</td>
+                    </tr>
+                    """
+                )
+            cards.append(
+                f"""
+                <section class="category-card">
+                  <div class="category-head">
+                    <b>{_esc(category['label'])}</b>
+                    <span>{len(category['rows'])}</span>
+                  </div>
+                  <div class="table-wrap">
+                    <table>
+                      <thead><tr><th>代码</th><th>涨跌</th><th>开</th><th>高</th><th>低</th><th>收</th><th>量</th></tr></thead>
+                      <tbody>{''.join(item_rows)}</tbody>
+                    </table>
+                  </div>
+                </section>
+                """
+            )
+        sections.append(
+            f"""
+            <div class="category-group">
+              <h2>{_esc(group['label'])}</h2>
+              <div class="category-grid">{''.join(cards)}</div>
+            </div>
+            """
+        )
+
+    return f"""
+    <div class="status-line">
+      <span class="pill">快照交易日: {_esc(snapshot_date)}</span>
+      <span class="pill">更新时间: {_esc(latest_update)}</span>
+    </div>
+    <div class="category-board">{''.join(sections)}</div>
+    """
+
+
 def _positions_table(rows) -> str:
     if not rows:
         return '<div class="empty">暂无数据</div>'
@@ -724,13 +858,22 @@ def _page(body: str) -> bytes:
       .phase-row div { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
       .phase-row span { color:var(--muted); font-size:13px; }
       .phase-row p { margin:6px 0 0; color:#cbd5e1; font-size:13px; line-height:1.45; }
+      .wide-card { margin-left:calc(50% - 50vw + 14px); margin-right:calc(50% - 50vw + 14px); }
+      .category-board { display:grid; gap:16px; margin-top:12px; }
+      .category-group h2 { margin:0 0 8px; }
+      .category-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; align-items:start; }
+      .category-card { border:1px solid var(--line); border-radius:8px; background:#0b1220; overflow:hidden; }
+      .category-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 10px; border-bottom:1px solid var(--line); background:#111827; }
+      .category-head span { min-width:28px; text-align:center; padding:2px 8px; border-radius:999px; color:#cbd5e1; background:#1f2937; font-size:12px; }
+      .category-card table { font-size:12px; }
+      .category-card th, .category-card td { padding:6px 7px; }
       details.card { display:block; }
       summary { cursor:pointer; list-style:none; display:flex; justify-content:space-between; align-items:center; font-weight:700; font-size:16px; color:#f8fafc; }
       summary::-webkit-details-marker { display:none; }
       summary::after { content:"展开"; color:var(--muted); font-size:13px; font-weight:500; }
       details[open] summary { margin-bottom:10px; }
       details[open] summary::after { content:"收起"; }
-      @media (max-width:600px) { main { padding:10px; } .card { padding:12px; } }
+      @media (max-width:600px) { main { padding:10px; } .card { padding:12px; } .wide-card { margin-left:0; margin-right:0; } .category-grid { grid-template-columns:minmax(240px,1fr); } }
     </style>
     """
     html_doc = f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>{css}<title>TradeBot</title></head><body>{body}</body></html>"
@@ -886,6 +1029,7 @@ class Handler(BaseHTTPRequestHandler):
     def _load_dashboard_parts(self):
         with _connect() as conn:
             _ensure_control(conn)
+            _ensure_price_category_table(conn)
             control = _fetch_one(conn, "SELECT * FROM bot_control WHERE id=1 LIMIT 1;")
             gate = _fetch_one(conn, f"SELECT stock_code, stock_type, entry_open FROM `{TABLE}` WHERE stock_code='QQQ' AND stock_type='N' LIMIT 1;")
             counts = _fetch_all(conn, f"""
@@ -912,6 +1056,22 @@ class Handler(BaseHTTPRequestHandler):
                 ORDER BY id DESC
                 LIMIT 30;
             """)
+            latest_category_day = _fetch_one(conn, f"SELECT MAX(snapshot_date) AS d FROM `{PRICE_CATEGORY_TABLE}`;")
+            category_rows = []
+            if latest_category_day.get("d"):
+                category_rows = _fetch_all(conn, f"""
+                    SELECT snapshot_date, category_group, category_group_label, category_key,
+                           category_label, category_order, symbol,
+                           ROUND(`open`, 2) AS `open`,
+                           ROUND(high, 2) AS high,
+                           ROUND(low, 2) AS low,
+                           ROUND(`close`, 2) AS `close`,
+                           volume, change_pct, up_streak, down_streak,
+                           MAX(updated_at) OVER () AS snapshot_updated_at
+                    FROM `{PRICE_CATEGORY_TABLE}`
+                    WHERE snapshot_date=%s
+                    ORDER BY category_order ASC, change_pct DESC, symbol ASC;
+                """, (latest_category_day.get("d"),))
 
         gate_val = int(float(gate.get("entry_open") or 0))
         env = _trade_env()
@@ -942,6 +1102,7 @@ class Handler(BaseHTTPRequestHandler):
             "account": _account_panel(account, account_error),
             "counts": _table(counts, [('策略','stock_type'),('待买','buy_q'),('待卖','sell_q')]),
             "positions": _positions_table(positions),
+            "categories": _price_category_panel(category_rows),
             "ops": _table(ops, [('代码','stock_code'),('类','stock_type'),('持仓','is_bought'),('买','can_buy'),('卖','can_sell'),('qty','qty'),('cost','cost_price'),('side','last_order_side'),('intent','last_order_intent'),('更新','updated_at')]),
             "spreads": _table(spreads, [('ID','id'),('标的','underlying'),('模式','mode'),('到期','expiry'),('状态','status'),('入场','entry_price'),('风险','max_loss'),('更新','updated_at')]),
         }
@@ -956,6 +1117,7 @@ class Handler(BaseHTTPRequestHandler):
                 "account": parts["account"],
                 "counts": parts["counts"],
                 "positions": parts["positions"],
+                "categories": parts["categories"],
                 "ops": parts["ops"],
                 "spreads": parts["spreads"],
             })
@@ -1003,6 +1165,7 @@ class Handler(BaseHTTPRequestHandler):
             </form>
             <div id="positions-box" style="margin-top:10px">{parts["positions"]}</div>
           </details>
+          <details class="card wide-card" style="margin-top:12px" open><summary>行情分类</summary><div id="categories-box">{parts["categories"]}</div></details>
           <details class="card" style="margin-top:12px"><summary>策略队列</summary><div id="ops-box">{parts["ops"]}</div></details>
           <details class="card" style="margin-top:12px"><summary>期权组合</summary><div id="spreads-box">{parts["spreads"]}</div></details>
         </main>
@@ -1017,6 +1180,7 @@ class Handler(BaseHTTPRequestHandler):
               document.getElementById('account-box').innerHTML = data.account;
               document.getElementById('counts-box').innerHTML = data.counts;
               document.getElementById('positions-box').innerHTML = data.positions;
+              document.getElementById('categories-box').innerHTML = data.categories;
               document.getElementById('ops-box').innerHTML = data.ops;
               document.getElementById('spreads-box').innerHTML = data.spreads;
             }} catch (e) {{
