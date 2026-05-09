@@ -89,6 +89,18 @@ def _buy_one(code: str, stype: str) -> bool:
         return False
 
     if stype == "B":
+        try:
+            from ultimate_v1.config import env_float
+            from ultimate_v1.trading_gate import can_open_position
+
+            notional = env_float("B_TARGET_NOTIONAL_USD", env_float("B_MAX_NOTIONAL_USD", 2500.0))
+            allow, reason = can_open_position("B", notional)
+            if not allow:
+                tb.log.info(f"[BUY BOT] V1 gate block B {code}: reason={reason}")
+                return False
+        except Exception as exc:
+            tb.log.error(f"[BUY BOT] V1 gate error B {code}: {exc}")
+            return False
         return tb.safe_call(tb.strategy_B_buy, code) is True
     if stype == "F":
         return tb.safe_call(tb.strategy_F_buy, code) is True

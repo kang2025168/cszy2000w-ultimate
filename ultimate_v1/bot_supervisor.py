@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from dataclasses import dataclass
+from os import environ
 
 from .config import settings
 from .state_store import bot_controls, heartbeat, set_bot_enabled
@@ -14,14 +15,17 @@ from .state_store import bot_controls, heartbeat, set_bot_enabled
 class BotSpec:
     module: str
     args: tuple[str, ...]
+    env: dict[str, str] | None = None
 
 
 BOT_SPECS: dict[str, BotSpec] = {
     "dashboard_bot": BotSpec("ultimate_v1.bots.dashboard_bot", ("--loop", "--interval", str(settings().position_sync_interval_sec))),
     "risk_bot": BotSpec("ultimate_v1.bots.risk_bot", ("--loop", "--interval", "60")),
     "ac_bot": BotSpec("ultimate_v1.bots.ac_bot", ("scan", "--loop", "--interval", "300")),
-    "b_buy_bot": BotSpec("ultimate_v1.bots.b_buy_bot", ("--loop", "--interval", "60")),
-    "b_sell_bot": BotSpec("ultimate_v1.bots.b_sell_bot", ("--loop", "--interval", "60")),
+    # B 买卖先复用老项目已经拆好的独立买卖循环，保证 pressure breakout、
+    # rank confirm、盘前/盘后管理、动态止损等老逻辑完整保留。
+    "b_buy_bot": BotSpec("app.buy_bot", (), {"BOT_STRATEGIES": "B", "BOT_PROCESS_NAME": "buy_bot"}),
+    "b_sell_bot": BotSpec("app.sell_bot", (), {"BOT_STRATEGIES": "B", "BOT_PROCESS_NAME": "sell_bot"}),
     "d_buy_bot": BotSpec("ultimate_v1.bots.d_buy_bot", ("--loop", "--interval", "30")),
     "d_sell_bot": BotSpec("ultimate_v1.bots.d_sell_bot", ("--loop", "--interval", "30")),
 }
@@ -49,7 +53,10 @@ def start_bot(bot_name: str) -> bool:
         return True
     cmd = [sys.executable, "-u", "-m", spec.module, *spec.args]
     heartbeat(bot_name, "starting", "正在启动机器人")
-    proc = subprocess.Popen(cmd)
+    child_env = dict(environ)
+    if spec.env:
+        child_env.update(spec.env)
+    proc = subprocess.Popen(cmd, env=child_env)
     _PROCESSES[bot_name] = proc
     print(f"[BOT SUPERVISOR] started {bot_name} pid={proc.pid}", flush=True)
     return True
