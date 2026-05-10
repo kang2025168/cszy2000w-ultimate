@@ -1016,7 +1016,7 @@ INDEX_HTML = r"""<!doctype html>
       }
       const tone = riskTone(risk);
       const riskBadge = document.getElementById('riskBadge');
-      riskBadge.textContent = risk.suggest_mode ? `建议 ${risk.suggest_mode}` : (tone === 'danger' ? '高风险' : tone === 'warn' ? '观察' : '正常');
+      riskBadge.textContent = risk.suggest_mode ? `建议 ${risk.suggest_mode}` : (tone === 'danger' ? '高风险' : tone === 'warn' ? '谨慎' : '正常');
       riskBadge.className = `risk-badge ${tone === 'ok' ? '' : tone}`;
       const riskSelect = document.getElementById('riskPreferenceSelect');
       if (riskSelect) riskSelect.value = risk.risk_preference || '中性';
@@ -1029,8 +1029,7 @@ INDEX_HTML = r"""<!doctype html>
         riskChip('QQQ', `${Number(risk.qqq_change_pct || 0).toFixed(2)}%`, Number(risk.qqq_change_pct || 0) < 0 ? 'warn' : 'ok'),
         riskChip('VIX', Number(risk.vix || 0).toFixed(1), Number(risk.vix || 0) > 28 ? 'danger' : Number(risk.vix || 0) >= 20 ? 'warn' : 'ok'),
         riskChip('本金仓位', `${(Number(risk.recommended_exposure || 0) * 100).toFixed(0)}%`, Number(risk.recommended_exposure || 0) < 0.5 ? 'warn' : 'ok'),
-        riskChip('A', risk.block_a ? '停' : '开', risk.block_a ? 'danger' : 'ok'),
-        riskChip('C', risk.block_c ? '停' : '开', risk.block_c ? 'danger' : 'ok'),
+        riskChip('AC', (risk.block_a || risk.block_c) ? '停' : '开', (risk.block_a || risk.block_c) ? 'danger' : 'ok'),
         riskChip('B', risk.block_b ? '停' : '开', risk.block_b ? 'danger' : 'ok'),
         riskChip('D', risk.block_d ? '停' : '开', risk.block_d ? 'danger' : 'ok')
       ].join('');
