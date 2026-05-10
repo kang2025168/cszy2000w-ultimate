@@ -303,6 +303,12 @@ def main_loop(role: str) -> None:
         try:
             round_no += 1
             phase = tb.get_trade_phase()
+            real_phase = phase
+            if real_phase == "closed":
+                tb.log.info(f"[{role.upper()} BOT] market closed, sleep 60s")
+                t.sleep(60)
+                continue
+
             forced_phase = (
                 os.getenv(f"{role.upper()}_BOT_FORCE_PHASE")
                 or os.getenv("SPLIT_BOT_FORCE_PHASE")
@@ -320,18 +326,12 @@ def main_loop(role: str) -> None:
                         "only paper env is allowed unless ALLOW_LIVE_FORCE_PHASE=1"
                     )
                 else:
-                    real_phase = phase
                     phase = forced_phase
                     tb.log.warning(
                         f"[{role.upper()} BOT] FORCE phase real={real_phase} effective={phase} "
                         f"env={tb.TRADE_ENV}"
                     )
             os.environ["TRADE_PHASE"] = phase
-
-            if phase == "closed":
-                tb.log.info(f"[{role.upper()} BOT] market closed, sleep 60s")
-                t.sleep(60)
-                continue
 
             if conn is None:
                 conn = tb.get_conn()
