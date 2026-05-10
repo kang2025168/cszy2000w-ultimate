@@ -206,6 +206,8 @@ def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
     snap = get_account_snapshot()
     if snap is None:
         return None
+    if mode is None:
+        mode = get_risk_state().mode
     mode = (mode or s.capital_mode or "NORMAL").upper()
     month = _ensure_monthly_capital_pools(mode, snap)
     rows = refresh_capital_pool_usage(month)
@@ -324,10 +326,11 @@ def can_open_new_position(strategy_group: str, estimated_notional: float) -> tup
     if not s.enable_capital_manager:
         return True, "capital_manager_disabled"
     try:
-        if s.capital_mode == "SAFE" and group == "D":
+        mode = get_risk_state().mode
+        if mode == "SAFE" and group == "D":
             print(f"[CAPITAL BLOCK] strategy=D allow=False reason=safe_mode_blocks_d", flush=True)
             return False, "safe_mode_blocks_d"
-        if s.capital_mode == "RISK_OFF" and group in {"B", "D"}:
+        if mode == "RISK_OFF" and group in {"B", "D"}:
             print(f"[CAPITAL BLOCK] strategy={group} allow=False reason=risk_off_blocks_attack", flush=True)
             return False, "risk_off_blocks_attack"
         allocation = get_capital_allocation()
@@ -358,7 +361,7 @@ def can_open_new_position(strategy_group: str, estimated_notional: float) -> tup
 
 def log_capital_startup() -> CapitalAllocation | None:
     allocation = get_capital_allocation()
-    print(f"[CAPITAL MODE] {settings().capital_mode}", flush=True)
+    print(f"[CAPITAL MODE] {allocation.mode if allocation else get_risk_state().mode}", flush=True)
     if allocation is None:
         print("[CAPITAL ERROR] startup account snapshot failed; new positions disabled", flush=True)
         return None

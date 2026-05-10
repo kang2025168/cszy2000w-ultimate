@@ -16,7 +16,7 @@ from .capital_manager import get_capital_allocation, get_strategy_used_capital
 from .config import env_str, settings
 from .db import db_conn, fetch_all
 from .rebalance_monthly import generate_rebalance_report
-from .risk_controller import get_risk_state
+from .risk_controller import CAPITAL_MODE_LABELS, get_risk_state
 from .schema import ensure_schema
 from .state_store import add_command, bot_controls, bot_heartbeats, capital_state_rows, equity_curve, latest_risk_state, set_app_setting
 from .sync_positions import last_sync_error, sync_all_positions
@@ -74,6 +74,7 @@ def _allocation_payload() -> dict:
     return {
         "ok": True,
         "mode": allocation.mode,
+        "mode_label": CAPITAL_MODE_LABELS.get(allocation.mode, allocation.mode),
         "allocation_month": allocation.allocation_month,
         "equity": allocation.equity,
         "buying_power": allocation.buying_power,
@@ -103,6 +104,7 @@ def _risk_payload() -> dict:
     return {
         "enabled": state.enabled,
         "mode": state.mode,
+        "mode_label": CAPITAL_MODE_LABELS.get(state.mode, state.mode),
         "daily_pnl_pct": state.daily_pnl_pct,
         "loss_days": state.loss_days,
         "max_drawdown": state.max_drawdown,
@@ -122,6 +124,8 @@ def _risk_payload() -> dict:
         "allocation_mode": state.allocation_mode,
         "recommended_exposure": state.recommended_exposure,
         "recommended_weights": state.recommended_weights or {},
+        "account_metrics_source": state.account_metrics_source,
+        "vix_source": state.vix_source,
     }
 
 
@@ -410,12 +414,14 @@ INDEX_HTML = r"""<!doctype html>
     .metric-label, .pool-meta, .small-muted { color:var(--muted); font-size:12px; }
     .metric-value { font-size:20px; font-weight:850; margin-top:6px; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .risk-strip { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:14px; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:14px; }
+    .risk-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
     .risk-line { display:flex; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:12px; margin-top:9px; }
     .risk-chip { border-radius:999px; padding:5px 9px; background:#eef2f6; color:#475467; font-weight:750; }
     .risk-chip.ok { background:#e7f6ef; color:#08734f; }
     .risk-chip.warn { background:#fff3d6; color:#9a5b00; }
     .risk-chip.danger { background:#fee2e2; color:#b42318; }
     .risk-chip.info { background:#e0f2fe; color:#075985; }
+    .market-risk-inline { display:flex; gap:8px; flex-wrap:wrap; }
     .risk-actions { display:flex; align-items:center; gap:10px; flex:0 0 auto; }
     .risk-badge { font-size:13px; font-weight:700; padding:5px 9px; border-radius:999px; background:#e7f6ef; color:var(--green); white-space:nowrap; }
     .risk-badge.warn { background:#fff3d6; color:#9a5b00; }
@@ -620,7 +626,10 @@ INDEX_HTML = r"""<!doctype html>
             </div>
             <div class="risk-strip">
               <div>
-                <h2>风险状态</h2>
+                <div class="risk-head">
+                  <h2>风险状态</h2>
+                  <div class="market-risk-inline" id="marketRisk"></div>
+                </div>
                 <div class="risk-line" id="risk"></div>
               </div>
               <div class="risk-actions">
@@ -997,8 +1006,8 @@ INDEX_HTML = r"""<!doctype html>
       const [cap, risk, holdings, state, phase] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase')]);
       if (cap.ok) {
         window.latestCapitalPayload = cap;
-        document.getElementById('modeValue').textContent = cap.mode;
-        document.getElementById('modeHint').textContent = `cash ${money(cap.cash)} / portfolio ${money(cap.portfolio_value)}`;
+        document.getElementById('modeValue').textContent = cap.mode_label || cap.mode;
+        document.getElementById('modeHint').textContent = `${cap.mode} · cash ${money(cap.cash)} / portfolio ${money(cap.portfolio_value)}`;
         document.getElementById('metrics').innerHTML = [
           metric('Equity', money(cap.equity)), metric('Buying Power', money(cap.buying_power)), metric('Portfolio', money(cap.portfolio_value)), metric('Cash', money(cap.cash))
         ].join('');
@@ -1025,13 +1034,15 @@ INDEX_HTML = r"""<!doctype html>
         riskChip('日亏', pct(risk.daily_pnl_pct), Number(risk.daily_pnl_pct || 0) < 0 ? 'danger' : 'ok'),
         riskChip('连亏', risk.loss_days || 0, Number(risk.loss_days || 0) > 0 ? 'warn' : 'ok'),
         riskChip('回撤', pct(risk.max_drawdown), Number(risk.max_drawdown || 0) > 0.04 ? 'danger' : 'ok'),
-        riskChip('趋势', risk.market_trend || '--', risk.market_trend === '向上' ? 'ok' : risk.market_trend === '向下' ? 'danger' : 'warn'),
-        riskChip('QQQ', `${Number(risk.qqq_change_pct || 0).toFixed(2)}%`, Number(risk.qqq_change_pct || 0) < 0 ? 'warn' : 'ok'),
-        riskChip('VIX', Number(risk.vix || 0).toFixed(1), Number(risk.vix || 0) > 28 ? 'danger' : Number(risk.vix || 0) >= 20 ? 'warn' : 'ok'),
         riskChip('本金仓位', `${(Number(risk.recommended_exposure || 0) * 100).toFixed(0)}%`, Number(risk.recommended_exposure || 0) < 0.5 ? 'warn' : 'ok'),
         riskChip('AC', (risk.block_a || risk.block_c) ? '停' : '开', (risk.block_a || risk.block_c) ? 'danger' : 'ok'),
         riskChip('B', risk.block_b ? '停' : '开', risk.block_b ? 'danger' : 'ok'),
         riskChip('D', risk.block_d ? '停' : '开', risk.block_d ? 'danger' : 'ok')
+      ].join('');
+      document.getElementById('marketRisk').innerHTML = [
+        riskChip('趋势', risk.market_trend || '--', risk.market_trend === '向上' ? 'ok' : risk.market_trend === '向下' ? 'danger' : 'warn'),
+        riskChip('QQQ', `${Number(risk.qqq_change_pct || 0).toFixed(2)}%`, Number(risk.qqq_change_pct || 0) < 0 ? 'warn' : 'ok'),
+        riskChip('VIX', Number(risk.vix || 0).toFixed(1), Number(risk.vix || 0) > 28 ? 'danger' : Number(risk.vix || 0) >= 20 ? 'warn' : 'ok')
       ].join('');
       window.latestBotProcesses = state.bot_processes || [];
       renderBots(state.bot_heartbeats || [], state.bot_controls || []);
