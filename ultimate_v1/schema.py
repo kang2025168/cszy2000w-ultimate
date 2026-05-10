@@ -15,6 +15,16 @@ STOCK_OPERATION_COLUMNS = {
     "last_capital_check_at": "DATETIME NULL",
 }
 
+RISK_STATE_COLUMNS = {
+    "market_trend": "VARCHAR(16) DEFAULT '横盘'",
+    "qqq_change_pct": "DECIMAL(10,4) DEFAULT 0",
+    "vix": "DECIMAL(10,4) DEFAULT 18",
+    "risk_preference": "VARCHAR(16) DEFAULT '中性'",
+    "allocation_mode": "VARCHAR(16) DEFAULT '动态分仓'",
+    "recommended_exposure": "DECIMAL(10,4) DEFAULT 0.5",
+    "recommended_weights": "JSON NULL",
+}
+
 
 def _column_exists(conn, table: str, column: str) -> bool:
     with conn.cursor() as cur:
@@ -139,11 +149,22 @@ def ensure_control_state_tables() -> None:
                   block_d_buy TINYINT DEFAULT 0,
                   suggest_capital_mode VARCHAR(16),
                   reason VARCHAR(128),
+                  market_trend VARCHAR(16) DEFAULT '横盘',
+                  qqq_change_pct DECIMAL(10,4) DEFAULT 0,
+                  vix DECIMAL(10,4) DEFAULT 18,
+                  risk_preference VARCHAR(16) DEFAULT '中性',
+                  allocation_mode VARCHAR(16) DEFAULT '动态分仓',
+                  recommended_exposure DECIMAL(10,4) DEFAULT 0.5,
+                  recommended_weights JSON NULL,
                   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   INDEX idx_updated_at (updated_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-                """
-            )
+	                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+	                """
+	            )
+            for column, ddl in RISK_STATE_COLUMNS.items():
+                if not _column_exists(conn, "risk_state", column):
+                    cur.execute(f"ALTER TABLE risk_state ADD COLUMN {column} {ddl}")
+                    print(f"[SCHEMA] added risk_state.{column}", flush=True)
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS capital_state (

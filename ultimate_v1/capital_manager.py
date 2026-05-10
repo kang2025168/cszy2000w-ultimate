@@ -45,7 +45,20 @@ def _month_start(today: date | None = None) -> date:
 
 
 def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
-    """读取当前资金模式的基础比例。"""
+    """读取当前资金模式的基础比例；优先使用风险机器人给出的动态 A/B/C/D 仓位建议。"""
+    try:
+        risk = get_risk_state()
+        if risk.recommended_weights:
+            weights = {
+                group: max(0.0, float(risk.recommended_weights.get(group, 0.0)))
+                for group in ("A", "B", "C", "D")
+            }
+            total = sum(weights.values())
+            if total > 0:
+                return {group: value / total for group, value in weights.items()}, weights.get("D", 0.0) > 0
+    except Exception as exc:
+        print(f"[CAPITAL WARN] dynamic weights unavailable, fallback mode weights: {exc}", flush=True)
+
     a, b, c, allow_d = {
         "NORMAL": (0.35, 0.30, 0.35, True),
         "SAFE": (0.40, 0.20, 0.40, False),
@@ -61,11 +74,11 @@ def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
 def _risk_percents() -> tuple[float, dict[str, float]]:
     """计算风险机器人允许使用的总资金百分比和各资金池百分比。"""
     risk = get_risk_state()
-    total_pct = max(0.0, min(1.0, env_float("RISK_TOTAL_CAPITAL_PCT", 1.0)))
+    total_pct = max(0.0, min(1.0, env_float("RISK_TOTAL_CAPITAL_PCT", risk.recommended_exposure)))
     pool_pct = {
-        "A": max(0.0, min(1.0, env_float("RISK_A_POOL_PCT", total_pct))),
+        "A": max(0.0, min(1.0, env_float("RISK_A_POOL_PCT", 1.0))),
         "B": max(0.0, min(1.0, env_float("RISK_B_POOL_PCT", risk.risk_multiplier))),
-        "C": max(0.0, min(1.0, env_float("RISK_C_POOL_PCT", total_pct))),
+        "C": max(0.0, min(1.0, env_float("RISK_C_POOL_PCT", 1.0))),
         "D": max(0.0, min(1.0, env_float("RISK_D_POOL_PCT", risk.risk_multiplier))),
     }
     if risk.block_all_new:

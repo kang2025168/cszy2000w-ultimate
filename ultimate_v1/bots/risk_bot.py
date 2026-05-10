@@ -17,7 +17,11 @@ def refresh_risk_state():
     ensure_schema()
     state = log_risk_state()
     write_risk_state(state)
-    heartbeat(BOT_NAME, "running", f"risk_multiplier={state.risk_multiplier:.2f} reason={state.reason or 'allow'}")
+    heartbeat(
+        BOT_NAME,
+        "running",
+        f"risk={state.risk_multiplier:.2f} trend={state.market_trend} vix={state.vix:.1f} exposure={state.recommended_exposure:.0%}",
+    )
     return state
 
 
@@ -41,4 +45,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

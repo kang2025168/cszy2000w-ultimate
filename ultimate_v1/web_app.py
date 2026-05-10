@@ -112,6 +112,13 @@ def _risk_payload() -> dict:
         "block_d": state.block_d,
         "suggest_mode": state.suggest_mode,
         "reason": state.reason,
+        "market_trend": state.market_trend,
+        "qqq_change_pct": state.qqq_change_pct,
+        "vix": state.vix,
+        "risk_preference": state.risk_preference,
+        "allocation_mode": state.allocation_mode,
+        "recommended_exposure": state.recommended_exposure,
+        "recommended_weights": state.recommended_weights or {},
     }
 
 
@@ -708,10 +715,14 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </div>
   <script>
-    const money = v => Number(v || 0).toLocaleString(undefined, {style:'currency', currency:'USD'});
+    const money = v => {
+      const n = Number(v || 0);
+      const sign = n < 0 ? '-' : '';
+      return `${sign}$${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+    };
     const pct = v => `${(Number(v || 0) * 100).toFixed(2)}%`;
     const cls = v => Number(v || 0) < 0 ? 'neg' : Number(v || 0) > 0 ? 'pos' : '';
-    const colors = {A:'#2563eb', B:'#d97706', C:'#15936a', D:'#7c3aed'};
+    const colors = {A:'#2563eb', B:'#d97706', C:'#15936a', D:'#7c3aed', CASH:'#d0d5dd'};
     let currentPeriod = 'week';
     let currentHolding = 'ALL';
     let lowerView = 'holdings';
@@ -745,18 +756,23 @@ INDEX_HTML = r"""<!doctype html>
     }
     function drawDonut(cap) {
       const canvas = document.getElementById('capitalDonut'), ctx = canvas.getContext('2d');
-      const entries = ['A','B','C','D'].map(g => [g, Number(cap.targets?.[g] || 0)]).filter(x => x[1] > 0);
+      const usedEntries = ['A','B','C','D'].map(g => [g, Math.abs(Number(cap.used?.[g] || 0))]).filter(x => x[1] > 0);
+      const usedTotal = usedEntries.reduce((s, x) => s + x[1], 0);
+      const cash = Math.max(0, Number(cap.equity || 0) - usedTotal);
+      const entries = cash > 0 ? [...usedEntries, ['现金', cash, 'CASH']] : usedEntries;
       const total = entries.reduce((s, x) => s + x[1], 0) || 1;
       ctx.clearRect(0,0,canvas.width,canvas.height);
       let start = -Math.PI / 2;
-      entries.forEach(([g, value]) => {
+      entries.forEach(([g, value, colorKey]) => {
         const a = value / total * Math.PI * 2;
-        ctx.beginPath(); ctx.moveTo(110,110); ctx.arc(110,110,92,start,start+a); ctx.closePath(); ctx.fillStyle = colors[g]; ctx.fill(); start += a;
+        ctx.beginPath(); ctx.moveTo(110,110); ctx.arc(110,110,92,start,start+a); ctx.closePath(); ctx.fillStyle = colors[colorKey || g]; ctx.fill(); start += a;
       });
       ctx.beginPath(); ctx.arc(110,110,58,0,Math.PI*2); ctx.fillStyle = '#fff'; ctx.fill();
       ctx.fillStyle = '#17202a'; ctx.font = '700 20px system-ui'; ctx.textAlign='center'; ctx.fillText(money(cap.equity || 0).replace('.00',''),110,106);
       ctx.fillStyle = '#667085'; ctx.font = '12px system-ui'; ctx.fillText('equity',110,126);
-      document.getElementById('donutLegend').innerHTML = entries.map(([g,v]) => `<div class="legend-row"><span class="swatch" style="background:${colors[g]}"></span><span>${g}</span><span>${((v/total)*100).toFixed(1)}%</span><span class="legend-amount">${money(v)}</span></div>`).join('');
+      document.getElementById('donutLegend').innerHTML = entries.length
+        ? entries.map(([g,v,colorKey]) => `<div class="legend-row"><span class="swatch" style="background:${colors[colorKey || g]}"></span><span>${g}</span><span>${((v/total)*100).toFixed(1)}%</span><span class="legend-amount">${money(v)}</span></div>`).join('')
+        : `<div class="legend-row"><span class="small-muted">暂无持仓占用</span></div>`;
     }
     function renderBots(bots, controls) {
       const known = ['dashboard_bot','risk_bot','ac_bot','b_buy_bot','b_sell_bot','d_buy_bot','d_sell_bot'];
@@ -972,7 +988,10 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('riskBadge').textContent = risk.suggest_mode ? `建议 ${risk.suggest_mode}` : '正常';
       document.getElementById('risk').innerHTML = [
         `risk=${Number(risk.risk_multiplier).toFixed(2)}`, `daily=${pct(risk.daily_pnl_pct)}`,
-        `loss=${risk.loss_days}`, `drawdown=${pct(risk.max_drawdown)}`, `B=${risk.block_b?'停':'开'}`, `D=${risk.block_d?'停':'开'}`
+        `loss=${risk.loss_days}`, `drawdown=${pct(risk.max_drawdown)}`,
+        `趋势=${risk.market_trend || '--'}`, `QQQ=${Number(risk.qqq_change_pct || 0).toFixed(2)}%`,
+        `VIX=${Number(risk.vix || 0).toFixed(1)}`, `建议仓位=${(Number(risk.recommended_exposure || 0) * 100).toFixed(0)}%`,
+        `B=${risk.block_b?'停':'开'}`, `D=${risk.block_d?'停':'开'}`
       ].map(x => `<span>${x}</span>`).join('');
       window.latestBotProcesses = state.bot_processes || [];
       renderBots(state.bot_heartbeats || [], state.bot_controls || []);

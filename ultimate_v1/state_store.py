@@ -36,8 +36,9 @@ def write_risk_state(state: RiskState) -> None:
                 INSERT INTO risk_state (
                     mode, risk_multiplier, daily_pnl_pct, loss_days, max_drawdown_pct,
                     block_all_new, block_b_buy, block_d_buy, suggest_capital_mode,
-                    reason, updated_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                    reason, market_trend, qqq_change_pct, vix, risk_preference,
+                    allocation_mode, recommended_exposure, recommended_weights, updated_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 """,
                 (
                     state.mode,
@@ -50,6 +51,13 @@ def write_risk_state(state: RiskState) -> None:
                     1 if state.block_d else 0,
                     state.suggest_mode,
                     state.reason,
+                    state.market_trend,
+                    state.qqq_change_pct,
+                    state.vix,
+                    state.risk_preference,
+                    state.allocation_mode,
+                    state.recommended_exposure,
+                    json.dumps(state.recommended_weights or {}, ensure_ascii=False),
                 ),
             )
 
