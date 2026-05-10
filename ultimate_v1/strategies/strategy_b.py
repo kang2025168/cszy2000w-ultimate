@@ -16,12 +16,28 @@ from .base import StrategyResult, mark_strategy_group
 
 def _estimated_notional() -> float:
     """读取 B 单笔计划金额，用于下单前资金池检查。"""
+    plan = _buy_plan()
+    if bool(plan.get("dynamic")):
+        return float(plan.get("target_notional") or 0.0)
     return env_float("B_TARGET_NOTIONAL_USD", env_float("B_MAX_NOTIONAL_USD", 2500.0))
+
+
+def _buy_plan() -> dict:
+    try:
+        from app.strategy_b import get_b_buy_plan_for_gate
+
+        return get_b_buy_plan_for_gate()
+    except Exception as exc:
+        print(f"[B V1 PLAN] fallback static notional: {exc}", flush=True)
+    return {"dynamic": False}
 
 
 def strategy_B_buy(symbol: str) -> StrategyResult:
     """B 类买入：先过 V1 总控，再调用旧 B 买入函数。"""
     symbol = symbol.upper()
+    plan = _buy_plan()
+    if bool(plan.get("dynamic")) and int(plan.get("remaining_slots") or 0) <= 0:
+        return StrategyResult(False, "B", symbol, "buy", "max_b_positions")
     notional = _estimated_notional()
     allow, reason = can_open_position("B", notional)
     if not allow:

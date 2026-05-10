@@ -90,10 +90,19 @@ def _buy_one(code: str, stype: str) -> bool:
 
     if stype == "B":
         try:
-            from ultimate_v1.config import env_float
             from ultimate_v1.trading_gate import can_open_position
+            from app.strategy_b import get_b_buy_plan_for_gate
 
-            notional = env_float("B_TARGET_NOTIONAL_USD", env_float("B_MAX_NOTIONAL_USD", 2500.0))
+            plan = get_b_buy_plan_for_gate()
+            if bool(plan.get("dynamic")) and int(plan.get("remaining_slots") or 0) <= 0:
+                tb.log.info(
+                    f"[BUY BOT] V1 gate block B {code}: reason=max_b_positions "
+                    f"active={int(plan.get('active_positions') or 0)} "
+                    f"max={int(plan.get('max_positions') or 0)} "
+                    f"available={float(plan.get('available') or 0):.2f}"
+                )
+                return False
+            notional = float(plan.get("target_notional") or 0.0)
             allow, reason = can_open_position("B", notional)
             if not allow:
                 tb.log.info(f"[BUY BOT] V1 gate block B {code}: reason={reason}")

@@ -64,6 +64,9 @@ B_MIN_OPEN_BUYING_POWER = float(os.getenv("B_MIN_OPEN_BUYING_POWER", "2500"))
 
 B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "2500"))
 B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "2500"))
+B_USE_DYNAMIC_CAPITAL_SIZING = int(os.getenv("B_USE_DYNAMIC_CAPITAL_SIZING", "1"))
+B_DYNAMIC_MAX_TRADE_NOTIONAL = float(os.getenv("B_DYNAMIC_MAX_TRADE_NOTIONAL", "5000"))
+B_DYNAMIC_MIN_TRADE_NOTIONAL = float(os.getenv("B_DYNAMIC_MIN_TRADE_NOTIONAL", "500"))
 
 B_COOLDOWN_MINUTES = int(os.getenv("B_COOLDOWN_MINUTES", "30"))
 B_BP_USE_RATIO = float(os.getenv("B_BP_USE_RATIO", "0.98"))
@@ -1421,6 +1424,92 @@ def _count_active_b_positions(conn) -> int:
         return 0
 
 
+def _max_b_positions_for_available(available: float) -> int:
+    available = max(0.0, float(available or 0.0))
+    if available <= 0:
+        return 0
+    if available < 5000:
+        return 2
+    if available < 10000:
+        return 3
+    if available < 15000:
+        return 4
+    return 5
+
+
+def _fallback_b_buy_plan(active_b: int = 0) -> dict:
+    max_positions = int(B_MAX_ACTIVE_POSITIONS)
+    remaining_slots = max(max_positions - int(active_b or 0), 0)
+    return {
+        "dynamic": False,
+        "available": 0.0,
+        "active_positions": int(active_b or 0),
+        "max_positions": max_positions,
+        "remaining_slots": remaining_slots,
+        "target_notional": float(B_TARGET_NOTIONAL_USD),
+        "reason": "static_env",
+    }
+
+
+def _b_buy_plan(active_b: int = 0) -> dict:
+    """
+    根据 B 资金池可用额度动态控制 live 小资金买入节奏。
+
+    可用资金 < 5000: 最多 2 只，均分资金
+    5000-9999:     最多 3 只，均分资金
+    10000-14999:   最多 4 只，均分资金
+    >= 15000:      最多 5 只，单笔随资金增长但默认不超过 5000
+    """
+    active_b = int(active_b or 0)
+    if B_USE_DYNAMIC_CAPITAL_SIZING != 1:
+        return _fallback_b_buy_plan(active_b)
+
+    try:
+        from ultimate_v1.capital_manager import get_capital_allocation
+
+        allocation = get_capital_allocation()
+        if allocation is None:
+            return _fallback_b_buy_plan(active_b)
+
+        available = max(0.0, float(allocation.available.get("B", 0.0)))
+        max_positions = _max_b_positions_for_available(available)
+        remaining_slots = max(max_positions - active_b, 0)
+        if remaining_slots <= 0 or available <= 0:
+            target_notional = 0.0
+        else:
+            target_notional = available / float(remaining_slots)
+            target_notional = min(target_notional, float(B_DYNAMIC_MAX_TRADE_NOTIONAL))
+            target_notional = max(target_notional, 0.0)
+
+        return {
+            "dynamic": True,
+            "available": available,
+            "active_positions": active_b,
+            "max_positions": max_positions,
+            "remaining_slots": remaining_slots,
+            "target_notional": target_notional,
+            "reason": "capital_available_tiers",
+        }
+    except Exception as exc:
+        print(f"[B BUY PLAN] dynamic sizing fallback: {exc}", flush=True)
+        return _fallback_b_buy_plan(active_b)
+
+
+def get_b_buy_plan_for_gate() -> dict:
+    """供外层资金闸估算 B 单笔金额，避免 gate 和老 B 买入金额不一致。"""
+    conn = None
+    try:
+        conn = _connect()
+        active_b = _count_active_b_positions(conn)
+        return _b_buy_plan(active_b)
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
 def _get_avg_dollar_vol20(conn, code: str) -> float:
     sql = f"""
     SELECT AVG(close * volume) AS adv
@@ -1718,10 +1807,13 @@ def strategy_B_rank_and_confirm(codes) -> list[str]:
     try:
         conn = _connect()
         active_b = _count_active_b_positions(conn)
-        if active_b >= B_MAX_ACTIVE_POSITIONS:
+        buy_plan = _b_buy_plan(active_b)
+        max_positions = int(buy_plan.get("max_positions") or 0)
+        if active_b >= max_positions:
             print(
                 f"[B SCORE] skip: active_b_positions={active_b} "
-                f">= max_active={B_MAX_ACTIVE_POSITIONS}",
+                f">= max_active={max_positions} "
+                f"available={float(buy_plan.get('available') or 0):.2f}",
                 flush=True,
             )
             return []
@@ -1894,10 +1986,13 @@ def strategy_B_buy(code: str) -> bool:
             return False
 
         active_b = _count_active_b_positions(conn)
-        if active_b >= B_MAX_ACTIVE_POSITIONS:
+        buy_plan = _b_buy_plan(active_b)
+        max_positions = int(buy_plan.get("max_positions") or 0)
+        if active_b >= max_positions:
             print(
                 f"[B BUY] {code} skip: active_b_positions={active_b} "
-                f">= max_active={B_MAX_ACTIVE_POSITIONS}",
+                f">= max_active={max_positions} "
+                f"available={float(buy_plan.get('available') or 0):.2f}",
                 flush=True,
             )
             return False
@@ -2024,11 +2119,30 @@ def strategy_B_buy(code: str) -> bool:
         # ============================================================
         tc = _get_trading_client()
         buying_power = _get_buying_power(tc)
+        target_notional = float(buy_plan.get("target_notional") or 0.0)
+        if target_notional < float(B_DYNAMIC_MIN_TRADE_NOTIONAL):
+            print(
+                f"[B BUY] {code} skip: target_notional={target_notional:.2f} "
+                f"< min_trade_notional={float(B_DYNAMIC_MIN_TRADE_NOTIONAL):.2f} "
+                f"available={float(buy_plan.get('available') or 0):.2f} "
+                f"remaining_slots={int(buy_plan.get('remaining_slots') or 0)}",
+                flush=True,
+            )
+            return False
+        print(
+            f"[B BUY PLAN] {code} dynamic={int(bool(buy_plan.get('dynamic')))} "
+            f"available={float(buy_plan.get('available') or 0):.2f} "
+            f"active={int(buy_plan.get('active_positions') or 0)} "
+            f"max_positions={int(buy_plan.get('max_positions') or 0)} "
+            f"remaining_slots={int(buy_plan.get('remaining_slots') or 0)} "
+            f"target_notional={target_notional:.2f}",
+            flush=True,
+        )
 
         required_bp = max(
             float(B_MIN_BUYING_POWER),
             float(B_MIN_OPEN_BUYING_POWER),
-            float(B_TARGET_NOTIONAL_USD) / max(float(B_BP_USE_RATIO), 0.01),
+            target_notional / max(float(B_BP_USE_RATIO), 0.01),
         )
         if buying_power < required_bp:
             print(
@@ -2038,10 +2152,13 @@ def strategy_B_buy(code: str) -> bool:
             return False
 
         max_use = float(buying_power) * float(B_BP_USE_RATIO)
-        target = min(float(B_TARGET_NOTIONAL_USD), float(B_MAX_NOTIONAL_USD), float(max_use))
-        if target < float(B_TARGET_NOTIONAL_USD):
+        if bool(buy_plan.get("dynamic")):
+            target = min(target_notional, float(B_DYNAMIC_MAX_TRADE_NOTIONAL), float(max_use))
+        else:
+            target = min(target_notional, float(B_MAX_NOTIONAL_USD), float(max_use))
+        if target < target_notional:
             print(
-                f"[B BUY] {code} skip: target={target:.2f} < target_notional={float(B_TARGET_NOTIONAL_USD):.2f}",
+                f"[B BUY] {code} skip: target={target:.2f} < target_notional={target_notional:.2f}",
                 flush=True,
             )
             return False
