@@ -3,7 +3,7 @@ from __future__ import annotations
 """轻量网页看板：展示资金池、风控状态和 position_holdings 持仓。"""
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, time as dt_time
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,12 +12,17 @@ from urllib.parse import parse_qs, urlparse
 from .bot_supervisor import managed_bot_names, process_status, set_bot_runtime, sync_from_controls
 from .capital_manager import get_capital_allocation, get_strategy_used_capital
 from .config import env_str, settings
-from .db import fetch_all
+from .db import db_conn, fetch_all
 from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import get_risk_state
 from .schema import ensure_schema
 from .state_store import add_command, bot_controls, bot_heartbeats, capital_state_rows, equity_curve, latest_risk_state
 from .sync_positions import last_sync_error, sync_all_positions
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 
 
 def _json_default(value):
@@ -126,6 +131,196 @@ def _curve_payload(period: str) -> dict:
     return payload
 
 
+def _now_market_tz() -> datetime:
+    """读取配置时区里的当前时间，默认美西。"""
+    tz_name = settings().timezone or "America/Los_Angeles"
+    if ZoneInfo:
+        return datetime.now(ZoneInfo(tz_name))
+    return datetime.now()
+
+
+def _trade_phase_code(now_dt: datetime | None = None) -> str:
+    """按美股时间段判断当前交易阶段。"""
+    now_dt = now_dt or _now_market_tz()
+    if now_dt.weekday() >= 5:
+        return "closed"
+    tnow = now_dt.time()
+    if dt_time(4, 0) <= tnow < dt_time(6, 30):
+        return "premarket_sell"
+    if dt_time(6, 30) <= tnow < dt_time(6, 40):
+        return "preopen_record"
+    if dt_time(6, 40) <= tnow <= dt_time(13, 0):
+        return "regular"
+    if dt_time(13, 0) < tnow <= dt_time(17, 0):
+        return "afterhours_add"
+    return "closed"
+
+
+def _trade_phase_label(phase: str) -> str:
+    """交易阶段中文名称。"""
+    return {
+        "premarket_sell": "盘前保护",
+        "preopen_record": "只记录",
+        "regular": "盘中主策略",
+        "afterhours_add": "盘后加仓",
+        "closed": "休眠",
+    }.get(phase, phase)
+
+
+def _trade_phase_tone(phase: str) -> str:
+    """前端颜色状态。"""
+    if phase == "regular":
+        return "ok"
+    if phase in {"premarket_sell", "afterhours_add"}:
+        return "blue"
+    if phase == "preopen_record":
+        return "warn"
+    return "sleep"
+
+
+def _trade_phase_payload() -> dict:
+    """给顶部状态胶囊和详情弹层提供交易阶段数据。"""
+    now_dt = _now_market_tz()
+    phase = _trade_phase_code(now_dt)
+    rules = [
+        {
+            "range": "04:00-06:30",
+            "code": "premarket_sell",
+            "title": "盘前保护",
+            "desc": "B/F 持仓若盘前涨幅>=10%，先限价卖20%；若从盘前最高价回撤3%，按回撤价限价清仓。",
+        },
+        {
+            "range": "06:30-06:40",
+            "code": "preopen_record",
+            "title": "只记录",
+            "desc": "只记录盘前实时价、最高价和浮盈，不买不卖，等 06:40 后交给盘中规则。",
+        },
+        {
+            "range": "06:40-13:00",
+            "code": "regular",
+            "title": "盘中主策略",
+            "desc": "保持 B/F/C 主逻辑：卖出管理、候选刷新、盘中买入仍受总开关、大盘 gate 和资金 gate 控制。",
+        },
+        {
+            "range": "13:00-17:00",
+            "code": "afterhours_add",
+            "title": "盘后加仓",
+            "desc": "已持有 B/F 若盘后实时价>=正常收盘价*1.05，则按规则挂盘后加仓单。",
+        },
+    ]
+    for rule in rules:
+        rule["active"] = rule["code"] == phase
+    return {
+        "ok": True,
+        "timezone": settings().timezone,
+        "now": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "phase": phase,
+        "label": _trade_phase_label(phase),
+        "tone": _trade_phase_tone(phase),
+        "rules": rules,
+    }
+
+
+def _ensure_price_category_table() -> None:
+    """确保行情分类快照表存在。数据由 scripts/refresh_stock_price_categories.py 生成。"""
+    table = env_str("PRICE_CATEGORY_TABLE", "stock_price_category_snapshots")
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{table}` (
+                  snapshot_date DATE NOT NULL,
+                  category_group VARCHAR(32) NOT NULL,
+                  category_group_label VARCHAR(64) NOT NULL,
+                  category_key VARCHAR(64) NOT NULL,
+                  category_label VARCHAR(64) NOT NULL,
+                  category_order INT NOT NULL,
+                  symbol VARCHAR(64) NOT NULL,
+                  `open` DOUBLE NULL,
+                  high DOUBLE NULL,
+                  low DOUBLE NULL,
+                  `close` DOUBLE NULL,
+                  volume BIGINT NULL,
+                  change_pct DOUBLE NULL,
+                  up_streak INT NOT NULL DEFAULT 0,
+                  down_streak INT NOT NULL DEFAULT 0,
+                  up_days_2 INT NULL,
+                  up_days_3 INT NULL,
+                  up_days_4 INT NULL,
+                  up_days_5 INT NULL,
+                  down_days_2 INT NULL,
+                  down_days_3 INT NULL,
+                  down_days_4 INT NULL,
+                  down_days_5 INT NULL,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (snapshot_date, category_key, symbol),
+                  KEY idx_snapshot_order (snapshot_date, category_order),
+                  KEY idx_symbol_date (symbol, snapshot_date)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+
+
+def _market_categories_payload(selected_key: str = "") -> dict:
+    """读取最新行情分类快照，供持仓区切换展示。"""
+    _ensure_price_category_table()
+    table = env_str("PRICE_CATEGORY_TABLE", "stock_price_category_snapshots")
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT MAX(snapshot_date) AS d FROM `{table}`")
+            latest = cur.fetchone() or {}
+            snapshot_date = latest.get("d")
+            if not snapshot_date:
+                return {"ok": True, "meta": [], "rows": [], "selected_key": "", "snapshot_date": None}
+
+            cur.execute(
+                f"""
+                SELECT snapshot_date, category_group, category_group_label, category_key,
+                       category_label, category_order, COUNT(*) AS symbol_count,
+                       MAX(updated_at) AS snapshot_updated_at
+                FROM `{table}`
+                WHERE snapshot_date=%s
+                GROUP BY snapshot_date, category_group, category_group_label,
+                         category_key, category_label, category_order
+                ORDER BY category_order ASC
+                """,
+                (snapshot_date,),
+            )
+            meta = list(cur.fetchall() or [])
+            if not meta:
+                return {"ok": True, "meta": [], "rows": [], "selected_key": "", "snapshot_date": snapshot_date}
+
+            valid_keys = {str(row.get("category_key") or "") for row in meta}
+            selected_key = selected_key if selected_key in valid_keys else str(meta[0].get("category_key") or "")
+            cur.execute(
+                f"""
+                SELECT snapshot_date, category_group, category_group_label, category_key,
+                       category_label, category_order, symbol,
+                       ROUND(`open`, 2) AS `open`,
+                       ROUND(high, 2) AS high,
+                       ROUND(low, 2) AS low,
+                       ROUND(`close`, 2) AS `close`,
+                       volume, change_pct, up_streak, down_streak,
+                       updated_at
+                FROM `{table}`
+                WHERE snapshot_date=%s AND category_key=%s
+                ORDER BY change_pct DESC, symbol ASC
+                LIMIT 500
+                """,
+                (snapshot_date, selected_key),
+            )
+            rows = list(cur.fetchall() or [])
+
+    return {
+        "ok": True,
+        "meta": meta,
+        "rows": rows,
+        "selected_key": selected_key,
+        "snapshot_date": snapshot_date,
+    }
+
+
 INDEX_HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -144,6 +339,23 @@ INDEX_HTML = r"""<!doctype html>
     .left-titlebar { height:52px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:0 8px 0 18px; }
     .brand-lockup { display:flex; align-items:center; gap:12px; min-width:0; }
     .brand-logo { width:42px; height:42px; border-radius:9px; object-fit:contain; background:#fff; box-shadow:0 8px 20px rgba(15,23,42,.08); }
+    .title-actions { display:flex; align-items:center; gap:10px; flex:0 0 auto; }
+    .phase-chip { min-width:144px; height:38px; border:1px solid var(--line); border-radius:999px; background:#fff; display:flex; align-items:center; justify-content:center; gap:7px; padding:0 13px; font-size:12px; font-weight:850; color:var(--ink); box-shadow:0 8px 20px rgba(15,23,42,.05); }
+    .phase-chip .phase-dot { width:9px; height:9px; border-radius:50%; background:var(--muted); box-shadow:0 0 0 4px rgba(102,112,133,.1); }
+    .phase-chip.ok .phase-dot { background:var(--green); box-shadow:0 0 0 4px rgba(21,147,106,.12); }
+    .phase-chip.blue .phase-dot { background:var(--blue); box-shadow:0 0 0 4px rgba(37,99,235,.12); }
+    .phase-chip.warn .phase-dot { background:var(--amber); box-shadow:0 0 0 4px rgba(183,110,0,.14); }
+    .phase-chip.sleep .phase-dot { background:var(--red); box-shadow:0 0 0 4px rgba(198,40,40,.12); }
+    .phase-popover { position:absolute; z-index:12; top:72px; left:24px; width:min(680px, calc(100vw - 48px)); display:none; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 24px 70px rgba(15,23,42,.18); padding:14px; }
+    .phase-popover.show { display:block; }
+    .phase-summary { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+    .phase-pill { border-radius:999px; background:#eef2f6; color:var(--muted); padding:5px 9px; font-size:12px; font-weight:750; }
+    .phase-rule-grid { display:grid; gap:8px; }
+    .phase-rule { border:1px solid var(--line); border-radius:8px; padding:10px; background:#fbfcfe; }
+    .phase-rule.active { border-color:var(--blue); box-shadow:0 0 0 1px rgba(37,99,235,.16) inset; background:#eff6ff; }
+    .phase-rule-title { display:flex; gap:10px; align-items:baseline; font-weight:850; }
+    .phase-rule-title span { color:var(--muted); font-size:12px; }
+    .phase-rule p { margin:6px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
     .refresh-btn { height:38px; padding:0 18px; border:0; border-radius:9px; background:#2563eb; color:#fff; font-weight:850; box-shadow:0 9px 22px rgba(37,99,235,.22); transition:transform .12s ease, background .12s ease, opacity .12s ease; }
     .refresh-btn:hover { background:#1d4ed8; }
     .refresh-btn:active { transform:scale(.96); }
@@ -217,15 +429,35 @@ INDEX_HTML = r"""<!doctype html>
     .neg { color:var(--red); }
     .pos { color:var(--green); }
     .scroll { overflow:auto; border-radius:8px; }
-    .holdings-panel { margin-top:16px; min-height:430px; }
-    .holding-head { justify-content:flex-start; gap:16px; }
+    .holdings-panel { margin-top:16px; min-height:430px; overflow:hidden; }
+    .holding-head { gap:16px; margin:6px 0 14px; min-height:42px; }
+    .holding-left-tools { display:flex; align-items:center; gap:12px; min-width:0; flex:1 1 auto; }
+    .holding-right-tools { margin-left:auto; display:flex; align-items:center; gap:10px; flex:0 0 auto; }
     .holding-tabs { display:flex; gap:6px; flex-wrap:wrap; background:#eef2f6; padding:5px; border-radius:8px; }
     .holding-tab { height:30px; min-width:58px; border-radius:7px; font-weight:750; color:var(--muted); border:0; background:transparent; }
     .holding-tab.active { background:#101828; color:#fff; border-color:#101828; }
-    .sync-positions-btn { height:34px; border:0; border-radius:8px; padding:0 14px; background:#e0f2fe; color:#075985; font-weight:850; transition:transform .12s ease, background .12s ease, opacity .12s ease; }
+    .sync-positions-btn { height:34px; border:0; border-radius:8px; padding:0 14px; background:#e0f2fe; color:#075985; font-weight:850; transition:transform .12s ease, background .12s ease, opacity .12s ease; flex:0 0 auto; }
     .sync-positions-btn:hover { background:#bae6fd; }
     .sync-positions-btn:active { transform:scale(.97); }
     .sync-positions-btn.loading { opacity:.65; pointer-events:none; }
+    .view-toggle-btn { height:34px; border:0; border-radius:8px; padding:0 14px; background:#101828; color:#fff; font-weight:850; min-width:82px; }
+    .view-toggle-btn:hover { background:#1f2937; }
+    .page-dots { display:flex; align-items:center; justify-content:center; gap:6px; min-width:38px; }
+    .page-dot { width:7px; height:7px; border-radius:50%; background:#d0d5dd; border:0; padding:0; }
+    .page-dot.active { width:22px; border-radius:999px; background:#101828; }
+    .holding-tabs, .sync-positions-btn { transition:opacity .18s ease, filter .18s ease; }
+    .holdings-panel.market-view .holding-tabs, .holdings-panel.market-view .sync-positions-btn { opacity:.18; pointer-events:none; filter:grayscale(.2); }
+    .lower-slider { overflow:hidden; touch-action:pan-y; }
+    .lower-track { display:flex; width:200%; transition:transform .32s cubic-bezier(.22,.61,.36,1); }
+    .lower-track.market { transform:translateX(-50%); }
+    .lower-page { width:50%; flex:0 0 50%; padding:0 2px; }
+    .market-toolbar { display:grid; grid-template-columns:minmax(260px,1fr) auto; gap:10px; align-items:center; margin-bottom:10px; }
+    .market-select { width:100%; height:38px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:0 10px; font-weight:750; color:var(--ink); }
+    .market-meta { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+    .market-pill { border-radius:999px; background:#eef2f6; color:var(--muted); padding:5px 9px; font-size:12px; font-weight:750; }
+    .market-refresh-btn { height:38px; border:0; border-radius:8px; background:#e0f2fe; color:#075985; font-weight:850; padding:0 14px; }
+    .market-refresh-btn:hover { background:#bae6fd; }
+    .empty-state { min-height:260px; display:flex; align-items:center; justify-content:center; color:var(--muted); font-weight:750; }
     .modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,.36); display:none; align-items:center; justify-content:center; z-index:20; }
     .modal-backdrop.show { display:flex; }
     .modal { width:min(420px, calc(100vw - 32px)); background:#fff; border-radius:10px; border:1px solid var(--line); box-shadow:0 24px 70px rgba(15,23,42,.22); padding:18px; }
@@ -243,7 +475,14 @@ INDEX_HTML = r"""<!doctype html>
   <main>
     <section class="dash">
       <div class="left-stack">
-        <div class="left-titlebar"><div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" /><h1>CSZY Ultimate V1</h1></div><button class="refresh-btn" onclick="loadAll()">刷新</button></div>
+        <div class="left-titlebar">
+          <div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" /><h1>CSZY Ultimate V1</h1></div>
+          <div class="title-actions">
+            <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
+            <button class="refresh-btn" onclick="loadAll()">刷新</button>
+          </div>
+        </div>
+        <div class="phase-popover" id="phasePopover"></div>
         <div class="panel capital-hero">
           <div class="hero-top">
             <div class="mode-card">
@@ -305,17 +544,40 @@ INDEX_HTML = r"""<!doctype html>
     </section>
     <section class="panel holdings-panel">
       <div class="section-head holding-head">
-        <h2>持仓</h2>
-        <div class="holding-tabs">
-          <button class="holding-tab active" data-holding="ALL">总</button>
-          <button class="holding-tab" data-holding="A">A</button>
-          <button class="holding-tab" data-holding="C">C</button>
-          <button class="holding-tab" data-holding="B">B</button>
-          <button class="holding-tab" data-holding="D">D</button>
+        <div class="holding-left-tools">
+          <h2 id="lowerPanelTitle">持仓</h2>
+          <button class="sync-positions-btn" id="syncPositionsBtn" onclick="syncPositions()">同步仓位</button>
+          <div class="holding-tabs" id="holdingTabs">
+            <button class="holding-tab active" data-holding="ALL">总</button>
+            <button class="holding-tab" data-holding="A">A</button>
+            <button class="holding-tab" data-holding="C">C</button>
+            <button class="holding-tab" data-holding="B">B</button>
+            <button class="holding-tab" data-holding="D">D</button>
+          </div>
         </div>
-        <button class="sync-positions-btn" onclick="syncPositions()">同步仓位</button>
+        <div class="holding-right-tools">
+          <div class="page-dots">
+            <button class="page-dot active" id="dotHoldings" onclick="setLowerView('holdings')" title="持仓"></button>
+            <button class="page-dot" id="dotMarket" onclick="setLowerView('market')" title="行情分析"></button>
+          </div>
+          <button class="view-toggle-btn" id="viewToggleBtn" onclick="toggleLowerView()">看行情</button>
+        </div>
       </div>
-      <div class="scroll"><table id="holdings"></table></div>
+      <div class="lower-slider" id="lowerSlider">
+        <div class="lower-track" id="lowerTrack">
+          <div class="lower-page">
+            <div class="scroll"><table id="holdings"></table></div>
+          </div>
+          <div class="lower-page">
+            <div class="market-meta" id="marketMeta"></div>
+            <div class="market-toolbar">
+              <select class="market-select" id="marketCategorySelect" onchange="loadMarketCategories(this.value)"></select>
+              <button class="market-refresh-btn" onclick="loadMarketCategories(document.getElementById('marketCategorySelect').value)">刷新分类</button>
+            </div>
+            <div class="scroll"><table id="marketTable"></table></div>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
   <div class="modal-backdrop" id="clearModal">
@@ -336,9 +598,19 @@ INDEX_HTML = r"""<!doctype html>
     const colors = {A:'#2563eb', B:'#d97706', C:'#15936a', D:'#7c3aed'};
     let currentPeriod = 'week';
     let currentHolding = 'ALL';
+    let lowerView = 'holdings';
+    let currentCategory = '';
     let latestHoldings = [];
+    let latestMarketMeta = [];
     async function api(path) { const r = await fetch(path); return await r.json(); }
     async function postJson(path, body) { const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body || {})}); return await r.json(); }
+    function compactNumber(v) {
+      const n = Number(v || 0);
+      if (Math.abs(n) >= 1e9) return `${(n/1e9).toFixed(2)}B`;
+      if (Math.abs(n) >= 1e6) return `${(n/1e6).toFixed(2)}M`;
+      if (Math.abs(n) >= 1e3) return `${(n/1e3).toFixed(1)}K`;
+      return String(Math.round(n));
+    }
     function metric(label, value) { return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`; }
     function poolCard(g, cap) {
       const target = Number(cap.targets[g] || 0), used = Number(cap.used[g] || 0), av = Number(cap.available[g] || 0);
@@ -376,6 +648,16 @@ INDEX_HTML = r"""<!doctype html>
         const title = b ? `${name} ${b.status} pid=${p?.pid || '-'} ${b.last_seen_at || ''} ${b.last_message || ''}` : `${name} no heartbeat pid=${p?.pid || '-'}`;
         return `<div class="bot-row" title="${title}"><span class="bot-name">${name}</span><span class="bot-dot ${ok ? '' : 'bad'}"></span>${controllable ? `<button class="bot-switch ${enabled ? 'on' : ''}" onclick="toggleBot('${name}', ${enabled ? 'false' : 'true'})"></button>` : '<span></span>'}</div>`;
       }).join('');
+    }
+    function renderPhase(phase) {
+      const chip = document.getElementById('phaseChip');
+      chip.className = `phase-chip ${phase.tone || 'sleep'}`;
+      document.getElementById('phaseChipText').textContent = `${phase.label || '--'}`;
+      const rules = (phase.rules || []).map(r => `<div class="phase-rule ${r.active ? 'active' : ''}"><div class="phase-rule-title"><b>${r.range}</b><span>${r.title}</span></div><p>${r.desc}</p></div>`).join('');
+      document.getElementById('phasePopover').innerHTML = `<div class="phase-summary"><span class="phase-pill">美西时间 ${phase.now || '--'}</span><span class="phase-pill">当前阶段 ${phase.label || '--'}</span><span class="phase-pill">代码 ${phase.phase || '--'}</span></div><div class="phase-rule-grid">${rules}</div>`;
+    }
+    function togglePhasePopover() {
+      document.getElementById('phasePopover').classList.toggle('show');
     }
     function parseDateOnly(s) {
       if (!s) return null;
@@ -465,11 +747,70 @@ INDEX_HTML = r"""<!doctype html>
         rows.map(r => `<tr><td><b>${r.symbol}</b></td><td>${r.strategy_group}</td><td><span class="status ${r.status}">${r.status}</span></td><td>${Number(r.qty||0).toFixed(4)}</td><td>${money(r.avg_entry_price)}</td><td>${money(r.current_price)}</td><td>${money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${money(r.realized_pnl)}</td><td>${r.holding_days || 0}</td><td>${r.last_update_time || ''}</td></tr>`).join('') +
         blanks + `</tbody>`;
     }
+    function renderLowerView() {
+      const holdingsMode = lowerView === 'holdings';
+      document.getElementById('lowerPanelTitle').textContent = holdingsMode ? '持仓' : '行情分析';
+      document.getElementById('viewToggleBtn').textContent = holdingsMode ? '看行情' : '看持仓';
+      document.querySelector('.holdings-panel').classList.toggle('market-view', !holdingsMode);
+      document.getElementById('lowerTrack').classList.toggle('market', !holdingsMode);
+      document.getElementById('dotHoldings').classList.toggle('active', holdingsMode);
+      document.getElementById('dotMarket').classList.toggle('active', !holdingsMode);
+    }
+    function setLowerView(view) {
+      lowerView = view === 'market' ? 'market' : 'holdings';
+      renderLowerView();
+      if (lowerView === 'market') loadMarketCategories(currentCategory);
+    }
+    function toggleLowerView() {
+      setLowerView(lowerView === 'holdings' ? 'market' : 'holdings');
+    }
+    function renderMarketCategories(payload) {
+      latestMarketMeta = payload.meta || [];
+      currentCategory = payload.selected_key || currentCategory || '';
+      if (!latestMarketMeta.length) {
+        document.getElementById('marketMeta').innerHTML = '<span class="market-pill">暂无分类快照</span>';
+        document.getElementById('marketCategorySelect').innerHTML = '<option>暂无数据</option>';
+        document.getElementById('marketTable').innerHTML = `<tbody><tr><td><div class="empty-state">暂无行情分析数据，等待分类脚本生成快照</div></td></tr></tbody>`;
+        return;
+      }
+      const current = latestMarketMeta.find(r => String(r.category_key || '') === currentCategory) || latestMarketMeta[0];
+      const options = [];
+      let lastGroup = '';
+      latestMarketMeta.forEach(r => {
+        const group = String(r.category_group_label || '');
+        if (group !== lastGroup) {
+          if (lastGroup) options.push('</optgroup>');
+          options.push(`<optgroup label="${group}">`);
+          lastGroup = group;
+        }
+        const key = String(r.category_key || '');
+        options.push(`<option value="${key}" ${key === currentCategory ? 'selected' : ''}>${r.category_label} (${Number(r.symbol_count || 0)})</option>`);
+      });
+      if (lastGroup) options.push('</optgroup>');
+      document.getElementById('marketCategorySelect').innerHTML = options.join('');
+      document.getElementById('marketMeta').innerHTML = [
+        `快照交易日 ${payload.snapshot_date || '--'}`,
+        `更新时间 ${current.snapshot_updated_at || '--'}`,
+        `当前分类 ${current.category_label || '--'} / ${Number(current.symbol_count || 0)}`
+      ].map(x => `<span class="market-pill">${x}</span>`).join('');
+      const rows = payload.rows || [];
+      const blanks = Array.from({length: Math.max(0, 10 - rows.length)}, () => `<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td></td></tr>`).join('');
+      document.getElementById('marketTable').innerHTML = `<thead><tr>${['代码','涨跌','开','高','低','收','量'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
+        rows.map(r => {
+          const change = Number(r.change_pct || 0);
+          return `<tr><td><b>${r.symbol}</b></td><td class="${cls(change)}">${pct(change)}</td><td>${money(r.open)}</td><td>${money(r.high)}</td><td>${money(r.low)}</td><td>${money(r.close)}</td><td>${compactNumber(r.volume)}</td></tr>`;
+        }).join('') + blanks + `</tbody>`;
+    }
+    async function loadMarketCategories(category=currentCategory) {
+      const payload = await api(`/api/market_categories?category=${encodeURIComponent(category || '')}`);
+      if (!payload.ok) return;
+      renderMarketCategories(payload);
+    }
     async function loadAll() {
       const refreshBtn = document.querySelector('.refresh-btn');
       if (refreshBtn) refreshBtn.classList.add('loading');
       try {
-      const [cap, risk, holdings, state] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state')]);
+      const [cap, risk, holdings, state, phase] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase')]);
       if (cap.ok) {
         document.getElementById('modeValue').textContent = cap.mode;
         document.getElementById('modeHint').textContent = `cash ${money(cap.cash)} / portfolio ${money(cap.portfolio_value)}`;
@@ -495,8 +836,11 @@ INDEX_HTML = r"""<!doctype html>
       ].map(x => `<span>${x}</span>`).join('');
       window.latestBotProcesses = state.bot_processes || [];
       renderBots(state.bot_heartbeats || [], state.bot_controls || []);
+      renderPhase(phase);
       latestHoldings = holdings.rows || [];
       renderHoldings();
+      renderLowerView();
+      if (lowerView === 'market') await loadMarketCategories(currentCategory);
       await loadCurve(currentPeriod);
       } finally {
         if (refreshBtn) refreshBtn.classList.remove('loading');
@@ -504,6 +848,24 @@ INDEX_HTML = r"""<!doctype html>
     }
     document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => loadCurve(b.dataset.period)));
     document.querySelectorAll('.holding-tab').forEach(b => b.addEventListener('click', () => { currentHolding = b.dataset.holding; renderHoldings(); }));
+    document.addEventListener('click', (e) => {
+      const pop = document.getElementById('phasePopover');
+      const chip = document.getElementById('phaseChip');
+      if (pop && chip && !pop.contains(e.target) && !chip.contains(e.target)) pop.classList.remove('show');
+    });
+    let lowerTouchX = null;
+    document.getElementById('lowerSlider').addEventListener('touchstart', (e) => {
+      lowerTouchX = e.touches?.[0]?.clientX ?? null;
+    }, {passive:true});
+    document.getElementById('lowerSlider').addEventListener('touchend', (e) => {
+      if (lowerTouchX === null) return;
+      const endX = e.changedTouches?.[0]?.clientX ?? lowerTouchX;
+      const dx = endX - lowerTouchX;
+      lowerTouchX = null;
+      if (Math.abs(dx) < 48) return;
+      if (dx < 0) setLowerView('market');
+      else setLowerView('holdings');
+    }, {passive:true});
     function openClearModal() {
       document.getElementById('clearPassword').value = '';
       document.getElementById('clearModal').classList.add('show');
@@ -606,6 +968,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_holdings_payload())
             elif path == "/api/state":
                 self._send_json(_state_payload())
+            elif path == "/api/trade_phase":
+                self._send_json(_trade_phase_payload())
+            elif path == "/api/market_categories":
+                selected = parse_qs(parsed.query).get("category", [""])[0]
+                self._send_json(_market_categories_payload(selected))
             elif path == "/api/equity_curve":
                 period = parse_qs(parsed.query).get("period", ["week"])[0]
                 self._send_json(_curve_payload(period))
