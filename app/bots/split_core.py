@@ -111,6 +111,39 @@ def run_sell_round(conn, config: SplitBotConfig, phase: str) -> tuple[object, bo
     conn = tb.ensure_conn_alive(conn)
     traded_any = False
     rows = tb.load_rows(conn, mode="sell") or []
+    if "B" in config.strategies:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS n
+                    FROM position_holdings
+                    WHERE status='open'
+                      AND UPPER(
+                        CASE
+                          WHEN strategy_group IN ('A','B','C','D') THEN strategy_group
+                          WHEN stock_type IN ('A','B','C','D') THEN stock_type
+                          ELSE strategy_group
+                        END
+                      )='B'
+                    """
+                )
+                real_b_count = int((cur.fetchone() or {}).get("n") or 0)
+            ops_b_count = sum(
+                1
+                for row in rows
+                if str(row.get("stock_type") or "").strip().upper() == "B"
+                and int(row.get("is_bought") or 0) == 1
+                and int(row.get("can_sell") or 0) == 1
+            )
+            if real_b_count != ops_b_count:
+                tb.log.warning(
+                    f"[SELL BOT] B holding source mismatch: "
+                    f"position_holdings_open={real_b_count} stock_operations_sellable={ops_b_count}. "
+                    "老B卖策略当前只管理 stock_operations 中 can_sell=1 的记录。"
+                )
+        except Exception as exc:
+            tb.log.warning(f"[SELL BOT] cannot compare B holding sources: {exc}")
     scanned = 0
     eligible = 0
     tb.log.info(

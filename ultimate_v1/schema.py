@@ -59,6 +59,11 @@ def ensure_stock_operations_columns() -> None:
                 with conn.cursor() as cur:
                     cur.execute(f"ALTER TABLE `{s.ops_table}` ADD COLUMN `{column}` {ddl}")
                 print(f"[SCHEMA] added {s.ops_table}.{column}", flush=True)
+        stock_code_len = _varchar_length(conn, s.ops_table, "stock_code")
+        if stock_code_len is not None and stock_code_len < 64:
+            with conn.cursor() as cur:
+                cur.execute(f"ALTER TABLE `{s.ops_table}` MODIFY COLUMN stock_code VARCHAR(64) NOT NULL")
+            print(f"[SCHEMA] upgraded {s.ops_table}.stock_code to VARCHAR(64)", flush=True)
         with conn.cursor() as cur:
             cur.execute(
                 f"""

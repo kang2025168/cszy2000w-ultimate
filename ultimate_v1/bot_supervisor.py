@@ -24,8 +24,26 @@ BOT_SPECS: dict[str, BotSpec] = {
     "ac_bot": BotSpec("ultimate_v1.bots.ac_bot", ("scan", "--loop", "--interval", "300")),
     # B 买卖先复用老项目已经拆好的独立买卖循环，保证 pressure breakout、
     # rank confirm、盘前/盘后管理、动态止损等老逻辑完整保留。
-    "b_buy_bot": BotSpec("app.buy_bot", (), {"BOT_STRATEGIES": "B", "BOT_PROCESS_NAME": "buy_bot"}),
-    "b_sell_bot": BotSpec("app.sell_bot", (), {"BOT_STRATEGIES": "B", "BOT_PROCESS_NAME": "sell_bot"}),
+    "b_buy_bot": BotSpec(
+        "app.buy_bot",
+        (),
+        {
+            "BOT_STRATEGIES": "B",
+            "BOT_PROCESS_NAME": "buy_bot",
+            "SPLIT_BOT_FORCE_PHASE": "regular",
+            "ALLOW_LIVE_FORCE_PHASE": "1",
+        },
+    ),
+    "b_sell_bot": BotSpec(
+        "app.sell_bot",
+        (),
+        {
+            "BOT_STRATEGIES": "B",
+            "BOT_PROCESS_NAME": "sell_bot",
+            "SPLIT_BOT_FORCE_PHASE": "regular",
+            "ALLOW_LIVE_FORCE_PHASE": "1",
+        },
+    ),
     "d_buy_bot": BotSpec("ultimate_v1.bots.d_buy_bot", ("--loop", "--interval", "30")),
     "d_sell_bot": BotSpec("ultimate_v1.bots.d_sell_bot", ("--loop", "--interval", "30")),
 }

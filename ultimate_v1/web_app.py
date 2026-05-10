@@ -17,7 +17,7 @@ from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import get_risk_state
 from .schema import ensure_schema
 from .state_store import add_command, bot_controls, bot_heartbeats, capital_state_rows, equity_curve, latest_risk_state
-from .sync_positions import last_sync_error, sync_position_holdings
+from .sync_positions import last_sync_error, sync_all_positions
 
 
 def _json_default(value):
@@ -636,12 +636,12 @@ class Handler(BaseHTTPRequestHandler):
                 set_bot_runtime(bot_name, enabled)
                 self._send_json({"ok": True, "bot_name": bot_name, "enabled": enabled})
             elif path == "/api/sync_positions":
-                ok = sync_position_holdings()
+                ok = sync_all_positions()
                 if not ok:
                     detail = last_sync_error()
                     self._send_json({"ok": False, "error": f"券商仓位同步失败：{detail or '请检查 Alpaca 配置和服务日志'}"}, 500)
                     return
-                self._send_json({"ok": True, "message": "仓位已同步"})
+                self._send_json({"ok": True, "message": "展示表和交易控制表已同步"})
             else:
                 self._send_json({"ok": False, "error": "not_found"}, 404)
         except Exception as exc:
