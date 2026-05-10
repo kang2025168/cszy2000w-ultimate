@@ -426,6 +426,7 @@ INDEX_HTML = r"""<!doctype html>
     #capitalDonut { width:176px; height:176px; }
     .legend { display:grid; gap:8px; min-width:120px; }
     .legend-row { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); }
+    .legend-amount { display:none; }
     .swatch { width:9px; height:9px; border-radius:2px; }
     .bot-grid { flex:1; display:flex; flex-direction:column; gap:9px; padding:12px 2px 4px; }
     .bot-row { display:grid; grid-template-columns:minmax(90px,1fr) 18px 42px; align-items:center; gap:10px; min-height:24px; font-size:12px; color:var(--ink); }
@@ -516,6 +517,8 @@ INDEX_HTML = r"""<!doctype html>
       .mobile-collapsible.mobile-open .mobile-collapse-body { display:block; }
       .mobile-collapsible.mobile-open .mobile-collapse-toggle span:last-child::before { content:"收起"; }
       .mobile-collapsible:not(.mobile-open) .mobile-collapse-toggle span:last-child::before { content:"展开"; }
+      #donutPanel .mobile-collapse-toggle span:last-child { display:none; }
+      #donutPanel .mobile-collapse-body > h2 { display:none; }
       .hero-top, .pool-grid, .right-top { grid-template-columns:1fr; gap:10px; }
       .mode-card { min-height:112px; padding:14px; }
       .mode-card .label { font-size:12px; }
@@ -536,9 +539,11 @@ INDEX_HTML = r"""<!doctype html>
       .pool-value { font-size:25px; }
       .pool-amounts { font-size:11px; gap:6px; }
       .donut-panel, .bot-panel { min-height:auto; }
-      .donut-wrap { min-height:188px; justify-content:flex-start; gap:12px; }
+      .donut-wrap { min-height:188px; justify-content:center; gap:14px; }
       #capitalDonut { width:150px; height:150px; }
-      .legend { min-width:88px; gap:7px; }
+      .legend { min-width:132px; gap:7px; }
+      .legend-row { gap:7px; font-size:12px; flex-wrap:wrap; }
+      .legend-amount { display:inline; flex-basis:100%; margin-left:16px; color:#344054; font-weight:800; }
       .bot-grid { padding-top:10px; gap:8px; }
       .bot-row { grid-template-columns:minmax(120px,1fr) 18px 42px; }
       .chart-panel { min-height:330px; }
@@ -618,7 +623,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
       <div class="right-stack">
         <div class="right-top">
-          <div class="panel donut-panel mobile-collapsible" id="donutPanel">
+          <div class="panel donut-panel mobile-collapsible mobile-open" id="donutPanel">
             <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('donutPanel')"><span>资金比例</span><span></span></button>
             <div class="mobile-collapse-body">
               <h2>资金比例</h2>
@@ -751,7 +756,7 @@ INDEX_HTML = r"""<!doctype html>
       ctx.beginPath(); ctx.arc(110,110,58,0,Math.PI*2); ctx.fillStyle = '#fff'; ctx.fill();
       ctx.fillStyle = '#17202a'; ctx.font = '700 20px system-ui'; ctx.textAlign='center'; ctx.fillText(money(cap.equity || 0).replace('.00',''),110,106);
       ctx.fillStyle = '#667085'; ctx.font = '12px system-ui'; ctx.fillText('equity',110,126);
-      document.getElementById('donutLegend').innerHTML = entries.map(([g,v]) => `<div class="legend-row"><span class="swatch" style="background:${colors[g]}"></span><span>${g}</span><span>${((v/total)*100).toFixed(1)}%</span></div>`).join('');
+      document.getElementById('donutLegend').innerHTML = entries.map(([g,v]) => `<div class="legend-row"><span class="swatch" style="background:${colors[g]}"></span><span>${g}</span><span>${((v/total)*100).toFixed(1)}%</span><span class="legend-amount">${money(v)}</span></div>`).join('');
     }
     function renderBots(bots, controls) {
       const known = ['dashboard_bot','risk_bot','ac_bot','b_buy_bot','b_sell_bot','d_buy_bot','d_sell_bot'];
@@ -784,6 +789,7 @@ INDEX_HTML = r"""<!doctype html>
     function toggleMobilePanel(id) {
       const panel = document.getElementById(id);
       if (!panel) return;
+      if (id === 'donutPanel' && isMobileView()) return;
       panel.classList.toggle('mobile-open');
       if (id === 'chartPanel' && panel.classList.contains('mobile-open')) {
         setTimeout(() => loadCurve(currentPeriod), 50);
