@@ -3,6 +3,8 @@ from __future__ import annotations
 """轻量网页看板：展示资金池、风控状态和 position_holdings 持仓。"""
 
 import json
+import hashlib
+import hmac
 from datetime import date, datetime, time as dt_time
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,6 +35,30 @@ def _json_default(value):
     if isinstance(value, date):
         return value.isoformat()
     return str(value)
+
+
+AUTH_COOKIE_NAME = "cszy_ultimate_auth"
+
+
+def _login_password() -> str:
+    """读取网页登录密码；未单独配置时复用手机控制密码，避免部署后锁死。"""
+    return env_str(
+        "DASHBOARD_LOGIN_PASSWORD",
+        env_str("ULTIMATE_LOGIN_PASSWORD", env_str("DASHBOARD_ACTION_PASSWORD", env_str("MOBILE_CONTROL_TOKEN", ""))),
+    )
+
+
+def _auth_secret() -> str:
+    """读取登录签名密钥；生产环境建议单独配置，避免 cookie 被猜到。"""
+    return env_str("DASHBOARD_AUTH_SECRET", _login_password() or "cszy-ultimate-v1")
+
+
+def _auth_token() -> str:
+    """生成浏览器登录 cookie 的签名值。"""
+    password = _login_password()
+    if not password:
+        return ""
+    return hmac.new(_auth_secret().encode("utf-8"), f"dashboard:{password}".encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _allocation_payload() -> dict:
@@ -466,7 +492,71 @@ INDEX_HTML = r"""<!doctype html>
     .modal-actions { margin-top:14px; display:flex; justify-content:flex-end; gap:8px; }
     .danger-action { border:0; background:#b42318; color:#fff; font-weight:800; }
     @media (max-width: 1180px) { .dash { grid-template-columns:1fr; } .capital-hero { flex:none; } .chart-panel { min-height:324px; } }
-    @media (max-width: 760px) { header { padding:0 14px; } main { padding:14px; } .left-titlebar { padding-left:4px; } .hero-top, .metric-grid, .pool-grid, .right-top { grid-template-columns:1fr; } }
+    @media (max-width: 760px) {
+      body { background:#f7f9fc; }
+      main { padding:10px 10px 28px; max-width:none; }
+      h1 { font-size:23px; line-height:1.05; max-width:128px; }
+      h2 { font-size:15px; }
+      .dash, .left-stack, .right-stack { gap:12px; }
+      .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:center; }
+      .brand-lockup { gap:8px; flex:1 1 auto; }
+      .brand-logo { width:38px; height:38px; border-radius:8px; }
+      .title-actions { gap:7px; flex:0 0 auto; }
+      .phase-chip { min-width:88px; height:34px; padding:0 10px; font-size:12px; }
+      .phase-chip .phase-dot { width:8px; height:8px; }
+      .refresh-btn { height:36px; padding:0 14px; border-radius:8px; }
+      .phase-popover { top:64px; left:10px; width:calc(100vw - 20px); padding:12px; }
+      .panel { padding:12px; border-radius:10px; }
+      .hero-top, .pool-grid, .right-top { grid-template-columns:1fr; gap:10px; }
+      .mode-card { min-height:112px; padding:14px; }
+      .mode-card .label { font-size:12px; }
+      .mode-card .value { font-size:30px; }
+      .metric-grid { grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; }
+      .metric { min-height:70px; padding:12px; }
+      .metric-label, .pool-meta, .small-muted { font-size:11px; }
+      .metric-value { font-size:17px; margin-top:7px; }
+      .risk-strip { align-items:flex-start; flex-direction:column; padding:12px; }
+      .risk-line { gap:10px; line-height:1.5; }
+      .risk-actions { width:100%; justify-content:flex-end; }
+      .clear-btn { height:32px; }
+      .exposure-card { margin-top:12px; padding:12px; }
+      .exposure-head { align-items:flex-start; flex-direction:column; gap:4px; }
+      .exposure-value { line-height:1.35; }
+      .pool-grid { margin-top:14px; }
+      .pool-card { min-height:112px; padding:12px; }
+      .pool-value { font-size:25px; }
+      .pool-amounts { font-size:11px; gap:6px; }
+      .donut-panel, .bot-panel { min-height:auto; }
+      .donut-wrap { min-height:188px; justify-content:flex-start; gap:12px; }
+      #capitalDonut { width:150px; height:150px; }
+      .legend { min-width:88px; gap:7px; }
+      .bot-grid { padding-top:10px; gap:8px; }
+      .bot-row { grid-template-columns:minmax(120px,1fr) 18px 42px; }
+      .chart-panel { min-height:330px; }
+      .chart-head { align-items:flex-start; flex-direction:column; gap:9px; }
+      .chart-title { width:100%; justify-content:space-between; gap:8px; }
+      .today-pnl { font-size:14px; }
+      .tabs { width:100%; justify-content:flex-end; }
+      #equityChart { min-height:238px; }
+      .holdings-panel { min-height:520px; margin-top:12px; }
+      .holding-head { flex-direction:column; align-items:stretch; gap:10px; margin:0 0 12px; }
+      .holding-left-tools { flex-wrap:wrap; gap:8px; align-items:center; }
+      .holding-left-tools h2 { min-width:40px; }
+      .sync-positions-btn { order:2; height:32px; padding:0 11px; }
+      .holding-tabs { order:3; width:100%; flex-wrap:nowrap; overflow-x:auto; justify-content:flex-start; padding:4px; }
+      .holding-tab { min-width:52px; height:32px; }
+      .holding-right-tools { width:100%; justify-content:flex-end; gap:9px; }
+      .page-dots { margin-right:auto; min-width:42px; }
+      .view-toggle-btn { height:34px; min-width:82px; }
+      .scroll { overflow:auto; -webkit-overflow-scrolling:touch; }
+      table { min-width:980px; }
+      th, td { padding:9px 10px; font-size:12px; }
+      th:first-child, td:first-child { position:sticky; left:0; z-index:1; background:#fff; }
+      th:first-child { background:#eef2f6; }
+      .market-toolbar { grid-template-columns:1fr; }
+      .market-meta { gap:6px; }
+      .market-pill { font-size:11px; }
+    }
   </style>
 </head>
 <body>
@@ -602,8 +692,16 @@ INDEX_HTML = r"""<!doctype html>
     let currentCategory = '';
     let latestHoldings = [];
     let latestMarketMeta = [];
-    async function api(path) { const r = await fetch(path); return await r.json(); }
-    async function postJson(path, body) { const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body || {})}); return await r.json(); }
+    async function api(path) {
+      const r = await fetch(path);
+      if (r.status === 401) { location.reload(); return {ok:false, error:'unauthorized'}; }
+      return await r.json();
+    }
+    async function postJson(path, body) {
+      const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body || {})});
+      if (r.status === 401) { location.reload(); return {ok:false, error:'unauthorized'}; }
+      return await r.json();
+    }
     function compactNumber(v) {
       const n = Number(v || 0);
       if (Math.abs(n) >= 1e9) return `${(n/1e9).toFixed(2)}B`;
@@ -903,11 +1001,77 @@ INDEX_HTML = r"""<!doctype html>
 </html>"""
 
 
+LOGIN_HTML = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>CSZY Ultimate V1 登录</title>
+  <style>
+    :root { --bg:#f4f7fb; --ink:#111827; --muted:#667085; --line:#d8dee8; --blue:#2563eb; --red:#c62828; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:22px; background:radial-gradient(circle at top left, #e8f1ff, transparent 36%), var(--bg); color:var(--ink); font-family:ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .login-card { width:min(420px, 100%); background:#fff; border:1px solid var(--line); border-radius:16px; padding:26px; box-shadow:0 24px 70px rgba(15,23,42,.12); }
+    .brand { display:flex; align-items:center; gap:14px; margin-bottom:22px; }
+    .brand img { width:54px; height:54px; border-radius:12px; object-fit:contain; box-shadow:0 10px 24px rgba(15,23,42,.08); }
+    h1 { margin:0; font-size:28px; line-height:1.05; letter-spacing:0; }
+    p { margin:8px 0 0; color:var(--muted); font-size:14px; }
+    label { display:block; color:var(--muted); font-size:13px; font-weight:750; margin-bottom:8px; }
+    input { width:100%; height:46px; border:1px solid var(--line); border-radius:10px; padding:0 13px; font-size:16px; outline:none; }
+    input:focus { border-color:var(--blue); box-shadow:0 0 0 4px rgba(37,99,235,.12); }
+    button { width:100%; height:46px; border:0; border-radius:10px; background:var(--blue); color:#fff; font-size:16px; font-weight:850; margin-top:14px; cursor:pointer; box-shadow:0 12px 26px rgba(37,99,235,.22); }
+    button:active { transform:scale(.98); }
+    .error { min-height:22px; margin-top:12px; color:var(--red); font-size:13px; font-weight:750; }
+    @media (max-width:480px) {
+      body { align-items:flex-start; padding:54px 18px 18px; }
+      .login-card { border-radius:14px; padding:22px; }
+      h1 { font-size:25px; }
+    }
+  </style>
+</head>
+<body>
+  <form class="login-card" id="loginForm">
+    <div class="brand">
+      <img src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" />
+      <div><h1>CSZY Ultimate V1</h1><p>请输入看板登录密码</p></div>
+    </div>
+    <label for="password">登录密码</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" autofocus />
+    <button id="loginBtn" type="submit">进入看板</button>
+    <div class="error" id="error"></div>
+  </form>
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('loginBtn');
+      const err = document.getElementById('error');
+      btn.disabled = true;
+      btn.textContent = '验证中';
+      err.textContent = '';
+      try {
+        const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:document.getElementById('password').value})});
+        const data = await r.json();
+        if (!data.ok) { err.textContent = data.error || '密码错误'; return; }
+        location.reload();
+      } catch (ex) {
+        err.textContent = '网络异常，请稍后再试';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '进入看板';
+      }
+    });
+  </script>
+</body>
+</html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
-    def _send_json(self, payload: dict | list, status: int = 200) -> None:
+    def _send_json(self, payload: dict | list, status: int = 200, headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=_json_default).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -916,6 +1080,15 @@ class Handler(BaseHTTPRequestHandler):
         body = INDEX_HTML.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_login_html(self) -> None:
+        body = LOGIN_HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -950,16 +1123,54 @@ class Handler(BaseHTTPRequestHandler):
     def _check_password(self, payload: dict) -> bool:
         password = str(payload.get("password") or "")
         expected = env_str("DASHBOARD_ACTION_PASSWORD", env_str("MOBILE_CONTROL_TOKEN", ""))
-        return bool(expected and password == expected)
+        return bool(expected and hmac.compare_digest(password, expected))
+
+    def _cookie_value(self, name: str) -> str:
+        """从请求头里读取指定 cookie。"""
+        raw = self.headers.get("Cookie", "")
+        for part in raw.split(";"):
+            if "=" not in part:
+                continue
+            key, value = part.strip().split("=", 1)
+            if key == name:
+                return value
+        return ""
+
+    def _authenticated(self) -> bool:
+        """判断当前浏览器是否已经登录；未配置密码时默认放行。"""
+        expected = _auth_token()
+        if not expected:
+            return True
+        actual = self._cookie_value(AUTH_COOKIE_NAME)
+        return bool(actual and hmac.compare_digest(actual, expected))
+
+    def _handle_login(self, payload: dict) -> None:
+        expected = _login_password()
+        if not expected:
+            self._send_json({"ok": True, "message": "未配置登录密码，已放行"})
+            return
+        password = str(payload.get("password") or "")
+        if not hmac.compare_digest(password, expected):
+            self._send_json({"ok": False, "error": "登录密码错误"}, 403)
+            return
+        cookie = f"{AUTH_COOKIE_NAME}={_auth_token()}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800"
+        self._send_json({"ok": True}, headers={"Set-Cookie": cookie})
 
     def do_GET(self) -> None:
         try:
             parsed = urlparse(self.path)
             path = parsed.path
+            if path.startswith("/assets/"):
+                self._send_asset(path)
+                return
+            if path == "/" and not self._authenticated():
+                self._send_login_html()
+                return
+            if not self._authenticated():
+                self._send_json({"ok": False, "error": "unauthorized"}, 401)
+                return
             if path == "/":
                 self._send_html()
-            elif path.startswith("/assets/"):
-                self._send_asset(path)
             elif path == "/api/capital":
                 self._send_json(_allocation_payload())
             elif path == "/api/risk":
@@ -987,7 +1198,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path = urlparse(self.path).path
             payload = self._read_json()
-            if path == "/api/clear_position":
+            if path == "/api/login":
+                self._handle_login(payload)
+                return
+            if not self._authenticated():
+                self._send_json({"ok": False, "error": "unauthorized"}, 401)
+                return
+            if path == "/api/logout":
+                self._send_json(
+                    {"ok": True},
+                    headers={"Set-Cookie": f"{AUTH_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"},
+                )
+            elif path == "/api/clear_position":
                 if not self._check_password(payload):
                     self._send_json({"ok": False, "error": "密码错误或未配置操作密码"}, 403)
                     return
