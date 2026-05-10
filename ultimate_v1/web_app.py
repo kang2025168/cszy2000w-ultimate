@@ -388,6 +388,7 @@ INDEX_HTML = r"""<!doctype html>
     .refresh-btn.loading { opacity:.72; pointer-events:none; }
     .dash { display:grid; grid-template-columns:minmax(560px, 1.08fr) minmax(520px, .92fr); gap:16px; align-items:stretch; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; box-shadow:0 12px 30px rgba(15,23,42,.04); }
+    .mobile-collapse-toggle { display:none; }
     .left-stack, .right-stack { display:flex; flex-direction:column; gap:16px; min-width:0; }
     .capital-hero { flex:1; }
     .hero-top { display:grid; grid-template-columns:.92fr 1.08fr; gap:12px; }
@@ -507,6 +508,14 @@ INDEX_HTML = r"""<!doctype html>
       .refresh-btn { height:36px; padding:0 14px; border-radius:8px; }
       .phase-popover { top:64px; left:10px; width:calc(100vw - 20px); padding:12px; }
       .panel { padding:12px; border-radius:10px; }
+      .mobile-collapsible { padding:0; overflow:hidden; }
+      .mobile-collapsible:not(.mobile-open) { min-height:0 !important; }
+      .mobile-collapse-toggle { width:100%; height:48px; border:0; border-radius:0; background:#fff; display:flex; align-items:center; justify-content:space-between; padding:0 14px; font-size:15px; font-weight:850; color:var(--ink); }
+      .mobile-collapse-toggle span:last-child { color:var(--blue); font-size:12px; font-weight:850; }
+      .mobile-collapse-body { display:none; padding:12px; border-top:1px solid #eef2f6; }
+      .mobile-collapsible.mobile-open .mobile-collapse-body { display:block; }
+      .mobile-collapsible.mobile-open .mobile-collapse-toggle span:last-child::before { content:"收起"; }
+      .mobile-collapsible:not(.mobile-open) .mobile-collapse-toggle span:last-child::before { content:"展开"; }
       .hero-top, .pool-grid, .right-top { grid-template-columns:1fr; gap:10px; }
       .mode-card { min-height:112px; padding:14px; }
       .mode-card .label { font-size:12px; }
@@ -573,62 +582,74 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
         <div class="phase-popover" id="phasePopover"></div>
-        <div class="panel capital-hero">
-          <div class="hero-top">
-            <div class="mode-card">
-              <div>
-                <div class="label">资金模式</div>
-                <div class="value" id="modeValue">--</div>
+        <div class="panel capital-hero mobile-collapsible" id="capitalPanel">
+          <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('capitalPanel')"><span>账户资金</span><span></span></button>
+          <div class="mobile-collapse-body">
+            <div class="hero-top">
+              <div class="mode-card">
+                <div>
+                  <div class="label">资金模式</div>
+                  <div class="value" id="modeValue">--</div>
+                </div>
+                <div class="small-muted" id="modeHint">等待账户数据</div>
               </div>
-              <div class="small-muted" id="modeHint">等待账户数据</div>
+              <div class="metric-grid" id="metrics"></div>
             </div>
-            <div class="metric-grid" id="metrics"></div>
+            <div class="risk-strip">
+              <div>
+                <h2>风险状态</h2>
+                <div class="risk-line" id="risk"></div>
+              </div>
+              <div class="risk-actions">
+                <button class="clear-btn" onclick="openClearModal()">清仓</button>
+                <span class="risk-badge" id="riskBadge">--</span>
+              </div>
+            </div>
+            <div class="exposure-card">
+              <div class="exposure-head">
+                <span>总持仓比例</span>
+                <span class="exposure-value" id="exposureValue">--</span>
+              </div>
+              <div class="exposure-bar"><div class="exposure-fill" id="exposureFill"></div></div>
+            </div>
+            <div class="pool-grid" id="pools"></div>
           </div>
-          <div class="risk-strip">
-            <div>
-              <h2>风险状态</h2>
-              <div class="risk-line" id="risk"></div>
-            </div>
-            <div class="risk-actions">
-              <button class="clear-btn" onclick="openClearModal()">清仓</button>
-              <span class="risk-badge" id="riskBadge">--</span>
-            </div>
-          </div>
-          <div class="exposure-card">
-            <div class="exposure-head">
-              <span>总持仓比例</span>
-              <span class="exposure-value" id="exposureValue">--</span>
-            </div>
-            <div class="exposure-bar"><div class="exposure-fill" id="exposureFill"></div></div>
-          </div>
-          <div class="pool-grid" id="pools"></div>
         </div>
       </div>
       <div class="right-stack">
         <div class="right-top">
-          <div class="panel donut-panel">
-            <h2>资金比例</h2>
-            <div class="donut-wrap">
-              <canvas id="capitalDonut" width="220" height="220"></canvas>
-              <div class="legend" id="donutLegend"></div>
+          <div class="panel donut-panel mobile-collapsible" id="donutPanel">
+            <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('donutPanel')"><span>资金比例</span><span></span></button>
+            <div class="mobile-collapse-body">
+              <h2>资金比例</h2>
+              <div class="donut-wrap">
+                <canvas id="capitalDonut" width="220" height="220"></canvas>
+                <div class="legend" id="donutLegend"></div>
+              </div>
             </div>
           </div>
-          <div class="panel bot-panel">
-            <h2>机器人</h2>
-            <div class="bot-grid" id="botLights"></div>
+          <div class="panel bot-panel mobile-collapsible" id="botPanel">
+            <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('botPanel')"><span>机器人</span><span></span></button>
+            <div class="mobile-collapse-body">
+              <h2>机器人</h2>
+              <div class="bot-grid" id="botLights"></div>
+            </div>
           </div>
         </div>
-        <div class="panel chart-panel">
-          <div class="chart-head">
-            <div class="chart-title"><h2>收益曲线</h2><span class="today-pnl" id="todayPnl">今日收益 --</span></div>
-            <div class="tabs">
-              <button class="tab active" data-period="week">周</button>
-              <button class="tab" data-period="month">月</button>
-              <button class="tab" data-period="year">年</button>
-              <button class="tab" data-period="all">所有</button>
+        <div class="panel chart-panel mobile-collapsible" id="chartPanel">
+          <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('chartPanel')"><span>收益曲线</span><span></span></button>
+          <div class="mobile-collapse-body">
+            <div class="chart-head">
+              <div class="chart-title"><h2>收益曲线</h2><span class="today-pnl" id="todayPnl">今日收益 --</span></div>
+              <div class="tabs">
+                <button class="tab active" data-period="week">周</button>
+                <button class="tab" data-period="month">月</button>
+                <button class="tab" data-period="year">年</button>
+                <button class="tab" data-period="all">所有</button>
+              </div>
             </div>
+            <canvas id="equityChart" width="760" height="260"></canvas>
           </div>
-          <canvas id="equityChart" width="760" height="260"></canvas>
         </div>
       </div>
     </section>
@@ -756,6 +777,20 @@ INDEX_HTML = r"""<!doctype html>
     }
     function togglePhasePopover() {
       document.getElementById('phasePopover').classList.toggle('show');
+    }
+    function isMobileView() {
+      return window.matchMedia('(max-width: 760px)').matches;
+    }
+    function toggleMobilePanel(id) {
+      const panel = document.getElementById(id);
+      if (!panel) return;
+      panel.classList.toggle('mobile-open');
+      if (id === 'chartPanel' && panel.classList.contains('mobile-open')) {
+        setTimeout(() => loadCurve(currentPeriod), 50);
+      }
+      if (id === 'donutPanel' && panel.classList.contains('mobile-open') && window.latestCapitalPayload) {
+        setTimeout(() => drawDonut(window.latestCapitalPayload), 50);
+      }
     }
     function parseDateOnly(s) {
       if (!s) return null;
@@ -910,6 +945,7 @@ INDEX_HTML = r"""<!doctype html>
       try {
       const [cap, risk, holdings, state, phase] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase')]);
       if (cap.ok) {
+        window.latestCapitalPayload = cap;
         document.getElementById('modeValue').textContent = cap.mode;
         document.getElementById('modeHint').textContent = `cash ${money(cap.cash)} / portfolio ${money(cap.portfolio_value)}`;
         document.getElementById('metrics').innerHTML = [
@@ -953,9 +989,11 @@ INDEX_HTML = r"""<!doctype html>
     });
     let lowerTouchX = null;
     document.getElementById('lowerSlider').addEventListener('touchstart', (e) => {
+      if (isMobileView()) return;
       lowerTouchX = e.touches?.[0]?.clientX ?? null;
     }, {passive:true});
     document.getElementById('lowerSlider').addEventListener('touchend', (e) => {
+      if (isMobileView()) { lowerTouchX = null; return; }
       if (lowerTouchX === null) return;
       const endX = e.changedTouches?.[0]?.clientX ?? lowerTouchX;
       const dx = endX - lowerTouchX;
