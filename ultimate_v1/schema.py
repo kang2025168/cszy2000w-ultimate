@@ -8,6 +8,7 @@ from .db import db_conn
 
 STOCK_OPERATION_COLUMNS = {
     "current_price": "DECIMAL(18,6) NULL",
+    "intraday_volume": "BIGINT NULL",
     "strategy_group": "VARCHAR(8) NULL",
     "capital_pool": "VARCHAR(16) NULL",
     "margin_used": "TINYINT DEFAULT 0",

@@ -86,8 +86,12 @@ ALPACA_DATA_BASE_URL = os.getenv("ALPACA_DATA_BASE_URL", "https://data.alpaca.ma
 B_DATA_FEED = os.getenv("B_DATA_FEED", "iex").strip().lower()
 
 TRADE_ENV = (os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper").strip().lower()
-APCA_API_KEY_ID = os.getenv("APCA_API_KEY_ID", "") or os.getenv("ALPACA_KEY", "")
-APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY", "") or os.getenv("ALPACA_SECRET", "")
+if TRADE_ENV == "live":
+    APCA_API_KEY_ID = os.getenv("APCA_API_KEY_ID", "") or os.getenv("LIVE_APCA_API_KEY_ID", "") or os.getenv("ALPACA_KEY", "")
+    APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY", "") or os.getenv("LIVE_APCA_API_SECRET_KEY", "") or os.getenv("ALPACA_SECRET", "")
+else:
+    APCA_API_KEY_ID = os.getenv("APCA_API_KEY_ID", "") or os.getenv("PAPER_APCA_API_KEY_ID", "") or os.getenv("ALPACA_KEY", "")
+    APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY", "") or os.getenv("PAPER_APCA_API_SECRET_KEY", "") or os.getenv("ALPACA_SECRET", "")
 
 MAX_INTENT_LEN = int(os.getenv("B_INTENT_MAXLEN", "70"))
 

@@ -28,19 +28,20 @@ def strategy_B_buy(symbol: str) -> StrategyResult:
         print(f"[B V1 BLOCK] symbol={symbol} reason={reason}", flush=True)
         return StrategyResult(False, "B", symbol, "buy", reason)
 
-    mark_strategy_group(symbol, "B", capital_pool="B", margin_used=0)
     from app.strategy_b import strategy_B_buy as legacy_strategy_B_buy
 
     ok = bool(legacy_strategy_B_buy(symbol))
-    return StrategyResult(ok, "B", symbol, "buy", "legacy_b_buy_called")
+    if ok:
+        mark_strategy_group(symbol, "B", capital_pool="B", margin_used=0)
+    return StrategyResult(ok, "B", symbol, "buy", "legacy_b_buy_ok" if ok else "legacy_b_buy_blocked")
 
 
 def strategy_B_sell(symbol: str) -> StrategyResult:
     """B 类卖出：卖出不受新开仓资金池限制，直接调用旧 B 卖出函数。"""
     symbol = symbol.upper()
-    mark_strategy_group(symbol, "B", capital_pool="B", margin_used=0)
     from app.strategy_b import strategy_B_sell as legacy_strategy_B_sell
 
     ok = bool(legacy_strategy_B_sell(symbol))
-    return StrategyResult(ok, "B", symbol, "sell", "legacy_b_sell_called")
-
+    if ok:
+        mark_strategy_group(symbol, "B", capital_pool="B", margin_used=0)
+    return StrategyResult(ok, "B", symbol, "sell", "legacy_b_sell_ok" if ok else "legacy_b_sell_no_action")
