@@ -57,9 +57,9 @@ class RiskState:
 
 
 BASE_BUCKET_WEIGHTS = {
-    "A": 0.35,
-    "C": 0.35,
-    "B": 0.30,
+    "A": 0.30,
+    "C": 0.30,
+    "B": 0.40,
     "D": 0.30,
 }
 
@@ -115,9 +115,9 @@ def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
     total = sum(cleaned.values())
     if total <= 0:
         return {
-            "A": 0.35,
-            "C": 0.35,
-            "B": 0.30,
+            "A": 0.30,
+            "C": 0.30,
+            "B": 0.40,
             "D": max(0.0, float(weights.get("D", 0.30))),
         }
     result = {group: cleaned[group] / total for group in principal_groups}
@@ -393,9 +393,9 @@ def _base_exposure_by_trend(trend: str) -> float:
 def _dynamic_weights_from_base(trend: str, vix: float) -> dict[str, float]:
     weights = BASE_BUCKET_WEIGHTS.copy()
     if trend == "向上" and vix < 20:
-        weights.update({"A": 0.30, "C": 0.40, "B": 0.30, "D": 0.30})
+        weights.update({"A": 0.25, "C": 0.30, "B": 0.45, "D": 0.30})
     elif trend == "横盘" or 20 <= vix <= 28:
-        weights.update({"A": 0.40, "C": 0.35, "B": 0.25, "D": 0.20})
+        weights.update({"A": 0.35, "C": 0.30, "B": 0.35, "D": 0.20})
     elif trend == "向下" or vix > 28:
         weights.update({"A": 0.60, "C": 0.25, "B": 0.15, "D": 0.00})
     return _normalize_weights(weights)
