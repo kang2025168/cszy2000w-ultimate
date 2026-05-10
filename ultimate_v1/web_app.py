@@ -18,7 +18,7 @@ from .db import db_conn, fetch_all
 from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import get_risk_state
 from .schema import ensure_schema
-from .state_store import add_command, bot_controls, bot_heartbeats, capital_state_rows, equity_curve, latest_risk_state
+from .state_store import add_command, bot_controls, bot_heartbeats, capital_state_rows, equity_curve, latest_risk_state, set_app_setting
 from .sync_positions import last_sync_error, sync_all_positions
 
 try:
@@ -108,11 +108,14 @@ def _risk_payload() -> dict:
         "max_drawdown": state.max_drawdown,
         "risk_multiplier": state.risk_multiplier,
         "block_all_new": state.block_all_new,
+        "block_a": state.block_a,
         "block_b": state.block_b,
+        "block_c": state.block_c,
         "block_d": state.block_d,
         "suggest_mode": state.suggest_mode,
         "reason": state.reason,
         "market_trend": state.market_trend,
+        "market_reason": state.market_reason,
         "qqq_change_pct": state.qqq_change_pct,
         "vix": state.vix,
         "risk_preference": state.risk_preference,
@@ -406,10 +409,18 @@ INDEX_HTML = r"""<!doctype html>
     .metric { border:1px solid var(--line); border-radius:8px; padding:15px 16px; min-height:76px; }
     .metric-label, .pool-meta, .small-muted { color:var(--muted); font-size:12px; }
     .metric-value { font-size:20px; font-weight:850; margin-top:6px; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .risk-strip { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:12px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
-    .risk-line { display:flex; gap:12px; flex-wrap:wrap; color:var(--muted); font-size:12px; }
+    .risk-strip { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:14px; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:14px; }
+    .risk-line { display:flex; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:12px; margin-top:9px; }
+    .risk-chip { border-radius:999px; padding:5px 9px; background:#eef2f6; color:#475467; font-weight:750; }
+    .risk-chip.ok { background:#e7f6ef; color:#08734f; }
+    .risk-chip.warn { background:#fff3d6; color:#9a5b00; }
+    .risk-chip.danger { background:#fee2e2; color:#b42318; }
+    .risk-chip.info { background:#e0f2fe; color:#075985; }
     .risk-actions { display:flex; align-items:center; gap:10px; flex:0 0 auto; }
     .risk-badge { font-size:13px; font-weight:700; padding:5px 9px; border-radius:999px; background:#e7f6ef; color:var(--green); white-space:nowrap; }
+    .risk-badge.warn { background:#fff3d6; color:#9a5b00; }
+    .risk-badge.danger { background:#fee2e2; color:#b42318; }
+    .risk-control-select { height:34px; border:1px solid var(--line); border-radius:7px; padding:0 10px; background:#fff; color:var(--ink); font-weight:800; }
     .clear-btn { height:30px; padding:0 14px; border:0; border-radius:7px; background:#fee2e2; color:#b42318; font-weight:850; }
     .clear-btn:hover { background:#fecaca; }
     .exposure-card { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:#fbfcfe; }
@@ -534,7 +545,7 @@ INDEX_HTML = r"""<!doctype html>
       .metric { min-height:70px; padding:12px; }
       .metric-label, .pool-meta, .small-muted { font-size:11px; }
       .metric-value { font-size:17px; margin-top:7px; }
-      .risk-strip { align-items:flex-start; flex-direction:column; padding:12px; }
+      .risk-strip { grid-template-columns:1fr; align-items:flex-start; padding:12px; }
       .risk-line { gap:10px; line-height:1.5; }
       .risk-actions { width:100%; justify-content:flex-end; }
       .clear-btn { height:32px; }
@@ -613,6 +624,11 @@ INDEX_HTML = r"""<!doctype html>
                 <div class="risk-line" id="risk"></div>
               </div>
               <div class="risk-actions">
+                <select class="risk-control-select" id="riskPreferenceSelect" onchange="updateRiskPreference(this.value)">
+                  <option value="保守">保守</option>
+                  <option value="中性">中性</option>
+                  <option value="激进">激进</option>
+                </select>
                 <button class="clear-btn" onclick="openClearModal()">清仓</button>
                 <span class="risk-badge" id="riskBadge">--</span>
               </div>
@@ -961,6 +977,19 @@ INDEX_HTML = r"""<!doctype html>
       if (!payload.ok) return;
       renderMarketCategories(payload);
     }
+    function riskChip(label, value, tone='info') {
+      return `<span class="risk-chip ${tone}">${label}=${value}</span>`;
+    }
+    function riskTone(risk) {
+      if (risk.block_all_new || Number(risk.risk_multiplier || 0) <= 0 || risk.market_trend === '向下' || Number(risk.vix || 0) > 28) return 'danger';
+      if (risk.suggest_mode || risk.market_trend === '横盘' || Number(risk.vix || 0) >= 20 || Number(risk.recommended_exposure || 0) < 0.5) return 'warn';
+      return 'ok';
+    }
+    async function updateRiskPreference(value) {
+      const result = await postJson('/api/risk_settings', {risk_preference:value});
+      if (!result.ok) { alert(result.error || '风险偏好更新失败'); return; }
+      await loadAll();
+    }
     async function loadAll() {
       const refreshBtn = document.querySelector('.refresh-btn');
       if (refreshBtn) refreshBtn.classList.add('loading');
@@ -985,14 +1014,26 @@ INDEX_HTML = r"""<!doctype html>
         document.getElementById('modeValue').textContent = 'ERROR';
         document.getElementById('metrics').innerHTML = metric('账户', cap.error || '不可用');
       }
-      document.getElementById('riskBadge').textContent = risk.suggest_mode ? `建议 ${risk.suggest_mode}` : '正常';
+      const tone = riskTone(risk);
+      const riskBadge = document.getElementById('riskBadge');
+      riskBadge.textContent = risk.suggest_mode ? `建议 ${risk.suggest_mode}` : (tone === 'danger' ? '高风险' : tone === 'warn' ? '观察' : '正常');
+      riskBadge.className = `risk-badge ${tone === 'ok' ? '' : tone}`;
+      const riskSelect = document.getElementById('riskPreferenceSelect');
+      if (riskSelect) riskSelect.value = risk.risk_preference || '中性';
       document.getElementById('risk').innerHTML = [
-        `risk=${Number(risk.risk_multiplier).toFixed(2)}`, `daily=${pct(risk.daily_pnl_pct)}`,
-        `loss=${risk.loss_days}`, `drawdown=${pct(risk.max_drawdown)}`,
-        `趋势=${risk.market_trend || '--'}`, `QQQ=${Number(risk.qqq_change_pct || 0).toFixed(2)}%`,
-        `VIX=${Number(risk.vix || 0).toFixed(1)}`, `建议仓位=${(Number(risk.recommended_exposure || 0) * 100).toFixed(0)}%`,
-        `B=${risk.block_b?'停':'开'}`, `D=${risk.block_d?'停':'开'}`
-      ].map(x => `<span>${x}</span>`).join('');
+        riskChip('风险', Number(risk.risk_multiplier || 0).toFixed(2), tone),
+        riskChip('日亏', pct(risk.daily_pnl_pct), Number(risk.daily_pnl_pct || 0) < 0 ? 'danger' : 'ok'),
+        riskChip('连亏', risk.loss_days || 0, Number(risk.loss_days || 0) > 0 ? 'warn' : 'ok'),
+        riskChip('回撤', pct(risk.max_drawdown), Number(risk.max_drawdown || 0) > 0.04 ? 'danger' : 'ok'),
+        riskChip('趋势', risk.market_trend || '--', risk.market_trend === '向上' ? 'ok' : risk.market_trend === '向下' ? 'danger' : 'warn'),
+        riskChip('QQQ', `${Number(risk.qqq_change_pct || 0).toFixed(2)}%`, Number(risk.qqq_change_pct || 0) < 0 ? 'warn' : 'ok'),
+        riskChip('VIX', Number(risk.vix || 0).toFixed(1), Number(risk.vix || 0) > 28 ? 'danger' : Number(risk.vix || 0) >= 20 ? 'warn' : 'ok'),
+        riskChip('本金仓位', `${(Number(risk.recommended_exposure || 0) * 100).toFixed(0)}%`, Number(risk.recommended_exposure || 0) < 0.5 ? 'warn' : 'ok'),
+        riskChip('A', risk.block_a ? '停' : '开', risk.block_a ? 'danger' : 'ok'),
+        riskChip('C', risk.block_c ? '停' : '开', risk.block_c ? 'danger' : 'ok'),
+        riskChip('B', risk.block_b ? '停' : '开', risk.block_b ? 'danger' : 'ok'),
+        riskChip('D', risk.block_d ? '停' : '开', risk.block_d ? 'danger' : 'ok')
+      ].join('');
       window.latestBotProcesses = state.bot_processes || [];
       renderBots(state.bot_heartbeats || [], state.bot_controls || []);
       renderPhase(phase);
@@ -1287,6 +1328,13 @@ class Handler(BaseHTTPRequestHandler):
                 enabled = bool(enabled_raw is True or str(enabled_raw).lower() in {"1", "true", "yes", "on"})
                 set_bot_runtime(bot_name, enabled)
                 self._send_json({"ok": True, "bot_name": bot_name, "enabled": enabled})
+            elif path == "/api/risk_settings":
+                risk_preference = str(payload.get("risk_preference") or "").strip()
+                if risk_preference not in {"保守", "中性", "激进"}:
+                    self._send_json({"ok": False, "error": "不支持的风险偏好"}, 400)
+                    return
+                set_app_setting("RISK_PREFERENCE", risk_preference)
+                self._send_json({"ok": True, "risk_preference": risk_preference})
             elif path == "/api/sync_positions":
                 ok = sync_all_positions()
                 if not ok:

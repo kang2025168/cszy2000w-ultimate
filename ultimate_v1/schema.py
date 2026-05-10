@@ -16,12 +16,15 @@ STOCK_OPERATION_COLUMNS = {
 }
 
 RISK_STATE_COLUMNS = {
+    "block_a_buy": "TINYINT DEFAULT 0",
+    "block_c_buy": "TINYINT DEFAULT 0",
     "market_trend": "VARCHAR(16) DEFAULT '横盘'",
+    "market_reason": "VARCHAR(512) DEFAULT ''",
     "qqq_change_pct": "DECIMAL(10,4) DEFAULT 0",
     "vix": "DECIMAL(10,4) DEFAULT 18",
     "risk_preference": "VARCHAR(16) DEFAULT '中性'",
     "allocation_mode": "VARCHAR(16) DEFAULT '动态分仓'",
-    "recommended_exposure": "DECIMAL(10,4) DEFAULT 0.5",
+    "recommended_exposure": "DECIMAL(10,4) DEFAULT 0.6",
     "recommended_weights": "JSON NULL",
 }
 
@@ -141,21 +144,24 @@ def ensure_control_state_tables() -> None:
                   id BIGINT AUTO_INCREMENT PRIMARY KEY,
                   mode VARCHAR(16) NOT NULL,
                   risk_multiplier DECIMAL(10,4) DEFAULT 1,
-                  daily_pnl_pct DECIMAL(10,6) DEFAULT 0,
-                  loss_days INT DEFAULT 0,
-                  max_drawdown_pct DECIMAL(10,6) DEFAULT 0,
-                  block_all_new TINYINT DEFAULT 0,
-                  block_b_buy TINYINT DEFAULT 0,
-                  block_d_buy TINYINT DEFAULT 0,
-                  suggest_capital_mode VARCHAR(16),
-                  reason VARCHAR(128),
-                  market_trend VARCHAR(16) DEFAULT '横盘',
-                  qqq_change_pct DECIMAL(10,4) DEFAULT 0,
-                  vix DECIMAL(10,4) DEFAULT 18,
-                  risk_preference VARCHAR(16) DEFAULT '中性',
-                  allocation_mode VARCHAR(16) DEFAULT '动态分仓',
-                  recommended_exposure DECIMAL(10,4) DEFAULT 0.5,
-                  recommended_weights JSON NULL,
+	                  daily_pnl_pct DECIMAL(10,6) DEFAULT 0,
+	                  loss_days INT DEFAULT 0,
+	                  max_drawdown_pct DECIMAL(10,6) DEFAULT 0,
+	                  block_all_new TINYINT DEFAULT 0,
+	                  block_a_buy TINYINT DEFAULT 0,
+	                  block_b_buy TINYINT DEFAULT 0,
+	                  block_c_buy TINYINT DEFAULT 0,
+	                  block_d_buy TINYINT DEFAULT 0,
+	                  suggest_capital_mode VARCHAR(16),
+	                  reason VARCHAR(128),
+	                  market_trend VARCHAR(16) DEFAULT '横盘',
+	                  market_reason VARCHAR(512) DEFAULT '',
+	                  qqq_change_pct DECIMAL(10,4) DEFAULT 0,
+	                  vix DECIMAL(10,4) DEFAULT 18,
+	                  risk_preference VARCHAR(16) DEFAULT '中性',
+	                  allocation_mode VARCHAR(16) DEFAULT '动态分仓',
+	                  recommended_exposure DECIMAL(10,4) DEFAULT 0.6,
+	                  recommended_weights JSON NULL,
                   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   INDEX idx_updated_at (updated_at)
 	                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -165,6 +171,15 @@ def ensure_control_state_tables() -> None:
                 if not _column_exists(conn, "risk_state", column):
                     cur.execute(f"ALTER TABLE risk_state ADD COLUMN {column} {ddl}")
                     print(f"[SCHEMA] added risk_state.{column}", flush=True)
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_settings (
+                  setting_key VARCHAR(128) PRIMARY KEY,
+                  setting_value VARCHAR(512) NOT NULL DEFAULT '',
+                  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS capital_state (

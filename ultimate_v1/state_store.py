@@ -35,10 +35,11 @@ def write_risk_state(state: RiskState) -> None:
                 """
                 INSERT INTO risk_state (
                     mode, risk_multiplier, daily_pnl_pct, loss_days, max_drawdown_pct,
-                    block_all_new, block_b_buy, block_d_buy, suggest_capital_mode,
-                    reason, market_trend, qqq_change_pct, vix, risk_preference,
+                    block_all_new, block_a_buy, block_b_buy, block_c_buy, block_d_buy,
+                    suggest_capital_mode, reason, market_trend, market_reason,
+                    qqq_change_pct, vix, risk_preference,
                     allocation_mode, recommended_exposure, recommended_weights, updated_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 """,
                 (
                     state.mode,
@@ -47,11 +48,14 @@ def write_risk_state(state: RiskState) -> None:
                     state.loss_days,
                     state.max_drawdown,
                     1 if state.block_all_new else 0,
+                    1 if state.block_a else 0,
                     1 if state.block_b else 0,
+                    1 if state.block_c else 0,
                     1 if state.block_d else 0,
                     state.suggest_mode,
                     state.reason,
                     state.market_trend,
+                    state.market_reason,
                     state.qqq_change_pct,
                     state.vix,
                     state.risk_preference,
@@ -59,6 +63,26 @@ def write_risk_state(state: RiskState) -> None:
                     state.recommended_exposure,
                     json.dumps(state.recommended_weights or {}, ensure_ascii=False),
                 ),
+            )
+
+
+def get_app_setting(key: str, default: str = "") -> str:
+    row = fetch_one("SELECT setting_value FROM app_settings WHERE setting_key=%s LIMIT 1", (key,))
+    if row and row.get("setting_value") is not None:
+        return str(row.get("setting_value") or "")
+    return default
+
+
+def set_app_setting(key: str, value: str) -> None:
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO app_settings (setting_key, setting_value, updated_at)
+                VALUES (%s, %s, NOW())
+                ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value), updated_at=NOW()
+                """,
+                (key, value),
             )
 
 

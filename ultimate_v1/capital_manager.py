@@ -45,17 +45,17 @@ def _month_start(today: date | None = None) -> date:
 
 
 def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
-    """读取当前资金模式的基础比例；优先使用风险机器人给出的动态 A/B/C/D 仓位建议。"""
+    """读取当前资金模式的基础比例；A/B/C 是本金池比例，D 是独立保证金额度比例。"""
     try:
         risk = get_risk_state()
         if risk.recommended_weights:
-            weights = {
-                group: max(0.0, float(risk.recommended_weights.get(group, 0.0)))
-                for group in ("A", "B", "C", "D")
-            }
-            total = sum(weights.values())
-            if total > 0:
-                return {group: value / total for group, value in weights.items()}, weights.get("D", 0.0) > 0
+            weights = {group: max(0.0, float(risk.recommended_weights.get(group, 0.0))) for group in ("A", "B", "C", "D")}
+            principal_total = weights["A"] + weights["B"] + weights["C"]
+            if principal_total > 0:
+                weights["A"] /= principal_total
+                weights["B"] /= principal_total
+                weights["C"] /= principal_total
+                return weights, weights.get("D", 0.0) > 0
     except Exception as exc:
         print(f"[CAPITAL WARN] dynamic weights unavailable, fallback mode weights: {exc}", flush=True)
 
@@ -65,8 +65,6 @@ def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
         "ATTACK": (0.25, 0.45, 0.30, True),
         "RISK_OFF": (0.70, 0.00, 0.30, False),
     }.get(mode, (0.35, 0.30, 0.35, True))
-    # D 是保证金日内池，但不吃满保证金额度，只允许使用本金的 30%。
-    # SAFE/RISK_OFF 下 D 仍然为 0。
     d = 0.30 if allow_d else 0.0
     return {"A": a, "B": b, "C": c, "D": d}, allow_d
 
@@ -84,8 +82,12 @@ def _risk_percents() -> tuple[float, dict[str, float]]:
     if risk.block_all_new:
         total_pct = 0.0
         pool_pct = {group: 0.0 for group in pool_pct}
+    if risk.block_a:
+        pool_pct["A"] = 0.0
     if risk.block_b:
         pool_pct["B"] = 0.0
+    if risk.block_c:
+        pool_pct["C"] = 0.0
     if risk.block_d:
         pool_pct["D"] = 0.0
     return total_pct, pool_pct
@@ -99,13 +101,13 @@ def _ensure_monthly_capital_pools(mode: str, snap) -> date:
         "A": snap.equity * weights["A"],
         "B": snap.equity * weights["B"],
         "C": snap.equity * weights["C"],
-        "D": snap.equity * weights["D"],
+        "D": snap.buying_power * weights["D"],
     }
     total_pct, pool_pct = _risk_percents()
     with db_conn() as conn:
         with conn.cursor() as cur:
             for group in ("A", "B", "C", "D"):
-                risk_target = base_targets[group] * total_pct * pool_pct[group]
+                risk_target = base_targets[group] * pool_pct[group] if group == "D" else base_targets[group] * total_pct * pool_pct[group]
                 cur.execute(
                     """
                     INSERT IGNORE INTO capital_pools (
@@ -180,7 +182,7 @@ def refresh_capital_pool_usage(month: date | None = None) -> list[dict]:
                 if not row:
                     continue
                 base_target = float(row.get("base_target_capital") or 0)
-                risk_target = base_target * total_pct * pool_pct[group]
+                risk_target = base_target * pool_pct[group] if group == "D" else base_target * total_pct * pool_pct[group]
                 used_capital = used[group]
                 available = max(0.0, risk_target - used_capital)
                 used_percent = used_capital / risk_target if risk_target > 0 else 0.0

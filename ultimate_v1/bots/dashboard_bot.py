@@ -39,9 +39,15 @@ def refresh_dashboard_state(sync_positions: bool = False) -> list[dict]:
         if risk.block_all_new:
             can_open = False
             reason = risk.reason or "risk_block_all"
+        elif group == "A" and risk.block_a:
+            can_open = False
+            reason = risk.reason or "risk_block_a"
         elif group == "B" and risk.block_b:
             can_open = False
             reason = risk.reason or "risk_block_b"
+        elif group == "C" and risk.block_c:
+            can_open = False
+            reason = risk.reason or "risk_block_c"
         elif group == "D" and risk.block_d:
             can_open = False
             reason = risk.reason or "risk_block_d"
