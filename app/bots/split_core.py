@@ -192,9 +192,15 @@ def run_sell_round(conn, config: SplitBotConfig, phase: str) -> tuple[object, bo
     return conn, traded_any
 
 
-def _buy_allowed(conn, phase: str, control: dict) -> bool:
+def _buy_allowed(conn, config: SplitBotConfig, phase: str, control: dict) -> bool:
     if phase != "regular":
         tb.log.info(f"[BUY BOT] skipped: phase={phase}")
+        return False
+    if "B" in config.strategies and control.get("strategy_b_enabled") != 1:
+        tb.log.info("[BUY BOT] skipped: strategy_b_enabled=0")
+        return False
+    if "F" in config.strategies and control.get("strategy_f_enabled") != 1:
+        tb.log.info("[BUY BOT] skipped: strategy_f_enabled=0")
         return False
     if control.get("sell_only_mode") == 1:
         tb.log.info("[BUY BOT] skipped: sell_only_mode=1")
@@ -215,7 +221,7 @@ def run_buy_round(conn, config: SplitBotConfig, phase: str, control: dict) -> tu
     conn = tb.ensure_conn_alive(conn)
     traded_any = False
 
-    if not _buy_allowed(conn, phase, control):
+    if not _buy_allowed(conn, config, phase, control):
         return conn, traded_any
 
     if "F" in config.strategies:
@@ -343,7 +349,9 @@ def main_loop(role: str) -> None:
                 f"[{role.upper()} BOT] loop round={round_no} phase={phase} "
                 f"emergency_stop={control.get('emergency_stop')} "
                 f"sell_only={control.get('sell_only_mode')} "
-                f"global_buy={control.get('global_buy_enabled')}"
+                f"global_buy={control.get('global_buy_enabled')} "
+                f"B={control.get('strategy_b_enabled')} "
+                f"F={control.get('strategy_f_enabled')}"
             )
 
             if control.get("emergency_stop") == 1:
