@@ -174,7 +174,7 @@ def sync_open_holding_from_position(pos, strategy_group: str = "B") -> None:
                 SELECT id, strategy_group, stock_type, capital_pool
                 FROM position_holdings
                 WHERE symbol=%s AND status='open'
-                ORDER BY FIELD(strategy_group, 'A','C','B','D','UNKNOWN') ASC, id DESC LIMIT 1
+                    ORDER BY FIELD(strategy_group, 'A','C','B','F','D','UNKNOWN') ASC, id DESC LIMIT 1
                 """,
                 (symbol,),
             )
@@ -184,17 +184,17 @@ def sync_open_holding_from_position(pos, strategy_group: str = "B") -> None:
                 # 旧数据常见情况是 strategy_group=UNKNOWN，但 stock_type 已经被改成 A/B/C/D。
                 raw_group = (row.get("strategy_group") or "").upper()
                 raw_type = (row.get("stock_type") or "").upper()
-                if raw_type in {"A", "B", "C", "D"}:
+                if raw_type in {"A", "B", "C", "D", "F"}:
                     keep_group = raw_type
                     keep_type = raw_type
-                elif raw_group in {"A", "B", "C", "D"}:
+                elif raw_group in {"A", "B", "C", "D", "F"}:
                     keep_group = raw_group
                     keep_type = raw_group
                 else:
                     keep_group = (strategy_group or "B").upper()
                     keep_type = keep_group
                 raw_pool = (row.get("capital_pool") or "").upper()
-                keep_pool = raw_pool if raw_pool in {"A", "B", "C", "D"} else keep_group
+                keep_pool = raw_pool if raw_pool in {"A", "B", "C", "D", "F"} else keep_group
                 cur.execute(
                     """
                     UPDATE position_holdings

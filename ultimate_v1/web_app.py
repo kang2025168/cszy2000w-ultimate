@@ -135,8 +135,8 @@ def _holdings_payload() -> dict:
         """
         SELECT symbol,
                CASE
-                   WHEN strategy_group IN ('A','B','C','D') THEN strategy_group
-                   WHEN stock_type IN ('A','B','C','D') THEN stock_type
+                   WHEN strategy_group IN ('A','B','C','D','F') THEN strategy_group
+                   WHEN stock_type IN ('A','B','C','D','F') THEN stock_type
                    ELSE strategy_group
                END AS strategy_group,
                stock_type, status, qty, avg_entry_price,
@@ -800,7 +800,7 @@ INDEX_HTML = r"""<!doctype html>
         : `<div class="legend-row"><span class="small-muted">暂无持仓占用</span></div>`;
     }
     function renderBots(bots, controls) {
-      const known = ['dashboard_bot','risk_bot','ac_bot','b_buy_bot','b_sell_bot','d_buy_bot','d_sell_bot'];
+      const known = ['dashboard_bot','risk_bot','ac_bot','b_buy_bot','b_sell_bot','f_buy_bot','f_sell_bot','d_buy_bot','d_sell_bot'];
       const byName = Object.fromEntries((bots || []).map(b => [b.bot_name, b]));
       const processMap = Object.fromEntries(((window.latestBotProcesses || [])).map(b => [b.bot_name, b]));
       const controlMap = Object.fromEntries((controls || []).map(b => [b.bot_name, Number(b.enabled) === 1]));

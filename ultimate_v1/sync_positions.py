@@ -16,7 +16,7 @@ from .position_holdings import mark_missing_from_alpaca, summary_counts, sync_op
 from .schema import ensure_schema
 
 LAST_SYNC_ERROR = ""
-VALID_GROUPS = {"A", "B", "C", "D"}
+VALID_GROUPS = {"A", "B", "C", "D", "F"}
 
 
 def last_sync_error() -> str:
@@ -79,7 +79,7 @@ def _table_columns(conn, table: str) -> dict[str, str]:
 def _has_single_symbol_unique_key(conn, table: str) -> bool:
     """判断旧表是否仍然是 stock_code 单字段唯一。
 
-    这种表不能同时保存 QQQ/N 和 QQQ/C，遇到非 A/B/C/D 控制行时要保护它。
+    这种表不能同时保存 QQQ/N 和 QQQ/C，遇到非 A/B/C/D/F 控制行时要保护它。
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -101,7 +101,7 @@ def _has_single_symbol_unique_key(conn, table: str) -> bool:
 
 
 def _normalize_group(value: Any, default: str = "B") -> str:
-    """只接受 A/B/C/D，识别不到就给默认 B。"""
+    """只接受 A/B/C/D/F，识别不到就给默认 B。"""
     group = str(value or "").strip().upper()
     return group if group in VALID_GROUPS else default
 
@@ -110,8 +110,8 @@ def _resolve_strategy_group(conn, ops_table: str, symbol: str) -> str:
     """同步到 stock_operations 时保留人工维护过的股票类型。
 
     优先级：
-    1. stock_operations 里已有 A/B/C/D 类型；
-    2. position_holdings 里已有 A/B/C/D 类型；
+    1. stock_operations 里已有 A/B/C/D/F 类型；
+    2. position_holdings 里已有 A/B/C/D/F 类型；
     3. 新券商持仓默认归 B。
     """
     with conn.cursor() as cur:
@@ -120,9 +120,9 @@ def _resolve_strategy_group(conn, ops_table: str, symbol: str) -> str:
             SELECT stock_type, strategy_group
             FROM `{ops_table}`
             WHERE stock_code=%s
-              AND (stock_type IN ('A','B','C','D') OR strategy_group IN ('A','B','C','D'))
+              AND (stock_type IN ('A','B','C','D','F') OR strategy_group IN ('A','B','C','D','F'))
             ORDER BY is_bought DESC,
-                     FIELD(COALESCE(NULLIF(stock_type,''), strategy_group), 'A','C','B','D'),
+                     FIELD(COALESCE(NULLIF(stock_type,''), strategy_group), 'A','C','B','F','D'),
                      stock_code
             LIMIT 1
             """,
@@ -137,9 +137,9 @@ def _resolve_strategy_group(conn, ops_table: str, symbol: str) -> str:
             SELECT strategy_group, stock_type
             FROM position_holdings
             WHERE symbol=%s
-              AND (strategy_group IN ('A','B','C','D') OR stock_type IN ('A','B','C','D'))
+              AND (strategy_group IN ('A','B','C','D','F') OR stock_type IN ('A','B','C','D','F'))
             ORDER BY FIELD(status, 'open', 'needs_review', 'closed'),
-                     FIELD(COALESCE(NULLIF(stock_type,''), strategy_group), 'A','C','B','D'),
+                     FIELD(COALESCE(NULLIF(stock_type,''), strategy_group), 'A','C','B','F','D'),
                      id DESC
             LIMIT 1
             """,
@@ -280,7 +280,7 @@ def _sync_stock_operations_from_positions(positions: list[Any]) -> dict[str, int
                 "stock_type": group,
                 "strategy_group": group,
                 "capital_pool": group,
-                "margin_used": 1 if group == "D" else 0,
+                "margin_used": 1 if group in {"D", "F"} else 0,
                 "qty": qty_value,
                 "cost_price": avg,
                 "close_price": current,
@@ -332,7 +332,7 @@ def _sync_stock_operations_from_positions(positions: list[Any]) -> dict[str, int
                     UPDATE `{table}`
                     SET {', '.join(pairs)}
                     WHERE is_bought=1
-                      AND stock_type IN ('A','B','C','D')
+                      AND stock_type IN ('A','B','C','D','F')
                       {where_symbol}
                     """,
                     tuple(args + where_args),

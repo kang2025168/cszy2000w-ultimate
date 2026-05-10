@@ -260,13 +260,24 @@ def ensure_control_state_tables() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
-            for bot_name in ("dashboard_bot", "risk_bot", "ac_bot", "b_buy_bot", "b_sell_bot", "d_buy_bot", "d_sell_bot"):
+            default_controls = {
+                "dashboard_bot": 1,
+                "risk_bot": 1,
+                "ac_bot": 1,
+                "b_buy_bot": 1,
+                "b_sell_bot": 1,
+                "f_buy_bot": 0,
+                "f_sell_bot": 0,
+                "d_buy_bot": 1,
+                "d_sell_bot": 1,
+            }
+            for bot_name, enabled in default_controls.items():
                 cur.execute(
                     """
                     INSERT IGNORE INTO bot_controls (bot_name, enabled)
-                    VALUES (%s, 1)
+                    VALUES (%s, %s)
                     """,
-                    (bot_name,),
+                    (bot_name, enabled),
                 )
             cur.execute(
                 """

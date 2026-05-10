@@ -89,6 +89,8 @@ F_TARGET_NOTIONAL_USD = float(os.getenv("F_TARGET_NOTIONAL_USD", "2500"))
 F_MAX_NOTIONAL_USD = float(os.getenv("F_MAX_NOTIONAL_USD", "2500"))
 F_MIN_BUYING_POWER = float(os.getenv("F_MIN_BUYING_POWER", "2500"))
 F_BP_USE_RATIO = float(os.getenv("F_BP_USE_RATIO", "0.98"))
+F_MARGIN_POOL_PCT = float(os.getenv("F_MARGIN_POOL_PCT", "0.30"))
+F_MIN_TRADE_NOTIONAL = float(os.getenv("F_MIN_TRADE_NOTIONAL", "500"))
 
 # F 的止损比 B 略宽：B 是 -2%，F 默认 -3%，给二次启动一点洗盘空间。
 F_INIT_STOP_PCT = float(os.getenv("F_INIT_STOP_PCT", "0.03"))
@@ -181,6 +183,78 @@ def _load_one_f_row(conn, code: str):
     with conn.cursor() as cur:
         cur.execute(sql, (code,))
         return cur.fetchone()
+
+
+def _get_active_f_used_capital(conn) -> float:
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT market_value, cost_basis, qty, current_price, avg_entry_price
+                FROM position_holdings
+                WHERE status='open'
+                  AND UPPER(
+                    CASE
+                      WHEN strategy_group IN ('A','B','C','D','F') THEN strategy_group
+                      WHEN stock_type IN ('A','B','C','D','F') THEN stock_type
+                      ELSE strategy_group
+                    END
+                  )='F'
+                """
+            )
+            rows = cur.fetchall() or []
+        total = 0.0
+        for row in rows:
+            if row.get("market_value") is not None:
+                total += abs(float(row.get("market_value") or 0.0))
+                continue
+            if row.get("cost_basis") is not None:
+                total += abs(float(row.get("cost_basis") or 0.0))
+                continue
+            qty = float(row.get("qty") or 0.0)
+            price = row.get("current_price")
+            if price is None:
+                price = row.get("avg_entry_price")
+            total += abs(qty * float(price or 0.0))
+        if total > 0:
+            return total
+    except Exception:
+        pass
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT qty, current_price, close_price, cost_price
+            FROM `{OPS_TABLE}`
+            WHERE stock_type='F' AND is_bought=1
+            """
+        )
+        rows = cur.fetchall() or []
+    total = 0.0
+    for row in rows:
+        qty = float(row.get("qty") or 0.0)
+        price = row.get("current_price")
+        if price is None:
+            price = row.get("close_price")
+        if price is None:
+            price = row.get("cost_price")
+        total += abs(qty * float(price or 0.0))
+    return total
+
+
+def _f_margin_buy_plan(conn, buying_power: float) -> dict:
+    buying_power = max(0.0, float(buying_power or 0.0))
+    pool_cap = buying_power * max(0.0, float(F_MARGIN_POOL_PCT))
+    used = _get_active_f_used_capital(conn)
+    available = max(0.0, pool_cap - used)
+    target = min(float(F_TARGET_NOTIONAL_USD), float(F_MAX_NOTIONAL_USD), available, buying_power * float(F_BP_USE_RATIO))
+    return {
+        "pool_pct": float(F_MARGIN_POOL_PCT),
+        "pool_cap": pool_cap,
+        "used": used,
+        "available": available,
+        "target": target,
+    }
 
 
 def _update_ops_f_fields(conn, code: str, **kwargs):
@@ -701,12 +775,28 @@ def strategy_F_buy(code: str) -> bool:
 
         tc = _get_trading_client()
         buying_power = _get_buying_power(tc)
-        required_bp = max(float(F_MIN_BUYING_POWER), float(F_TARGET_NOTIONAL_USD) / max(float(F_BP_USE_RATIO), 0.01))
+        margin_plan = _f_margin_buy_plan(conn, buying_power)
+        print(
+            f"[F BUY PLAN] {code} buying_power={buying_power:.2f} "
+            f"pool_pct={margin_plan['pool_pct']:.2%} pool_cap={margin_plan['pool_cap']:.2f} "
+            f"used={margin_plan['used']:.2f} available={margin_plan['available']:.2f} "
+            f"target={margin_plan['target']:.2f}",
+            flush=True,
+        )
+        if margin_plan["target"] < float(F_MIN_TRADE_NOTIONAL):
+            print(
+                f"[F BUY] {code} skip: F margin pool target={margin_plan['target']:.2f} "
+                f"< min_trade={float(F_MIN_TRADE_NOTIONAL):.2f}",
+                flush=True,
+            )
+            return False
+
+        required_bp = float(margin_plan["target"]) / max(float(F_BP_USE_RATIO), 0.01)
         if buying_power < required_bp:
             print(f"[F BUY] {code} skip: buying_power={buying_power:.2f} < required_bp={required_bp:.2f}", flush=True)
             return False
 
-        target = min(float(F_TARGET_NOTIONAL_USD), float(F_MAX_NOTIONAL_USD), buying_power * float(F_BP_USE_RATIO))
+        target = float(margin_plan["target"])
         qty = int(math.floor(target / price)) if price > 0 else 0
         if qty <= 0:
             print(f"[F BUY] {code} skip: qty={qty} target={target:.2f} price={price:.2f}", flush=True)
@@ -788,6 +878,9 @@ def strategy_F_buy(code: str) -> bool:
             b_last_profit=0,
             can_sell=1,
             can_buy=0,
+            strategy_group="F",
+            capital_pool="F",
+            margin_used=1,
             last_order_side="buy",
             last_order_intent=_intent_short(intent),
             last_order_id=str(order_id or ""),

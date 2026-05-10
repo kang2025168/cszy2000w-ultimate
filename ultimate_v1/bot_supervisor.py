@@ -44,6 +44,24 @@ BOT_SPECS: dict[str, BotSpec] = {
             "ALLOW_LIVE_FORCE_PHASE": "1",
         },
     ),
+    "f_buy_bot": BotSpec(
+        "app.buy_bot",
+        (),
+        {
+            "BOT_STRATEGIES": "F",
+            "BOT_PROCESS_NAME": "buy_bot",
+            "BOT_SLEEP_BETWEEN_ROUNDS": "60",
+        },
+    ),
+    "f_sell_bot": BotSpec(
+        "app.sell_bot",
+        (),
+        {
+            "BOT_STRATEGIES": "F",
+            "BOT_PROCESS_NAME": "sell_bot",
+            "BOT_SLEEP_BETWEEN_ROUNDS": "60",
+        },
+    ),
     "d_buy_bot": BotSpec("ultimate_v1.bots.d_buy_bot", ("--loop", "--interval", "30")),
     "d_sell_bot": BotSpec("ultimate_v1.bots.d_sell_bot", ("--loop", "--interval", "30")),
 }
