@@ -43,6 +43,7 @@ class RiskState:
 
     market_trend: str = "横盘"
     market_reason: str = ""
+    qqq_price: float = 0.0
     qqq_change_pct: float = 0.0
     vix: float = 18.0
 
@@ -204,13 +205,14 @@ def _fetch_vix_value() -> tuple[float, str]:
     return env_float("RISK_VIX", 18.0), "环境变量兜底"
 
 
-def _fetch_market_inputs() -> tuple[str, str, float, float, str]:
+def _fetch_market_inputs() -> tuple[str, str, float, float, float, str]:
+    qqq_price = env_float("RISK_QQQ_PRICE", 0.0)
     qqq_change_pct = env_float("RISK_QQQ_CHANGE_PCT", 0.0)
     vix, vix_source = _fetch_vix_value()
 
     manual_trend = _risk_setting("RISK_MARKET_TREND", "")
     if manual_trend in {"向上", "横盘", "向下"}:
-        return manual_trend, f"使用手动市场趋势 RISK_MARKET_TREND={manual_trend}", qqq_change_pct, vix, vix_source
+        return manual_trend, f"使用手动市场趋势 RISK_MARKET_TREND={manual_trend}", qqq_price, qqq_change_pct, vix, vix_source
 
     if env_bool("RISK_USE_ALPACA_MARKET_DATA", True):
         try:
@@ -218,9 +220,11 @@ def _fetch_market_inputs() -> tuple[str, str, float, float, str]:
 
             closes = alpaca_gateway.get_daily_closes("QQQ", days=60, feed=env_str("RISK_ALPACA_DATA_FEED", "iex"))
             trend, reason, _ret20 = _calc_market_trend_from_daily(closes)
+            if closes:
+                qqq_price = float(closes[-1])
             if len(closes) >= 2 and closes[-2] > 0:
                 qqq_change_pct = (closes[-1] - closes[-2]) / closes[-2] * 100.0
-            return trend, reason, qqq_change_pct, vix, vix_source
+            return trend, reason, qqq_price, qqq_change_pct, vix, vix_source
         except Exception as exc:
             print(f"[RISK MARKET] Alpaca market data unavailable, fallback: {exc}", flush=True)
 
@@ -231,7 +235,7 @@ def _fetch_market_inputs() -> tuple[str, str, float, float, str]:
             trend = "向下"
         else:
             trend = "横盘"
-        return trend, f"未启用 yfinance，使用 RISK_QQQ_CHANGE_PCT={qqq_change_pct:.2f}% 判断 trend={trend}", qqq_change_pct, vix, vix_source
+        return trend, f"未启用 yfinance，使用 RISK_QQQ_CHANGE_PCT={qqq_change_pct:.2f}% 判断 trend={trend}", qqq_price, qqq_change_pct, vix, vix_source
 
     try:
         import yfinance as yf
@@ -239,11 +243,13 @@ def _fetch_market_inputs() -> tuple[str, str, float, float, str]:
         qqq_hist = yf.Ticker("QQQ").history(period="60d")["Close"]
         closes = [float(x) for x in qqq_hist.tolist()]
         trend, reason, _ret20 = _calc_market_trend_from_daily(closes)
+        if closes:
+            qqq_price = float(closes[-1])
         if len(closes) >= 2 and closes[-2] > 0:
             qqq_change_pct = (closes[-1] - closes[-2]) / closes[-2] * 100.0
 
         print(f"[RISK MARKET TREND] {reason}", flush=True)
-        return trend, reason, qqq_change_pct, vix, vix_source
+        return trend, reason, qqq_price, qqq_change_pct, vix, vix_source
     except Exception as exc:
         print(f"[RISK MARKET] yfinance unavailable, fallback env/defaults: {exc}", flush=True)
         if qqq_change_pct >= 3.0:
@@ -252,7 +258,7 @@ def _fetch_market_inputs() -> tuple[str, str, float, float, str]:
             trend = "向下"
         else:
             trend = "横盘"
-        return trend, f"yfinance 失败，使用环境变量判断：RISK_QQQ_CHANGE_PCT={qqq_change_pct:.2f}%, trend={trend}", qqq_change_pct, vix, vix_source
+        return trend, f"yfinance 失败，使用环境变量判断：RISK_QQQ_CHANGE_PCT={qqq_change_pct:.2f}%, trend={trend}", qqq_price, qqq_change_pct, vix, vix_source
 
 
 def _daily_equity_rows() -> list[tuple[date, float]]:
@@ -521,7 +527,7 @@ def get_risk_state() -> RiskState:
     s = settings()
 
     daily_pnl_pct, loss_days, max_drawdown, account_metrics_source = _fetch_account_risk_metrics()
-    market_trend, market_reason, qqq_change_pct, vix, vix_source = _fetch_market_inputs()
+    market_trend, market_reason, qqq_price, qqq_change_pct, vix, vix_source = _fetch_market_inputs()
     multiplier = _realtime_risk_multiplier(market_trend, vix, daily_pnl_pct, loss_days, max_drawdown)
     risk_preference = _risk_setting("RISK_PREFERENCE", "中性")
     if risk_preference not in {"保守", "中性", "激进"}:
@@ -555,6 +561,7 @@ def get_risk_state() -> RiskState:
         risk_multiplier=multiplier,
         market_trend=market_trend,
         market_reason=market_reason,
+        qqq_price=qqq_price,
         qqq_change_pct=qqq_change_pct,
         vix=vix,
         risk_preference=risk_preference,

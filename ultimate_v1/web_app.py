@@ -118,6 +118,7 @@ def _risk_payload() -> dict:
         "reason": state.reason,
         "market_trend": state.market_trend,
         "market_reason": state.market_reason,
+        "qqq_price": state.qqq_price,
         "qqq_change_pct": state.qqq_change_pct,
         "vix": state.vix,
         "risk_preference": state.risk_preference,
@@ -422,6 +423,12 @@ INDEX_HTML = r"""<!doctype html>
     .risk-chip.danger { background:#fee2e2; color:#b42318; }
     .risk-chip.info { background:#e0f2fe; color:#075985; }
     .market-risk-inline { display:flex; gap:8px; flex-wrap:wrap; }
+    .market-risk-inline.fresh .risk-chip { animation:freshPulse .85s ease-out 1; }
+    @keyframes freshPulse {
+      0% { transform:scale(1); box-shadow:0 0 0 0 rgba(21,147,106,.24); filter:brightness(1); }
+      42% { transform:scale(1.035); box-shadow:0 0 0 7px rgba(21,147,106,.10); filter:brightness(1.04); }
+      100% { transform:scale(1); box-shadow:0 0 0 0 rgba(21,147,106,0); filter:brightness(1); }
+    }
     .risk-actions { display:flex; align-items:center; gap:10px; flex:0 0 auto; }
     .risk-badge { font-size:13px; font-weight:700; padding:5px 9px; border-radius:999px; background:#e7f6ef; color:var(--green); white-space:nowrap; }
     .risk-badge.warn { background:#fff3d6; color:#9a5b00; }
@@ -461,6 +468,13 @@ INDEX_HTML = r"""<!doctype html>
     .bot-switch::after { content:""; display:block; width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 4px rgba(15,23,42,.2); transition:transform .15s ease; }
     .bot-switch.on { background:#15936a; }
     .bot-switch.on::after { transform:translateX(18px); }
+    .bot-pager { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 2px 0; border-top:1px solid #eef2f6; }
+    .bot-page-btn { width:28px; height:26px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--muted); font-weight:900; line-height:1; }
+    .bot-page-btn:disabled { opacity:.35; }
+    .bot-page-dots { display:flex; align-items:center; justify-content:center; gap:6px; flex:1; }
+    .bot-page-dot { width:7px; height:7px; border-radius:999px; background:#d0d5dd; cursor:pointer; }
+    .bot-page-dot.active { width:18px; background:#101828; }
+    .bot-page-label { min-width:42px; color:var(--muted); font-size:11px; font-weight:800; text-align:right; }
     .chart-panel { flex:1; min-height:0; display:flex; flex-direction:column; }
     .chart-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
     .chart-title { display:flex; align-items:baseline; gap:14px; }
@@ -570,6 +584,7 @@ INDEX_HTML = r"""<!doctype html>
       .legend-amount { display:inline; flex-basis:100%; margin-left:16px; color:#344054; font-weight:800; }
       .bot-grid { padding-top:10px; gap:8px; }
       .bot-row { grid-template-columns:minmax(120px,1fr) 18px 42px; }
+      .bot-pager { padding-top:8px; }
       .chart-panel { min-height:330px; }
       .chart-head { align-items:flex-start; flex-direction:column; gap:9px; }
       .chart-title { width:100%; justify-content:space-between; gap:8px; }
@@ -670,6 +685,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="mobile-collapse-body">
               <h2>机器人</h2>
               <div class="bot-grid" id="botLights"></div>
+              <div class="bot-pager" id="botPager"></div>
             </div>
           </div>
         </div>
@@ -752,8 +768,11 @@ INDEX_HTML = r"""<!doctype html>
     let currentHolding = 'ALL';
     let lowerView = 'holdings';
     let currentCategory = '';
+    let botPage = 0;
     let latestHoldings = [];
     let latestMarketMeta = [];
+    let latestBotHeartbeats = [];
+    let latestBotControls = [];
     async function api(path) {
       const r = await fetch(path);
       if (r.status === 401) { location.reload(); return {ok:false, error:'unauthorized'}; }
@@ -800,7 +819,12 @@ INDEX_HTML = r"""<!doctype html>
         : `<div class="legend-row"><span class="small-muted">暂无持仓占用</span></div>`;
     }
     function renderBots(bots, controls) {
-      const known = ['dashboard_bot','risk_bot','ac_bot','b_buy_bot','b_sell_bot','f_buy_bot','f_sell_bot','d_buy_bot','d_sell_bot'];
+      const botPages = [
+        ['b_buy_bot','b_sell_bot','d_buy_bot','d_sell_bot'],
+        ['dashboard_bot','risk_bot','ac_bot','f_buy_bot','f_sell_bot']
+      ];
+      botPage = Math.max(0, Math.min(botPage, botPages.length - 1));
+      const known = botPages[botPage];
       const byName = Object.fromEntries((bots || []).map(b => [b.bot_name, b]));
       const processMap = Object.fromEntries(((window.latestBotProcesses || [])).map(b => [b.bot_name, b]));
       const controlMap = Object.fromEntries((controls || []).map(b => [b.bot_name, Number(b.enabled) === 1]));
@@ -813,6 +837,16 @@ INDEX_HTML = r"""<!doctype html>
         const title = b ? `${name} ${b.status} pid=${p?.pid || '-'} ${b.last_seen_at || ''} ${b.last_message || ''}` : `${name} no heartbeat pid=${p?.pid || '-'}`;
         return `<div class="bot-row" title="${title}"><span class="bot-name">${name}</span><span class="bot-dot ${ok ? '' : 'bad'}"></span>${controllable ? `<button class="bot-switch ${enabled ? 'on' : ''}" onclick="toggleBot('${name}', ${enabled ? 'false' : 'true'})"></button>` : '<span></span>'}</div>`;
       }).join('');
+      document.getElementById('botPager').innerHTML = `
+        <button class="bot-page-btn" onclick="setBotPage(${botPage - 1})" ${botPage <= 0 ? 'disabled' : ''}>‹</button>
+        <div class="bot-page-dots">${botPages.map((_, i) => `<span class="bot-page-dot ${i === botPage ? 'active' : ''}" onclick="setBotPage(${i})"></span>`).join('')}</div>
+        <button class="bot-page-btn" onclick="setBotPage(${botPage + 1})" ${botPage >= botPages.length - 1 ? 'disabled' : ''}>›</button>
+        <span class="bot-page-label">${botPage + 1}/${botPages.length}</span>
+      `;
+    }
+    function setBotPage(page) {
+      botPage = Math.max(0, Math.min(Number(page || 0), 1));
+      renderBots(latestBotHeartbeats, latestBotControls);
     }
     function renderPhase(phase) {
       const chip = document.getElementById('phaseChip');
@@ -989,6 +1023,13 @@ INDEX_HTML = r"""<!doctype html>
     function riskChip(label, value, tone='info') {
       return `<span class="risk-chip ${tone}">${label}=${value}</span>`;
     }
+    function qqqRiskValue(risk) {
+      const price = Number(risk.qqq_price || 0);
+      const change = Number(risk.qqq_change_pct || 0);
+      const priceText = price > 0 ? price.toFixed(2) : '--';
+      const sign = change > 0 ? '+' : '';
+      return `${priceText} / ${sign}${change.toFixed(2)}%`;
+    }
     function riskTone(risk) {
       if (risk.block_all_new || Number(risk.risk_multiplier || 0) <= 0 || risk.market_trend === '向下' || Number(risk.vix || 0) > 28) return 'danger';
       if (risk.suggest_mode || risk.market_trend === '横盘' || Number(risk.vix || 0) >= 20 || Number(risk.recommended_exposure || 0) < 0.5) return 'warn';
@@ -1041,11 +1082,17 @@ INDEX_HTML = r"""<!doctype html>
       ].join('');
       document.getElementById('marketRisk').innerHTML = [
         riskChip('趋势', risk.market_trend || '--', risk.market_trend === '向上' ? 'ok' : risk.market_trend === '向下' ? 'danger' : 'warn'),
-        riskChip('QQQ', `${Number(risk.qqq_change_pct || 0).toFixed(2)}%`, Number(risk.qqq_change_pct || 0) < 0 ? 'warn' : 'ok'),
+        riskChip('QQQ', qqqRiskValue(risk), Number(risk.qqq_change_pct || 0) < 0 ? 'warn' : 'ok'),
         riskChip('VIX', Number(risk.vix || 0).toFixed(1), Number(risk.vix || 0) > 28 ? 'danger' : Number(risk.vix || 0) >= 20 ? 'warn' : 'ok')
       ].join('');
+      const marketRisk = document.getElementById('marketRisk');
+      marketRisk.classList.remove('fresh');
+      void marketRisk.offsetWidth;
+      marketRisk.classList.add('fresh');
       window.latestBotProcesses = state.bot_processes || [];
-      renderBots(state.bot_heartbeats || [], state.bot_controls || []);
+      latestBotHeartbeats = state.bot_heartbeats || [];
+      latestBotControls = state.bot_controls || [];
+      renderBots(latestBotHeartbeats, latestBotControls);
       renderPhase(phase);
       latestHoldings = holdings.rows || [];
       renderHoldings();
