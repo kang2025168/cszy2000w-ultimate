@@ -172,6 +172,84 @@ def _curve_payload(period: str) -> dict:
     return payload
 
 
+def _trade_records_payload() -> dict:
+    """读取当天买卖机器人记录，限制在面板内滚动展示。"""
+    rows: list[dict] = []
+    try:
+        rows.extend(
+            fetch_all(
+                """
+                SELECT
+                    created_at AS event_time,
+                    symbol,
+                    UPPER(side) AS side,
+                    strategy_code AS strategy_group,
+                    qty,
+                    limit_price AS price,
+                    status,
+                    note,
+                    alpaca_order_id AS order_id,
+                    'orders' AS source
+                FROM orders
+                WHERE DATE(created_at)=CURDATE()
+                  AND UPPER(side) IN ('BUY','SELL')
+                ORDER BY created_at DESC, order_id DESC
+                LIMIT 200
+                """
+            )
+        )
+    except Exception as exc:
+        print(f"[WEB TRADE RECORDS] orders unavailable: {exc}", flush=True)
+
+    try:
+        rows.extend(
+            fetch_all(
+                """
+                SELECT
+                    last_order_time AS event_time,
+                    stock_code AS symbol,
+                    UPPER(last_order_side) AS side,
+                    COALESCE(NULLIF(strategy_group,''), stock_type) AS strategy_group,
+                    qty,
+                    COALESCE(current_price, close_price, cost_price) AS price,
+                    'RECORDED' AS status,
+                    last_order_intent AS note,
+                    last_order_id AS order_id,
+                    'stock_operations' AS source
+                FROM stock_operations
+                WHERE DATE(last_order_time)=CURDATE()
+                  AND LOWER(last_order_side) IN ('buy','sell')
+                ORDER BY last_order_time DESC, id DESC
+                LIMIT 200
+                """
+            )
+        )
+    except Exception as exc:
+        print(f"[WEB TRADE RECORDS] stock_operations unavailable: {exc}", flush=True)
+
+    def key(row: dict) -> str:
+        return "|".join(
+            [
+                str(row.get("event_time") or ""),
+                str(row.get("symbol") or ""),
+                str(row.get("side") or ""),
+                str(row.get("order_id") or ""),
+                str(row.get("source") or ""),
+            ]
+        )
+
+    seen = set()
+    cleaned = []
+    for row in rows:
+        k = key(row)
+        if k in seen:
+            continue
+        seen.add(k)
+        cleaned.append(row)
+    cleaned.sort(key=lambda r: str(r.get("event_time") or ""), reverse=True)
+    return {"ok": True, "rows": cleaned[:200]}
+
+
 def _now_market_tz() -> datetime:
     """读取配置时区里的当前时间，默认美西。"""
     tz_name = settings().timezone or "America/Los_Angeles"
@@ -476,12 +554,23 @@ INDEX_HTML = r"""<!doctype html>
     .bot-page-dot.active { width:18px; background:#101828; }
     .bot-page-label { min-width:42px; color:var(--muted); font-size:11px; font-weight:800; text-align:right; }
     .chart-panel { flex:1; min-height:0; display:flex; flex-direction:column; }
+    .chart-panel .mobile-collapse-body { flex:1; min-height:0; display:flex; flex-direction:column; }
     .chart-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
     .chart-title { display:flex; align-items:baseline; gap:14px; }
     .today-pnl { font-size:15px; font-weight:850; color:var(--green); }
     .tabs { display:flex; gap:6px; flex-wrap:wrap; }
     .tab { height:28px; border-radius:6px; padding:0 10px; color:var(--muted); }
     .tab.active { background:#101828; color:#fff; border-color:#101828; }
+    .trade-records { margin-top:12px; border-top:1px solid #eef2f6; padding-top:10px; min-height:180px; flex:1; display:flex; flex-direction:column; }
+    .trade-records-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
+    .trade-records-title { font-size:13px; font-weight:850; color:var(--ink); }
+    .trade-records-count { color:var(--muted); font-size:11px; font-weight:800; }
+    .trade-records-scroll { flex:1; min-height:126px; overflow:auto; border:1px solid #eef2f6; border-radius:8px; }
+    .trade-records table { min-width:680px; }
+    .trade-records th, .trade-records td { padding:8px 10px; font-size:11px; }
+    .side-pill { border-radius:999px; padding:3px 7px; font-weight:850; font-size:11px; }
+    .side-pill.buy { background:#e7f6ef; color:#08734f; }
+    .side-pill.sell { background:#fee2e2; color:#b42318; }
     #equityChart { width:100%; flex:1; min-height:260px; }
     .section-head { display:flex; align-items:center; justify-content:space-between; margin:18px 0 10px; }
     table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
@@ -591,6 +680,8 @@ INDEX_HTML = r"""<!doctype html>
       .today-pnl { font-size:14px; }
       .tabs { width:100%; justify-content:flex-end; }
       #equityChart { min-height:238px; }
+      .chart-panel.mobile-open .mobile-collapse-body { display:flex; flex-direction:column; }
+      .trade-records-scroll { max-height:190px; }
       .holdings-panel { min-height:520px; margin-top:12px; }
       .holding-head { flex-direction:column; align-items:stretch; gap:10px; margin:0 0 12px; }
       .holding-left-tools { flex-wrap:wrap; gap:8px; align-items:center; }
@@ -702,6 +793,15 @@ INDEX_HTML = r"""<!doctype html>
               </div>
             </div>
             <canvas id="equityChart" width="760" height="260"></canvas>
+            <div class="trade-records">
+              <div class="trade-records-head">
+                <span class="trade-records-title">今日交易记录</span>
+                <span class="trade-records-count" id="tradeRecordsCount">--</span>
+              </div>
+              <div class="trade-records-scroll">
+                <table id="tradeRecords"></table>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -880,6 +980,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     function dayDiff(a,b) { return Math.round((b-a)/86400000); }
     function mmdd(d) { return `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+    function axisMoney(v) { return `$${Number(v || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`; }
     function drawChart(curve) {
       const canvas = document.getElementById('equityChart'), ctx = canvas.getContext('2d');
       const rect = canvas.getBoundingClientRect();
@@ -888,7 +989,8 @@ INDEX_HTML = r"""<!doctype html>
         canvas.height = Math.floor(rect.height * window.devicePixelRatio);
         ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
       }
-      const w = rect.width || canvas.width, h = rect.height || canvas.height, pad = 34;
+      const w = rect.width || canvas.width, h = rect.height || canvas.height;
+      const padLeft = 78, padRight = 34, padTop = 42, padBottom = 34;
       ctx.clearRect(0,0,w,h);
       ctx.fillStyle = '#fff'; ctx.fillRect(0,0,w,h);
       const rows = curve.rows || [];
@@ -907,16 +1009,16 @@ INDEX_HTML = r"""<!doctype html>
       ctx.strokeStyle = '#d7dde5'; ctx.lineWidth = 1;
       ctx.fillStyle = '#667085'; ctx.font='11px system-ui'; ctx.textAlign='right';
       for (let i=0;i<4;i++){
-        const y=pad+i*(h-pad*2)/3;
+        const y=padTop+i*(h-padTop-padBottom)/3;
         const value = max - i*span/3;
-        ctx.beginPath(); ctx.moveTo(pad,y); ctx.lineTo(w-pad,y); ctx.stroke();
-        ctx.fillText(`${(value/1000).toFixed(0)}k`, pad-7, y+4);
+        ctx.beginPath(); ctx.moveTo(padLeft,y); ctx.lineTo(w-padRight,y); ctx.stroke();
+        ctx.fillText(axisMoney(value), padLeft-8, y+4);
       }
       ctx.beginPath();
       points.forEach((p,i) => {
         const offset = startDate ? Math.max(0, Math.min(totalDays, dayDiff(startDate, p.d))) : i;
-        const x = startDate ? pad + offset*(w-pad*2)/totalDays : (points.length === 1 ? w/2 : pad + i*(w-pad*2)/(points.length-1));
-        const y = h-pad - ((p.y-min)/span)*(h-pad*2);
+        const x = startDate ? padLeft + offset*(w-padLeft-padRight)/totalDays : (points.length === 1 ? w/2 : padLeft + i*(w-padLeft-padRight)/(points.length-1));
+        const y = h-padBottom - ((p.y-min)/span)*(h-padTop-padBottom);
         if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
       });
       ctx.strokeStyle = points[points.length-1].y >= points[0].y ? '#15936a' : '#c62828';
@@ -927,29 +1029,54 @@ INDEX_HTML = r"""<!doctype html>
       ctx.fillStyle = '#667085'; ctx.font='11px system-ui'; ctx.textAlign='center';
       const firstLabel = startDate ? mmdd(startDate) : String(points[0].t || '').slice(5,10);
       const lastLabel = endDate ? mmdd(endDate) : String(points[points.length-1].t || '').slice(5,10);
-      ctx.fillText(firstLabel, pad, h-8);
-      ctx.fillText(lastLabel, w-pad, h-8);
+      ctx.fillText(firstLabel, padLeft, h-8);
+      ctx.fillText(lastLabel, w-padRight, h-8);
     }
     function renderTodayPnl(curve) {
       const rows = curve.rows || [];
       const today = new Date();
       const todayKey = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
       const todayRows = rows.filter(r => String(r.snapshot_date || r.created_at || '').slice(0,10) === todayKey);
-      const source = todayRows.length > 0 ? todayRows : rows;
+      const source = todayRows.length >= 2 ? todayRows : rows.slice(-2);
       const el = document.getElementById('todayPnl');
       if (!source.length) { el.textContent = '今日收益 --'; el.className = 'today-pnl'; return; }
       const first = Number(source[0].equity || source[0].portfolio_value || 0);
       const last = Number(source[source.length-1].equity || source[source.length-1].portfolio_value || 0);
       const diff = last - first;
-      el.textContent = `今日收益 ${diff >= 0 ? '+' : ''}${money(diff)}`;
+      const diffPct = first > 0 ? diff / first * 100 : 0;
+      el.textContent = `今日收益 ${diff >= 0 ? '+' : ''}${money(diff)} (${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%)`;
       el.className = `today-pnl ${diff < 0 ? 'neg' : 'pos'}`;
+    }
+    function renderTradeRecords(payload) {
+      const rows = (payload && payload.ok ? payload.rows : []) || [];
+      const countEl = document.getElementById('tradeRecordsCount');
+      const tableEl = document.getElementById('tradeRecords');
+      countEl.textContent = `${rows.length} 条`;
+      if (!rows.length) {
+        tableEl.innerHTML = `<tbody><tr><td class="small-muted" style="padding:18px;text-align:center;">今日暂无买卖机器人交易记录</td></tr></tbody>`;
+        return;
+      }
+      tableEl.innerHTML = `<thead><tr>${['时间','方向','策略','代码','数量','价格','状态','说明'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
+        rows.map(r => {
+          const side = String(r.side || '').toUpperCase();
+          const sideClass = side === 'SELL' ? 'sell' : 'buy';
+          const sideLabel = side === 'SELL' ? '卖出' : '买入';
+          const timeText = String(r.event_time || '').slice(11,19) || String(r.event_time || '').slice(0,16);
+          const price = Number(r.price || 0);
+          const priceText = price > 0 ? money(price) : '--';
+          return `<tr><td>${timeText}</td><td><span class="side-pill ${sideClass}">${sideLabel}</span></td><td>${r.strategy_group || '--'}</td><td><b>${r.symbol || '--'}</b></td><td>${Number(r.qty || 0).toFixed(2)}</td><td>${priceText}</td><td>${r.status || '--'}</td><td>${r.note || ''}</td></tr>`;
+        }).join('') + `</tbody>`;
     }
     async function loadCurve(period=currentPeriod) {
       currentPeriod = period;
       document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.period === period));
-      const curve = await api(`/api/equity_curve?period=${period}`);
+      const [curve, trades] = await Promise.all([
+        api(`/api/equity_curve?period=${period}`),
+        api('/api/trade_records')
+      ]);
       drawChart(curve);
       renderTodayPnl(curve);
+      renderTradeRecords(trades);
     }
     function renderHoldings() {
       const rows = currentHolding === 'ALL'
@@ -1348,6 +1475,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/equity_curve":
                 period = parse_qs(parsed.query).get("period", ["week"])[0]
                 self._send_json(_curve_payload(period))
+            elif path == "/api/trade_records":
+                self._send_json(_trade_records_payload())
             elif path == "/api/rebalance":
                 self._send_json({"ok": True, "rows": generate_rebalance_report()})
             else:
