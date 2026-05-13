@@ -982,56 +982,131 @@ INDEX_HTML = r"""<!doctype html>
     function mmdd(d) { return `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
     function axisMoney(v) { return `$${Number(v || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`; }
     function drawChart(curve) {
-      const canvas = document.getElementById('equityChart'), ctx = canvas.getContext('2d');
-      const rect = canvas.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) {
+        const canvas = document.getElementById('equityChart');
+        const ctx = canvas.getContext('2d');
+        const rect = canvas.getBoundingClientRect();
+        
+        if (rect.width > 0 && rect.height > 0) {
         canvas.width = Math.floor(rect.width * window.devicePixelRatio);
         canvas.height = Math.floor(rect.height * window.devicePixelRatio);
         ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
-      }
-      const w = rect.width || canvas.width, h = rect.height || canvas.height;
-      const padLeft = 78, padRight = 34, padTop = 42, padBottom = 34;
-      ctx.clearRect(0,0,w,h);
-      ctx.fillStyle = '#fff'; ctx.fillRect(0,0,w,h);
-      const rows = curve.rows || [];
-      const startDate = parseDateOnly(curve.start_date) || parseDateOnly(rows[0]?.snapshot_date || rows[0]?.created_at);
-      const endDate = parseDateOnly(curve.end_date) || parseDateOnly(rows[rows.length-1]?.snapshot_date || rows[rows.length-1]?.created_at);
-      const totalDays = startDate && endDate ? Math.max(1, dayDiff(startDate, endDate)) : 1;
-      const points = rows.map(r => ({d:parseDateOnly(r.snapshot_date || r.created_at), t:r.snapshot_date || r.created_at, y:Number(r.equity || r.portfolio_value || 0)})).filter(p => p.d);
-      if (points.length === 0) {
-        ctx.fillStyle = '#667085'; ctx.font='14px system-ui'; ctx.textAlign='center'; ctx.fillText('暂无收益曲线数据，等待 dashboard_bot 记录账户快照', w/2, h/2);
-        if (startDate && endDate) {
-          ctx.fillStyle = '#667085'; ctx.font='11px system-ui'; ctx.fillText(`${mmdd(startDate)} 到 ${mmdd(endDate)}`, w/2, h-12);
         }
+        
+        const w = rect.width || 760;
+        const h = rect.height || 260;
+        
+        const padLeft = 78;
+        const padRight = 34;
+        const padTop = 42;
+        const padBottom = 38;
+        
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, w, h);
+        
+        const rows = curve.rows || [];
+        
+        const points = rows.map(r => {
+        const rawDate = r.snapshot_date || r.created_at || r.date;
+        const equity = Number(r.equity || r.portfolio_value || 0);
+        return {
+        d: parseDateOnly(rawDate),
+        t: String(rawDate || ''),
+        y: equity
+        };
+        }).filter(p => p.d && p.y > 0);
+        
+        if (points.length === 0) {
+        ctx.fillStyle = '#667085';
+        ctx.font = '14px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('暂无收益曲线数据，等待 dashboard_bot 记录账户快照', w / 2, h / 2);
         return;
-      }
-      const ys = points.map(p => p.y), min = Math.min(...ys), max = Math.max(...ys), span = Math.max(1, max-min);
-      ctx.strokeStyle = '#d7dde5'; ctx.lineWidth = 1;
-      ctx.fillStyle = '#667085'; ctx.font='11px system-ui'; ctx.textAlign='right';
-      for (let i=0;i<4;i++){
-        const y=padTop+i*(h-padTop-padBottom)/3;
-        const value = max - i*span/3;
-        ctx.beginPath(); ctx.moveTo(padLeft,y); ctx.lineTo(w-padRight,y); ctx.stroke();
-        ctx.fillText(axisMoney(value), padLeft-8, y+4);
-      }
-      ctx.beginPath();
-      points.forEach((p,i) => {
-        const offset = startDate ? Math.max(0, Math.min(totalDays, dayDiff(startDate, p.d))) : i;
-        const x = startDate ? padLeft + offset*(w-padLeft-padRight)/totalDays : (points.length === 1 ? w/2 : padLeft + i*(w-padLeft-padRight)/(points.length-1));
-        const y = h-padBottom - ((p.y-min)/span)*(h-padTop-padBottom);
-        if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-      });
-      ctx.strokeStyle = points[points.length-1].y >= points[0].y ? '#15936a' : '#c62828';
-      ctx.lineWidth = 3; ctx.stroke();
-      const last = points[points.length-1].y, first = points[0].y, diff = last-first;
-      ctx.fillStyle = diff >= 0 ? '#15936a' : '#c62828';
-      ctx.font='700 16px system-ui'; ctx.textAlign='left'; ctx.fillText(`${money(last)}  ${diff>=0?'+':''}${money(diff)}`, pad, 22);
-      ctx.fillStyle = '#667085'; ctx.font='11px system-ui'; ctx.textAlign='center';
-      const firstLabel = startDate ? mmdd(startDate) : String(points[0].t || '').slice(5,10);
-      const lastLabel = endDate ? mmdd(endDate) : String(points[points.length-1].t || '').slice(5,10);
-      ctx.fillText(firstLabel, padLeft, h-8);
-      ctx.fillText(lastLabel, w-padRight, h-8);
-    }
+        }
+        
+        const startDate = points[0].d;
+        const endDate = points[points.length - 1].d;
+        const totalDays = Math.max(1, dayDiff(startDate, endDate));
+        
+        const ys = points.map(p => p.y);
+        const min = Math.min(...ys);
+        const max = Math.max(...ys);
+        const span = Math.max(1, max - min);
+        
+        // 横向网格线 + 左侧金额刻度
+        ctx.strokeStyle = '#d7dde5';
+        ctx.lineWidth = 1;
+        ctx.fillStyle = '#667085';
+        ctx.font = '11px system-ui';
+        ctx.textAlign = 'right';
+        
+        for (let i = 0; i < 4; i++) {
+        const y = padTop + i * (h - padTop - padBottom) / 3;
+        const value = max - i * span / 3;
+        
+        ctx.beginPath();
+        ctx.moveTo(padLeft, y);
+        ctx.lineTo(w - padRight, y);
+        ctx.stroke();
+        
+        ctx.fillText(axisMoney(value), padLeft - 8, y + 4);
+        }
+        
+        // 折线
+        ctx.beginPath();
+        
+        points.forEach((p, i) => {
+        const offset = dayDiff(startDate, p.d);
+        const x = padLeft + offset * (w - padLeft - padRight) / totalDays;
+        const y = h - padBottom - ((p.y - min) / span) * (h - padTop - padBottom);
+        
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+        });
+        
+        const first = points[0].y;
+        const last = points[points.length - 1].y;
+        const diff = last - first;
+        const diffPct = first > 0 ? diff / first * 100 : 0;
+        
+        ctx.strokeStyle = diff >= 0 ? '#15936a' : '#c62828';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        // 顶部收益文字
+        ctx.fillStyle = diff >= 0 ? '#15936a' : '#c62828';
+        ctx.font = '700 15px system-ui';
+        ctx.textAlign = 'left';
+        
+        const sign = diff >= 0 ? '+' : '';
+        ctx.fillText(
+        `${money(last)}  ${sign}${money(diff)} (${sign}${diffPct.toFixed(2)}%)`,
+        padLeft,
+        24
+        );
+        
+        // 底部日期
+        ctx.fillStyle = '#667085';
+        ctx.font = '11px system-ui';
+        ctx.textAlign = 'center';
+        
+        ctx.fillText(mmdd(startDate), padLeft, h - 10);
+        ctx.fillText(mmdd(endDate), w - padRight, h - 10);
+        
+        // 中间日期，数据跨度足够时显示
+        if (totalDays >= 6) {
+        const midDate = new Date(startDate.getTime() + (endDate.getTime() - startDate.getTime()) / 2);
+        ctx.fillText(mmdd(midDate), w / 2, h - 10);
+        }
+        
+        // 数据点太少时提示
+        if (points.length === 1) {
+        ctx.fillStyle = '#667085';
+        ctx.font = '12px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('当前只有 1 个账户快照，等待更多数据形成曲线', w / 2, h / 2 + 22);
+        }
+        }
     function renderTodayPnl(curve) {
       const rows = curve.rows || [];
       const today = new Date();
