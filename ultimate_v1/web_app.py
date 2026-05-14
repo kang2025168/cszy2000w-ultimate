@@ -892,11 +892,13 @@ INDEX_HTML = r"""<!doctype html>
     }
     function metric(label, value) { return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`; }
     function poolCard(g, cap) {
-      const target = Number(cap.targets[g] || 0), used = Number(cap.used[g] || 0), av = Number(cap.available[g] || 0);
-      const w = target > 0 ? Math.min(100, used / target * 100) : 0;
+      const riskTarget = Number(cap.targets[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
+      const displayTarget = riskTarget > 0 ? riskTarget : baseTarget;
+      const used = Number(cap.used[g] || 0), av = Number(cap.available[g] || 0);
+      const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
       const riskPct = Number(cap.total_risk_percent || 0) * Number(cap.pool_risk_percents?.[g] || 0) * 100;
-      return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池</div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可用 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>target ${money(target)}</span><span>实时额度 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
+      return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池</div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>月度目标 ${money(displayTarget)}</span><span>可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
     function drawDonut(cap) {
       const canvas = document.getElementById('capitalDonut'), ctx = canvas.getContext('2d');
@@ -1257,7 +1259,9 @@ INDEX_HTML = r"""<!doctype html>
         document.getElementById('pools').innerHTML = ['A','B','C','D'].map(g => poolCard(g, cap)).join('');
         const usedTotal = Number(cap.used_total || 0);
         const usableTotal = Number(cap.usable_total || 0);
-        const exposurePct = usableTotal > 0 ? Math.min(999, usedTotal / usableTotal * 100) : 0;
+        const baseTotal = Number(cap.base_total || 0);
+        const exposureBase = usableTotal > 0 ? usableTotal : baseTotal;
+        const exposurePct = exposureBase > 0 ? Math.min(999, usedTotal / exposureBase * 100) : 0;
         const totalRiskPct = Number(cap.total_risk_percent || 0) * 100;
         document.getElementById('exposureValue').textContent = `${exposurePct.toFixed(1)}% / 可用${totalRiskPct.toFixed(0)}% / ${money(usedTotal)}`;
         document.getElementById('exposureFill').style.width = `${Math.min(100, exposurePct)}%`;
