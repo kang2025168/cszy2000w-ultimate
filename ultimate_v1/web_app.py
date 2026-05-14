@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import hashlib
 import hmac
+import contextlib
+import importlib.util
+import io
 from datetime import date, datetime, time as dt_time
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -385,6 +388,7 @@ def _market_categories_payload(selected_key: str = "") -> dict:
     """读取最新行情分类快照，供持仓区切换展示。"""
     _ensure_price_category_table()
     table = env_str("PRICE_CATEGORY_TABLE", "stock_price_category_snapshots")
+    excluded_groups = ("up_days", "down_days")
     with db_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(f"SELECT MAX(snapshot_date) AS d FROM `{table}`")
@@ -400,11 +404,12 @@ def _market_categories_payload(selected_key: str = "") -> dict:
                        MAX(updated_at) AS snapshot_updated_at
                 FROM `{table}`
                 WHERE snapshot_date=%s
+                  AND category_group NOT IN (%s, %s)
                 GROUP BY snapshot_date, category_group, category_group_label,
                          category_key, category_label, category_order
                 ORDER BY category_order ASC
                 """,
-                (snapshot_date,),
+                (snapshot_date, *excluded_groups),
             )
             meta = list(cur.fetchall() or [])
             if not meta:
@@ -424,10 +429,11 @@ def _market_categories_payload(selected_key: str = "") -> dict:
                        updated_at
                 FROM `{table}`
                 WHERE snapshot_date=%s AND category_key=%s
+                  AND category_group NOT IN (%s, %s)
                 ORDER BY change_pct DESC, symbol ASC
                 LIMIT 500
                 """,
-                (snapshot_date, selected_key),
+                (snapshot_date, selected_key, *excluded_groups),
             )
             rows = list(cur.fetchall() or [])
 
@@ -438,6 +444,23 @@ def _market_categories_payload(selected_key: str = "") -> dict:
         "selected_key": selected_key,
         "snapshot_date": snapshot_date,
     }
+
+
+def _refresh_market_categories_payload(selected_key: str = "") -> dict:
+    """重建最新行情分类快照，然后返回刷新后的分类数据。"""
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "refresh_stock_price_categories.py"
+    spec = importlib.util.spec_from_file_location("refresh_stock_price_categories_runtime", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("无法加载行情分类刷新脚本")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        module._run_once(dry_run=False)
+    payload = _market_categories_payload(selected_key)
+    payload["refreshed"] = True
+    payload["refresh_log"] = buffer.getvalue().strip().splitlines()[-8:]
+    return payload
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -612,6 +635,7 @@ INDEX_HTML = r"""<!doctype html>
     .market-pill { border-radius:999px; background:#eef2f6; color:var(--muted); padding:5px 9px; font-size:12px; font-weight:750; }
     .market-refresh-btn { height:38px; border:0; border-radius:8px; background:#e0f2fe; color:#075985; font-weight:850; padding:0 14px; }
     .market-refresh-btn:hover { background:#bae6fd; }
+    .market-refresh-btn.loading { opacity:.65; pointer-events:none; }
     .empty-state { min-height:260px; display:flex; align-items:center; justify-content:center; color:var(--muted); font-weight:750; }
     .modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,.36); display:none; align-items:center; justify-content:center; z-index:20; }
     .modal-backdrop.show { display:flex; }
@@ -836,7 +860,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="market-meta" id="marketMeta"></div>
             <div class="market-toolbar">
               <select class="market-select" id="marketCategorySelect" onchange="loadMarketCategories(this.value)"></select>
-              <button class="market-refresh-btn" onclick="loadMarketCategories(document.getElementById('marketCategorySelect').value)">刷新分类</button>
+              <button class="market-refresh-btn" id="marketRefreshBtn" onclick="refreshMarketCategories()">刷新分类</button>
             </div>
             <div class="scroll"><table id="marketTable"></table></div>
           </div>
@@ -1224,6 +1248,23 @@ INDEX_HTML = r"""<!doctype html>
       if (!payload.ok) return;
       renderMarketCategories(payload);
     }
+    async function refreshMarketCategories() {
+      const btn = document.getElementById('marketRefreshBtn');
+      const select = document.getElementById('marketCategorySelect');
+      const category = select ? select.value : currentCategory;
+      const oldText = btn ? btn.textContent : '';
+      if (btn) { btn.classList.add('loading'); btn.textContent = '刷新中'; }
+      try {
+        const payload = await postJson('/api/refresh_market_categories', {category});
+        if (!payload.ok) {
+          alert(payload.error || '行情分类刷新失败');
+          return;
+        }
+        renderMarketCategories(payload);
+      } finally {
+        if (btn) { btn.classList.remove('loading'); btn.textContent = oldText || '刷新分类'; }
+      }
+    }
     function riskChip(label, value, tone='info') {
       return `<span class="risk-chip ${tone}">${label}=${value}</span>`;
     }
@@ -1607,6 +1648,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": f"券商仓位同步失败：{detail or '请检查 Alpaca 配置和服务日志'}"}, 500)
                     return
                 self._send_json({"ok": True, "message": "展示表和交易控制表已同步"})
+            elif path == "/api/refresh_market_categories":
+                selected = str(payload.get("category") or "")
+                self._send_json(_refresh_market_categories_payload(selected))
             else:
                 self._send_json({"ok": False, "error": "not_found"}, 404)
         except Exception as exc:

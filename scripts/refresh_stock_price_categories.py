@@ -69,20 +69,6 @@ CATEGORIES = [
     ("down_streak", "按连跌天数分类", "down_streak_5", "连跌5天", 180),
     ("down_streak", "按连跌天数分类", "down_streak_6", "连跌6天", 190),
     ("down_streak", "按连跌天数分类", "down_streak_7", "连跌7天", 200),
-    ("up_days", "按天数内涨几天分类", "up_in_2_1", "2天之内涨1天", 210),
-    ("up_days", "按天数内涨几天分类", "up_in_3_2", "3天之内涨2天", 220),
-    ("up_days", "按天数内涨几天分类", "up_in_4_2", "4天之内涨2天", 230),
-    ("up_days", "按天数内涨几天分类", "up_in_4_3", "4天之内涨3天", 240),
-    ("up_days", "按天数内涨几天分类", "up_in_5_2", "5天之内涨2天", 250),
-    ("up_days", "按天数内涨几天分类", "up_in_5_3", "5天之内涨3天", 260),
-    ("up_days", "按天数内涨几天分类", "up_in_5_4", "5天之内涨4天", 270),
-    ("down_days", "按天数内跌几天分类", "down_in_2_1", "2天之内跌1天", 280),
-    ("down_days", "按天数内跌几天分类", "down_in_3_2", "3天之内跌2天", 290),
-    ("down_days", "按天数内跌几天分类", "down_in_4_2", "4天之内跌2天", 300),
-    ("down_days", "按天数内跌几天分类", "down_in_4_3", "4天之内跌3天", 310),
-    ("down_days", "按天数内跌几天分类", "down_in_5_2", "5天之内跌2天", 320),
-    ("down_days", "按天数内跌几天分类", "down_in_5_3", "5天之内跌3天", 330),
-    ("down_days", "按天数内跌几天分类", "down_in_5_4", "5天之内跌4天", 340),
 ]
 
 CATEGORY_META = {key: (group_key, group_label, label, sort_order) for group_key, group_label, key, label, sort_order in CATEGORIES}
@@ -277,12 +263,6 @@ def _build_snapshot(rows, snapshot_date: date):
                 _add(out, f"up_streak_{days}", latest, metrics)
             if down_streak >= days:
                 _add(out, f"down_streak_{days}", latest, metrics)
-
-        for window, needed in ((2, 1), (3, 2), (4, 2), (4, 3), (5, 2), (5, 3), (5, 4)):
-            if up_days.get(window) == needed:
-                _add(out, f"up_in_{window}_{needed}", latest, metrics)
-            if down_days.get(window) == needed:
-                _add(out, f"down_in_{window}_{needed}", latest, metrics)
 
     out.sort(key=lambda r: (r["category_order"], -(r["change_pct"] or 0), r["symbol"]))
     return out
