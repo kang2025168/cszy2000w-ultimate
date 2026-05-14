@@ -30,18 +30,18 @@ SRC_TABLE = os.getenv("SRC_TABLE", "stock_prices_pool")
 LEVELS_TABLE = os.getenv("LEVELS_TABLE", "strategy_b_levels")
 OPS_TABLE = os.getenv("OPS_TABLE", "stock_operations")
 
-LOW_PCT = float(os.getenv("B_LOW_PCT", "0.95"))
-HIGH_PCT = float(os.getenv("B_HIGH_PCT", "1.10"))
+LOW_PCT = float(os.getenv("B_LOW_PCT", "0.90"))
+HIGH_PCT = float(os.getenv("B_HIGH_PCT", "1.30"))
 
 VOL_MULT = float(os.getenv("B_VOL_MULT", "1.5"))
 UP_PCT_MIN = float(os.getenv("B_UP_PCT_MIN", "0.02"))
-UP_PCT_MAX = float(os.getenv("B_UP_PCT_MAX", "0.20"))
+UP_PCT_MAX = float(os.getenv("B_UP_PCT_MAX", "0.40"))
 MIN_PRICE = float(os.getenv("B_MIN_PRICE", "2.0"))
 MIN_VOL_TODAY = float(os.getenv("B_MIN_VOL_TODAY", "1000000"))
 
 PRINT_LIMIT = int(os.getenv("B_PRINT_LIMIT", "300"))
 MAX_RISE_FROM_LOW_PCT = float(os.getenv("B_MAX_RISE_FROM_LOW_PCT", "0.35"))
-MAX_UPPER_SHADOW_PCT = float(os.getenv("B_MAX_UPPER_SHADOW_PCT", "0.05"))
+MAX_UPPER_SHADOW_PCT = float(os.getenv("B_MAX_UPPER_SHADOW_PCT", "0.08"))
 
 COLLATE = "utf8mb4_unicode_ci"
 
