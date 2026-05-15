@@ -481,6 +481,8 @@ INDEX_HTML = r"""<!doctype html>
     .left-titlebar { height:52px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:0 8px 0 18px; }
     .brand-lockup { display:flex; align-items:center; gap:12px; min-width:0; }
     .brand-logo { width:42px; height:42px; border-radius:9px; object-fit:contain; background:#fff; box-shadow:0 8px 20px rgba(15,23,42,.08); }
+    .brand-copy { min-width:0; display:flex; flex-direction:column; gap:7px; }
+    .dashboard-motto { color:var(--muted); font-size:13px; font-weight:750; letter-spacing:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .title-actions { display:flex; align-items:center; gap:10px; flex:0 0 auto; }
     .phase-chip { min-width:144px; height:38px; border:1px solid var(--line); border-radius:999px; background:#fff; display:flex; align-items:center; justify-content:center; gap:7px; padding:0 13px; font-size:12px; font-weight:850; color:var(--ink); box-shadow:0 8px 20px rgba(15,23,42,.05); }
     .phase-chip .phase-dot { width:9px; height:9px; border-radius:50%; background:var(--muted); box-shadow:0 0 0 4px rgba(102,112,133,.1); }
@@ -654,6 +656,8 @@ INDEX_HTML = r"""<!doctype html>
       .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:center; }
       .brand-lockup { gap:8px; flex:1 1 auto; }
       .brand-logo { width:38px; height:38px; border-radius:8px; }
+      .brand-copy { gap:5px; }
+      .dashboard-motto { font-size:11px; max-width:190px; }
       .title-actions { gap:7px; flex:0 0 auto; }
       .phase-chip { min-width:88px; height:34px; padding:0 10px; font-size:12px; }
       .phase-chip .phase-dot { width:8px; height:8px; }
@@ -734,7 +738,7 @@ INDEX_HTML = r"""<!doctype html>
     <section class="dash">
       <div class="left-stack">
         <div class="left-titlebar">
-          <div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" /><h1>CSZY Ultimate V1</h1></div>
+          <div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" /><div class="brand-copy"><h1>CSZY Ultimate V1</h1><div class="dashboard-motto">把每一次回撤，都变成下一次出手的纪律。</div></div></div>
           <div class="title-actions">
             <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
             <button class="refresh-btn" onclick="loadAll()">刷新</button>
