@@ -963,7 +963,8 @@ INDEX_HTML = r"""<!doctype html>
     function renderBots(bots, controls) {
       const botPages = [
         ['b_buy_bot','b_sell_bot','d_buy_bot','d_sell_bot'],
-        ['dashboard_bot','risk_bot','ac_bot','f_buy_bot','f_sell_bot']
+        ['dashboard_bot','risk_bot','ac_bot','f_buy_bot','f_sell_bot'],
+        ['rebalance_bot']
       ];
       botPage = Math.max(0, Math.min(botPage, botPages.length - 1));
       const known = botPages[botPage];
@@ -987,7 +988,7 @@ INDEX_HTML = r"""<!doctype html>
       `;
     }
     function setBotPage(page) {
-      botPage = Math.max(0, Math.min(Number(page || 0), 1));
+      botPage = Math.max(0, Math.min(Number(page || 0), 2));
       renderBots(latestBotHeartbeats, latestBotControls);
     }
     function renderPhase(phase) {
