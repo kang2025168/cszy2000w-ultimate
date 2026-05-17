@@ -4,22 +4,19 @@ app/strategy_f.py
 
 策略F：B 卖出股二次拉回买入器。
 
-用途：
-1) 策略B如果因为 PEAK_GIVEBACK 离场，股票会被写入 monster_watchlist。
-2) F 全量扫描这些 WATCHING 股票，寻找相对 last_sell_price 涨回 5%-15% 的强势拉回。
-3) 每轮打分只保留 Top3；同一只股票连续 3 轮进 Top3，才写成 F 候选等待买入。
-
-设计重点：
-- 策略B止损跟得紧，用来保护利润。
-- 策略F负责把“被洗出去但可能继续起飞”的股票捞回来观察。
-- 买前仍会复核实时价格相对卖出价涨幅和日内位置。
+核心逻辑：
+1) 只扫描 monster_watchlist 中 B 卖出后的 WATCHING 股票。
+2) 当前价相对 last_sell_price 涨回 5%~15%。
+3) 当前价处于日内振幅上方区域 intraday_pos >= 0.55。
+4) 每 2 分钟确认一次 Top3。
+5) 同一只股票连续 3 个确认轮都进入 Top3，才写入 stock_operations，作为 F 候选等待买入。
+6) 真正下单由 strategy_F_buy 执行。
 """
 
 import os
 import math
-import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pymysql
 
@@ -56,63 +53,54 @@ DB = dict(
     cursorclass=pymysql.cursors.DictCursor,
 )
 
-PRICES_TABLE = os.getenv("F_PRICES_TABLE", os.getenv("B_PRICES_TABLE", "stock_prices_pool"))
 MONSTER_TABLE = os.getenv("MONSTER_TABLE", "monster_watchlist")
 OPS_TABLE = os.getenv("OPS_TABLE", "stock_operations")
-
-
-# =========================
-# 扫描参数
-# =========================
-F_SCAN_LIMIT = int(os.getenv("F_SCAN_LIMIT", "200"))
-F_BAR_LIMIT = int(os.getenv("F_BAR_LIMIT", "30"))
 F_SCORE_TABLE = os.getenv("F_SCORE_TABLE", "strategy_f_buy_scores")
+
+
+# =========================
+# F 扫描参数
+# =========================
 F_SCORE_TOP_N = int(os.getenv("F_SCORE_TOP_N", "3"))
 F_SCORE_CONFIRMATIONS = int(os.getenv("F_SCORE_CONFIRMATIONS", "3"))
+F_CONFIRM_INTERVAL_SECONDS = int(os.getenv("F_CONFIRM_INTERVAL_SECONDS", "120"))
 
-# 二次启动相对 B 卖出价至少涨回 5%，超过 15% 不追。
+# 当前价相对 B 卖出价涨回 5%~15%
 F_RECLAIM_MIN_PCT = float(os.getenv("F_RECLAIM_MIN_PCT", "0.05"))
 F_RECLAIM_MAX_PCT = float(os.getenv("F_RECLAIM_MAX_PCT", "0.15"))
 
-# 最近几日内寻找“洗盘阴线前的最近一根阳线”
-F_BULL_LOOKBACK_DAYS = int(os.getenv("F_BULL_LOOKBACK_DAYS", "5"))
+# 日内位置，默认 0.55
+F_INTRADAY_POS_MIN = float(os.getenv("F_INTRADAY_POS_MIN", "0.55"))
 
-# 当前价必须在日内振幅的上方区域，避免买到冲高回落
-F_INTRADAY_POS_MIN = float(os.getenv("F_INTRADAY_POS_MIN", "0.65"))
 
-# 动态追高上限：
-# 普通二次启动最多离突破阳线高点 12%；强势放量允许 18%；爆量大涨允许 25%。
-F_CHASE_BASE_MAX = float(os.getenv("F_CHASE_BASE_MAX", "0.12"))
-F_CHASE_STRONG_MAX = float(os.getenv("F_CHASE_STRONG_MAX", "0.18"))
-F_CHASE_EXPLOSIVE_MAX = float(os.getenv("F_CHASE_EXPLOSIVE_MAX", "0.25"))
-F_STRONG_DAY_UP = float(os.getenv("F_STRONG_DAY_UP", "0.10"))
-F_EXPLOSIVE_DAY_UP = float(os.getenv("F_EXPLOSIVE_DAY_UP", "0.15"))
-
-# F 是 B 的二次启动版本，默认仓位先小一点，避免妖股波动把账户打疼。
-F_TARGET_NOTIONAL_USD = float(os.getenv("F_TARGET_NOTIONAL_USD", "2500"))
-F_MAX_NOTIONAL_USD = float(os.getenv("F_MAX_NOTIONAL_USD", "2500"))
-F_MIN_BUYING_POWER = float(os.getenv("F_MIN_BUYING_POWER", "2500"))
+# =========================
+# F 仓位参数
+# =========================
+F_TARGET_NOTIONAL_USD = float(os.getenv("F_TARGET_NOTIONAL_USD", "1500"))
+F_MAX_NOTIONAL_USD = float(os.getenv("F_MAX_NOTIONAL_USD", "1500"))
+F_MIN_TRADE_NOTIONAL = float(os.getenv("F_MIN_TRADE_NOTIONAL", "300"))
 F_BP_USE_RATIO = float(os.getenv("F_BP_USE_RATIO", "0.98"))
-F_MARGIN_POOL_PCT = float(os.getenv("F_MARGIN_POOL_PCT", "0.30"))
-F_MIN_TRADE_NOTIONAL = float(os.getenv("F_MIN_TRADE_NOTIONAL", "500"))
+F_MARGIN_POOL_PCT = float(os.getenv("F_MARGIN_POOL_PCT", "0.15"))
 
-# F 的止损比 B 略宽：B 是 -2%，F 默认 -3%，给二次启动一点洗盘空间。
+# 初始止损 -3%
 F_INIT_STOP_PCT = float(os.getenv("F_INIT_STOP_PCT", "0.03"))
+
+# 盈利 5% 后抬到保本
 F_LOCK_BREAKEVEN_PCT = float(os.getenv("F_LOCK_BREAKEVEN_PCT", "0.05"))
 
-# F 的最高价回撤保护比 B 宽，目标是抓第二波，不是赚一点就跑。
+# 高点回撤保护
 F_PEAK_GIVEBACK_RULES = [
-    (0.60, 0.10),  # 最高涨 >=60%，允许从最高价回撤 10%
-    (0.30, 0.08),  # 最高涨 >=30%，允许回撤 8%
-    (0.15, 0.06),  # 最高涨 >=15%，允许回撤 6%
-    (0.05, 0.04),  # 最高涨 >=5%，允许回撤 4%
+    (0.60, 0.10),
+    (0.30, 0.08),
+    (0.15, 0.06),
+    (0.05, 0.04),
 ]
 
-# F 分批止盈：先落袋一部分，剩余仓位继续跟妖股趋势。
+# 分批止盈
 F_STAGE_RULES = [
-    (1, 0.15, 0.25),  # +15% 卖 25%
-    (2, 0.30, 0.25),  # +30% 再卖 25%
-    (3, 0.50, 0.20),  # +50% 再卖 20%，剩余 30% 交给回撤保护
+    (1, 0.15, 0.25),
+    (2, 0.30, 0.25),
+    (3, 0.50, 0.20),
 ]
 
 
@@ -129,8 +117,18 @@ def _safe_float(v, default=0.0):
         return default
 
 
+def _bucket_time_now():
+    """
+    每 F_CONFIRM_INTERVAL_SECONDS 秒一个确认桶。
+    默认 120 秒，也就是每 2 分钟算一轮。
+    """
+    now = datetime.now().replace(microsecond=0)
+    seconds = int(now.timestamp())
+    bucket_seconds = seconds - (seconds % int(F_CONFIRM_INTERVAL_SECONDS))
+    return datetime.fromtimestamp(bucket_seconds)
+
+
 def _ensure_monster_watchlist_table(conn):
-    """确保 B->F 二次启动观察池存在，避免 F 启动时缺表。"""
     sql = f"""
     CREATE TABLE IF NOT EXISTS `{MONSTER_TABLE}` (
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -156,11 +154,32 @@ def _ensure_monster_watchlist_table(conn):
         cur.execute(sql)
 
 
+def _ensure_f_score_table(conn):
+    sql = f"""
+    CREATE TABLE IF NOT EXISTS `{F_SCORE_TABLE}` (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        bucket_time DATETIME NOT NULL,
+        symbol VARCHAR(20) NOT NULL,
+        watch_id BIGINT NULL,
+        rank_no INT NOT NULL,
+        score DOUBLE NOT NULL,
+        price DOUBLE NULL,
+        last_sell_price DOUBLE NULL,
+        reclaim_pct DOUBLE NULL,
+        day_up_pct DOUBLE NULL,
+        intraday_pos DOUBLE NULL,
+        reason VARCHAR(255) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_bucket_symbol (bucket_time, symbol),
+        KEY idx_symbol_bucket (symbol, bucket_time),
+        KEY idx_bucket_rank (bucket_time, rank_no)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+
+
 def _load_watch_rows(cur):
-    """
-    全量扫描 B 卖出后的 WATCHING 状态观察池。
-    READY/BOUGHT/SOLD 不参与重新打分，避免重复买回。
-    """
     sql = f"""
     SELECT
         id,
@@ -208,12 +227,197 @@ def _load_one_f_row(conn, code: str):
     sql = f"""
     SELECT *
     FROM `{OPS_TABLE}`
-    WHERE stock_code=%s AND stock_type='F'
+    WHERE stock_code=%s
+      AND stock_type='F'
     LIMIT 1;
     """
     with conn.cursor() as cur:
         cur.execute(sql, (code,))
         return cur.fetchone()
+
+
+def _update_watch_note(cur, row_id: int, note: str):
+    sql = f"""
+    UPDATE `{MONSTER_TABLE}`
+    SET last_checked_at=NOW(),
+        notes=%s
+    WHERE id=%s;
+    """
+    cur.execute(sql, ((note or "")[:500], int(row_id)))
+
+
+def _mark_watch_status(cur, row_id: int, status: str, note: str):
+    sql = f"""
+    UPDATE `{MONSTER_TABLE}`
+    SET watch_status=%s,
+        last_checked_at=NOW(),
+        notes=%s
+    WHERE id=%s;
+    """
+    cur.execute(sql, (status, (note or "")[:500], int(row_id)))
+
+
+def _update_ops_f_fields(conn, code: str, **kwargs):
+    if not kwargs:
+        return
+
+    cols = []
+    vals = []
+
+    for k, v in kwargs.items():
+        cols.append(f"`{k}`=%s")
+        vals.append(v)
+
+    vals.append(code)
+
+    sql = f"""
+    UPDATE `{OPS_TABLE}`
+    SET {', '.join(cols)}
+    WHERE stock_code=%s
+      AND stock_type='F';
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(sql, tuple(vals))
+
+
+def _get_realtime_daily_bar(code: str):
+    code = (code or "").strip().upper()
+    if not code:
+        raise RuntimeError("empty symbol")
+
+    _sleep_for_rate_limit()
+    r = _snapshot_http(code, B_DATA_FEED)
+
+    if r.status_code != 200:
+        raise RuntimeError(f"snapshot http {r.status_code}: {r.text[:200]}")
+
+    js = r.json()
+    db = js.get("dailyBar") or {}
+    lt = js.get("latestTrade") or {}
+    lq = js.get("latestQuote") or {}
+    pb = js.get("prevDailyBar") or {}
+
+    bid = _safe_float(lq.get("bp"), 0.0)
+    ask = _safe_float(lq.get("ap"), 0.0)
+
+    last = _safe_float(lt.get("p"), 0.0)
+    if last <= 0:
+        last = _safe_float(db.get("c"), 0.0)
+    if last <= 0 and bid > 0 and ask > 0:
+        last = (bid + ask) / 2.0
+
+    open_ = _safe_float(db.get("o"), last)
+    high = _safe_float(db.get("h"), last)
+    low = _safe_float(db.get("l"), last)
+    prev_close = _safe_float(pb.get("c"), 0.0)
+
+    if last <= 0 or prev_close <= 0:
+        raise RuntimeError(f"snapshot missing fields: last={last} prev_close={prev_close}")
+
+    high = max(high, last)
+    low = min(low if low > 0 else last, last)
+
+    return {
+        "date": db.get("t") or "realtime",
+        "open": open_,
+        "high": high,
+        "low": low,
+        "close": last,
+        "prev_close": prev_close,
+        "bid": bid,
+        "ask": ask,
+        "feed": B_DATA_FEED,
+    }
+
+
+def _score_f_candidate(row: dict):
+    """
+    F 简化版买入评分：
+
+    必须满足：
+    1. price 比 last_sell_price 高 5%~15%
+    2. intraday_pos >= 0.55
+
+    不要求 day_up >= 5%。
+    """
+    code = (row.get("stock_code") or "").strip().upper()
+    last_sell = _safe_float(row.get("last_sell_price"))
+
+    if not code or last_sell <= 0:
+        return None
+
+    rt = _get_realtime_daily_bar(code)
+
+    price = _safe_float(rt.get("close"))
+    prev_close = _safe_float(rt.get("prev_close"))
+    high = _safe_float(rt.get("high"))
+    low = _safe_float(rt.get("low"))
+
+    if price <= 0:
+        return None
+
+    reclaim_pct = (price - last_sell) / last_sell if last_sell > 0 else 0.0
+    day_up = (price - prev_close) / prev_close if prev_close > 0 else 0.0
+    intraday_pos = (price - low) / (high - low) if high > low else 1.0
+
+    min_price = last_sell * (1.0 + F_RECLAIM_MIN_PCT)
+    max_price = last_sell * (1.0 + F_RECLAIM_MAX_PCT)
+
+    if not (
+        reclaim_pct >= F_RECLAIM_MIN_PCT
+        and reclaim_pct <= F_RECLAIM_MAX_PCT
+        and intraday_pos >= F_INTRADAY_POS_MIN
+    ):
+        return None
+
+    headroom_pct = max(0.0, F_RECLAIM_MAX_PCT - reclaim_pct)
+
+    score = (
+        reclaim_pct * 300.0
+        + intraday_pos * 100.0
+        + headroom_pct * 120.0
+        + max(day_up, 0.0) * 80.0
+    )
+
+    reason = (
+        f"price={price:.2f} last_sell={last_sell:.2f} "
+        f"range={min_price:.2f}-{max_price:.2f} "
+        f"reclaim={reclaim_pct:.2%} "
+        f"day_up={day_up:.2%} "
+        f"intraday_pos={intraday_pos:.2f}"
+    )
+
+    return {
+        "symbol": code,
+        "watch_id": int(row.get("id") or 0),
+        "watch": row,
+        "score": round(float(score), 4),
+        "price": price,
+        "last_sell_price": last_sell,
+        "reclaim_pct": reclaim_pct,
+        "day_up_pct": day_up,
+        "intraday_pos": intraday_pos,
+        "reason": reason[:255],
+        "metrics": {
+            "date": rt.get("date"),
+            "open": _safe_float(rt.get("open")),
+            "close": price,
+            "high": high,
+            "low": low,
+            "day_up": day_up,
+            "intraday_pos": intraday_pos,
+            "bid": _safe_float(rt.get("bid")),
+            "ask": _safe_float(rt.get("ask")),
+            "feed": rt.get("feed"),
+        },
+        "detail": {
+            "last_sell_price": last_sell,
+            "min_reclaim_price": min_price,
+            "max_reclaim_price": max_price,
+            "reclaim_pct": reclaim_pct,
+        },
+    }
 
 
 def _get_active_f_used_capital(conn) -> float:
@@ -234,21 +438,28 @@ def _get_active_f_used_capital(conn) -> float:
                 """
             )
             rows = cur.fetchall() or []
+
         total = 0.0
+
         for row in rows:
             if row.get("market_value") is not None:
                 total += abs(float(row.get("market_value") or 0.0))
                 continue
+
             if row.get("cost_basis") is not None:
                 total += abs(float(row.get("cost_basis") or 0.0))
                 continue
+
             qty = float(row.get("qty") or 0.0)
             price = row.get("current_price")
             if price is None:
                 price = row.get("avg_entry_price")
+
             total += abs(qty * float(price or 0.0))
+
         if total > 0:
             return total
+
     except Exception:
         pass
 
@@ -257,19 +468,25 @@ def _get_active_f_used_capital(conn) -> float:
             f"""
             SELECT qty, current_price, close_price, cost_price
             FROM `{OPS_TABLE}`
-            WHERE stock_type='F' AND is_bought=1
+            WHERE stock_type='F'
+              AND is_bought=1;
             """
         )
         rows = cur.fetchall() or []
+
     total = 0.0
+
     for row in rows:
         qty = float(row.get("qty") or 0.0)
         price = row.get("current_price")
+
         if price is None:
             price = row.get("close_price")
         if price is None:
             price = row.get("cost_price")
+
         total += abs(qty * float(price or 0.0))
+
     return total
 
 
@@ -278,7 +495,14 @@ def _f_margin_buy_plan(conn, buying_power: float) -> dict:
     pool_cap = buying_power * max(0.0, float(F_MARGIN_POOL_PCT))
     used = _get_active_f_used_capital(conn)
     available = max(0.0, pool_cap - used)
-    target = min(float(F_TARGET_NOTIONAL_USD), float(F_MAX_NOTIONAL_USD), available, buying_power * float(F_BP_USE_RATIO))
+
+    target = min(
+        float(F_TARGET_NOTIONAL_USD),
+        float(F_MAX_NOTIONAL_USD),
+        available,
+        buying_power * float(F_BP_USE_RATIO),
+    )
+
     return {
         "pool_pct": float(F_MARGIN_POOL_PCT),
         "pool_cap": pool_cap,
@@ -288,358 +512,23 @@ def _f_margin_buy_plan(conn, buying_power: float) -> dict:
     }
 
 
-def _update_ops_f_fields(conn, code: str, **kwargs):
-    if not kwargs:
-        return
-    cols = []
-    vals = []
-    for k, v in kwargs.items():
-        cols.append(f"`{k}`=%s")
-        vals.append(v)
-    sql = f"UPDATE `{OPS_TABLE}` SET {', '.join(cols)} WHERE stock_code=%s AND stock_type='F';"
-    vals.append(code)
-    with conn.cursor() as cur:
-        cur.execute(sql, tuple(vals))
-
-
-def _load_recent_bars(cur, code: str, limit: int = F_BAR_LIMIT):
-    """
-    最近K线，按日期倒序返回。
-    需要 high/low 是为了后面扩展“洗盘深度、重新突破前高”等判断。
-    """
-    sql = f"""
-    SELECT DATE(`date`) AS d, `open`, `high`, `low`, `close`
-    FROM `{PRICES_TABLE}`
-    WHERE symbol=%s
-    ORDER BY `date` DESC
-    LIMIT %s;
-    """
-    cur.execute(sql, (code, int(limit)))
-    return cur.fetchall() or []
-
-
-def _get_realtime_daily_bar(code: str):
-    """
-    从 Alpaca snapshot 拉取今天的实时日内数据。
-
-    stock_prices_pool 只当历史库用；F 的“今天涨幅、今天高低点、当前价”
-    全部以这里的实时数据为准。
-    """
-    code = (code or "").strip().upper()
-    if not code:
-        raise RuntimeError("empty symbol")
-
-    _sleep_for_rate_limit()
-    r = _snapshot_http(code, B_DATA_FEED)
-    if r.status_code != 200:
-        raise RuntimeError(f"snapshot http {r.status_code}: {r.text[:200]}")
-
-    js = r.json()
-    db = js.get("dailyBar") or {}
-    lt = js.get("latestTrade") or {}
-    lq = js.get("latestQuote") or {}
-    pb = js.get("prevDailyBar") or {}
-
-    bid = _safe_float(lq.get("bp"), 0.0)
-    ask = _safe_float(lq.get("ap"), 0.0)
-    last = _safe_float(lt.get("p"), 0.0)
-    if last <= 0:
-        last = _safe_float(db.get("c"), 0.0)
-    if last <= 0 and bid > 0 and ask > 0:
-        last = (bid + ask) / 2.0
-
-    open_ = _safe_float(db.get("o"), last)
-    high = _safe_float(db.get("h"), last)
-    low = _safe_float(db.get("l"), last)
-    close = last
-    prev_close = _safe_float(pb.get("c"), 0.0)
-
-    if close <= 0 or prev_close <= 0:
-        raise RuntimeError(f"snapshot missing realtime fields: close={close} prev_close={prev_close}")
-
-    # dailyBar 可能轻微滞后，用 latestTrade 防御性修正高低点。
-    high = max(high, close)
-    low = min(low if low > 0 else close, close)
-
-    return {
-        "date": db.get("t") or "realtime",
-        "open": open_,
-        "high": high,
-        "low": low,
-        "close": close,
-        "prev_close": prev_close,
-        "bid": bid,
-        "ask": ask,
-        "feed": B_DATA_FEED,
-    }
-
-
-def _calc_metrics(code: str, bars_desc):
-    """
-    根据历史K线 + Alpaca 实时日内数据计算二次启动信号。
-
-    bars_desc: 历史K线，最新的已完成交易日在前，不依赖今天收盘后才入库的数据。
-    最少需要20根历史K线，因为要计算过去20日均量。
-    """
-    if len(bars_desc) < 20:
-        return None
-
-    closes = [_safe_float(r.get("close")) for r in bars_desc]
-    opens = [_safe_float(r.get("open")) for r in bars_desc]
-    highs = [_safe_float(r.get("high")) for r in bars_desc]
-    lows = [_safe_float(r.get("low")) for r in bars_desc]
-
-    code = (code or "").strip().upper()
-    rt = _get_realtime_daily_bar(code)
-
-    open_today = _safe_float(rt.get("open"))
-    close_today = _safe_float(rt.get("close"))
-    high_today = _safe_float(rt.get("high"))
-    low_today = _safe_float(rt.get("low"))
-    close_prev = _safe_float(rt.get("prev_close"))
-
-    closes_with_today = [close_today] + closes
-
-    ma3 = sum(closes_with_today[0:3]) / 3.0
-    ma8 = sum(closes_with_today[0:8]) / 8.0
-    ma20 = sum(closes_with_today[0:20]) / 20.0
-
-    day_up = (close_today - close_prev) / close_prev if close_prev > 0 else 0.0
-    day_range = high_today - low_today
-    intraday_pos = (close_today - low_today) / day_range if day_range > 0 else 0.0
-    high20_prev = max(highs[0:20])
-    low10_prev = min(lows[0:10])
-
-    return {
-        "date": rt.get("date"),
-        "open": open_today,
-        "close": close_today,
-        "high": high_today,
-        "low": low_today,
-        "ma3": ma3,
-        "ma8": ma8,
-        "ma20": ma20,
-        "day_up": day_up,
-        "intraday_pos": intraday_pos,
-        "high20_prev": high20_prev,
-        "low10_prev": low10_prev,
-        "bid": _safe_float(rt.get("bid")),
-        "ask": _safe_float(rt.get("ask")),
-        "feed": rt.get("feed"),
-    }
-
-
-def _find_recent_bull_reference(bars_desc):
-    """
-    寻找“洗盘阴线前的最近一根阳线”。
-
-    逻辑：
-    - bars_desc 是历史K线，最新一根就是昨天/最近完成交易日。
-    - 最近如果连续阴线，全部跳过，视为洗盘。
-    - 在最近 N 天内找到第一根阳线，取它的 high 作为突破位。
-
-    返回：
-      (阳线K线, 阳线high, 跳过的阴线数量)
-    """
-    lookback = max(int(F_BULL_LOOKBACK_DAYS), 1)
-    skipped_bear = 0
-
-    for r in bars_desc[0:lookback]:
-        o = _safe_float(r.get("open"))
-        c = _safe_float(r.get("close"))
-        h = _safe_float(r.get("high"))
-
-        if c > o and h > 0:
-            return r, h, skipped_bear
-
-        if c < o:
-            skipped_bear += 1
-
-    return None, 0.0, skipped_bear
-
-
-def _max_chase_pct(day_up: float) -> float:
-    """
-    动态追高上限。
-
-    妖股允许涨得多，但不能无脑追：
-    - 普通二次启动：最多高出参考阳线 high 12%
-    - 当天涨幅 >=10%：最多高出 18%
-    - 当天涨幅 >=15%：最多高出 25%
-    """
-    if day_up >= F_EXPLOSIVE_DAY_UP:
-        return F_CHASE_EXPLOSIVE_MAX
-    if day_up >= F_STRONG_DAY_UP:
-        return F_CHASE_STRONG_MAX
-    return F_CHASE_BASE_MAX
-
-
-def _is_restart_candidate(row, m, bars_desc):
-    """
-    二次启动候选规则。
-
-    当天买入版核心：
-    1) 最近5日内，跳过最近连续阴线，找到最近一根阳线。
-    2) 当前价突破这根阳线 high，说明洗盘后重新启动。
-    3) 当天涨幅 >= 5%。
-    4) close > MA3 且 MA3 > MA8，短线趋势不能坏。
-    5) 当前价处在日内高位，过滤冲高回落。
-    6) 追高上限动态放宽，妖股强势爆量时允许追得更远。
-    """
-    close = _safe_float(m.get("close"))
-    ma3 = _safe_float(m.get("ma3"))
-    ma8 = _safe_float(m.get("ma8"))
-    day_up = _safe_float(m.get("day_up"))
-    intraday_pos = _safe_float(m.get("intraday_pos"))
-    bull_bar, bull_high, skipped_bear = _find_recent_bull_reference(bars_desc)
-    max_chase_pct = _max_chase_pct(day_up)
-    max_chase_price = bull_high * (1.0 + max_chase_pct) if bull_high > 0 else 0.0
-
-    checks = []
-    checks.append(("bull_ref", bull_high > 0))
-    checks.append(("break_bull_high", bull_high > 0 and close > bull_high))
-    checks.append(("not_over_chase", bull_high > 0 and close <= max_chase_price))
-    checks.append(("close>ma3", close > ma3 > 0))
-    checks.append(("ma3>ma8", ma3 > ma8 > 0))
-    checks.append(("intraday_pos", intraday_pos >= F_INTRADAY_POS_MIN))
-
-    passed = [name for name, ok in checks if ok]
-    failed = [name for name, ok in checks if not ok]
-    detail = {
-        "bull_date": bull_bar.get("d") if bull_bar else None,
-        "bull_high": bull_high,
-        "skipped_bear": skipped_bear,
-        "max_chase_pct": max_chase_pct,
-        "max_chase_price": max_chase_price,
-    }
-    return len(failed) == 0, passed, failed, detail
-
-
-def _update_watch_note(cur, row_id: int, note: str):
-    sql = f"""
-    UPDATE `{MONSTER_TABLE}`
-    SET last_checked_at=NOW(), notes=%s
-    WHERE id=%s;
-    """
-    cur.execute(sql, ((note or "")[:500], int(row_id)))
-
-
-def _mark_watch_status(cur, row_id: int, status: str, note: str):
-    sql = f"""
-    UPDATE `{MONSTER_TABLE}`
-    SET watch_status=%s,
-        last_checked_at=NOW(),
-        notes=%s
-    WHERE id=%s;
-    """
-    cur.execute(sql, (status, (note or "")[:500], int(row_id)))
-
-
-def _ensure_f_score_table(conn):
-    sql = f"""
-    CREATE TABLE IF NOT EXISTS `{F_SCORE_TABLE}` (
-        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        bucket_time DATETIME NOT NULL,
-        symbol VARCHAR(20) NOT NULL,
-        watch_id BIGINT NULL,
-        rank_no INT NOT NULL,
-        score DOUBLE NOT NULL,
-        price DOUBLE NULL,
-        last_sell_price DOUBLE NULL,
-        day_up_pct DOUBLE NULL,
-        intraday_pos DOUBLE NULL,
-        reason VARCHAR(255) NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE KEY uniq_bucket_symbol (bucket_time, symbol),
-        KEY idx_symbol_bucket (symbol, bucket_time),
-        KEY idx_bucket_rank (bucket_time, rank_no)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql)
-
-
-def _score_f_candidate(row: dict):
-    code = (row.get("stock_code") or "").strip().upper()
-    last_sell = _safe_float(row.get("last_sell_price"))
-    if not code or last_sell <= 0:
-        return None
-
-    rt = _get_realtime_daily_bar(code)
-    price = _safe_float(rt.get("close"))
-    prev_close = _safe_float(rt.get("prev_close"))
-    high = _safe_float(rt.get("high"))
-    low = _safe_float(rt.get("low"))
-    day_up = (price - prev_close) / prev_close if prev_close > 0 else 0.0
-    intraday_pos = (price - low) / (high - low) if high > low else 1.0
-    max_price = last_sell * (1.0 + float(F_RECLAIM_MAX_PCT))
-
-    reclaim_pct = (price - last_sell) / last_sell
-    if not (
-        reclaim_pct >= float(F_RECLAIM_MIN_PCT)
-        and reclaim_pct <= float(F_RECLAIM_MAX_PCT)
-        and intraday_pos >= float(F_INTRADAY_POS_MIN)
-    ):
-        return None
-
-    headroom_pct = max(0.0, float(F_RECLAIM_MAX_PCT) - reclaim_pct)
-    score = (
-        day_up * 1000.0
-        + intraday_pos * 80.0
-        + headroom_pct * 160.0
-        + min(max(reclaim_pct, 0.0), float(F_RECLAIM_MAX_PCT)) * 120.0
-    )
-    reason = (
-        f"price={price:.2f} last_sell={last_sell:.2f} reclaim={reclaim_pct:.2%} "
-        f"day_up={day_up:.2%} intraday_pos={intraday_pos:.2f} max={max_price:.2f}"
-    )
-    return {
-        "symbol": code,
-        "watch_id": int(row.get("id") or 0),
-        "watch": row,
-        "score": round(float(score), 4),
-        "price": price,
-        "last_sell_price": last_sell,
-        "day_up_pct": day_up,
-        "intraday_pos": intraday_pos,
-        "max_price": max_price,
-        "reason": reason[:255],
-        "metrics": {
-            "date": rt.get("date"),
-            "open": _safe_float(rt.get("open")),
-            "close": price,
-            "high": high,
-            "low": low,
-            "day_up": day_up,
-            "intraday_pos": intraday_pos,
-            "bid": _safe_float(rt.get("bid")),
-            "ask": _safe_float(rt.get("ask")),
-            "feed": rt.get("feed"),
-        },
-        "detail": {
-            "last_sell_price": last_sell,
-            "max_reclaim_price": max_price,
-            "reclaim_pct": reclaim_pct,
-        },
-    }
-
-
 def _upsert_ready_f_ops(cur, code: str, row: dict, m: dict, detail: dict, note: str) -> bool:
-    """
-    把二次启动候选写入 stock_operations，作为 stock_type='F' 等待主程序买入。
-
-    保护规则：
-    - 如果这只股票已经有持仓，不抢、不改。
-    - 如果它属于 A/C/D/E 等其它策略，不抢。
-    - 只有不存在、B 未持仓、F 未持仓时，才改成 F 候选。
-    """
     existing = _load_ops_row(cur, code)
+
+    trigger_price = round(float(detail.get("last_sell_price") or 0), 2)
+    close_price = round(float(m.get("close") or 0), 2)
+    entry_open = round(float(m.get("open") or 0), 2)
+    entry_close = round(float(m.get("close") or 0), 2)
+    entry_date = str(m.get("date"))
+
     if existing:
         is_bought = int(existing.get("is_bought") or 0)
         old_type = str(existing.get("stock_type") or "").strip().upper()
+
         if is_bought == 1:
             print(f"[F READY] {code} skip: already bought stock_type={old_type}", flush=True)
             return False
+
         if old_type not in ("B", "F"):
             print(f"[F READY] {code} skip: protected old stock_type={old_type}", flush=True)
             return False
@@ -666,14 +555,15 @@ def _upsert_ready_f_ops(cur, code: str, row: dict, m: dict, detail: dict, note: 
             updated_at=CURRENT_TIMESTAMP
         WHERE stock_code=%s;
         """
+
         cur.execute(
             sql,
             (
-                round(float(detail.get("last_sell_price") or detail.get("bull_high") or 0), 2),
-                round(float(m.get("close") or 0), 2),
-                round(float(m.get("open") or 0), 2),
-                round(float(m.get("close") or 0), 2),
-                str(m.get("date")),
+                trigger_price,
+                close_price,
+                entry_open,
+                entry_close,
+                entry_date,
                 _intent_short(note),
                 code,
             ),
@@ -704,40 +594,51 @@ def _upsert_ready_f_ops(cur, code: str, row: dict, m: dict, detail: dict, note: 
     )
     VALUES (%s, 'F', 0, 1, 0, %s, %s, %s, %s, %s, NULL, 0, 0, NULL, 0, 0, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
     """
+
     cur.execute(
         sql,
         (
             code,
-            round(float(detail.get("last_sell_price") or detail.get("bull_high") or 0), 2),
-            round(float(m.get("close") or 0), 2),
-            round(float(m.get("open") or 0), 2),
-            round(float(m.get("close") or 0), 2),
-            str(m.get("date")),
+            trigger_price,
+            close_price,
+            entry_open,
+            entry_close,
+            entry_date,
             _intent_short(note),
         ),
     )
+
     return True
 
 
 def strategy_F_scan(prepare_buy: bool = False):
     """
-    扫描 B 卖出观察池，按简化 F 规则打分。
+    扫描 F 观察池。
 
-    prepare_buy=False：只扫描打印。
-    prepare_buy=True ：最近 3 次都进 Top3 且本次分数最高时，写入 F/can_buy=1。
+    prepare_buy=False：
+      只打印当前 Top3。
+
+    prepare_buy=True：
+      每 2 分钟确认一次。
+      同一只股票连续 3 个确认桶都进入 Top3，才写入 F/can_buy=1。
     """
     conn = _connect()
+
     try:
         _ensure_monster_watchlist_table(conn)
         _ensure_f_score_table(conn)
+
         with conn.cursor() as cur:
             rows = _load_watch_rows(cur)
 
         scored = []
+
         for row in rows:
             code = (row.get("stock_code") or "").strip().upper()
+
             if not code:
                 continue
+
             try:
                 item = _score_f_candidate(row)
             except Exception as e:
@@ -745,44 +646,64 @@ def strategy_F_scan(prepare_buy: bool = False):
                     _update_watch_note(cur, int(row["id"]), f"HOLD: F realtime score failed {e}")
                 print(f"[F SCORE] {code} skip score error: {e}", flush=True)
                 continue
+
             if item:
                 scored.append(item)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        top = scored[: max(int(F_SCORE_TOP_N), 1)]
-        bucket_time = datetime.now().replace(microsecond=0)
+
+        top_n = max(int(F_SCORE_TOP_N), 1)
+        top = scored[:top_n]
+
+        bucket_time = _bucket_time_now()
+
         if top:
             sql = f"""
             INSERT INTO `{F_SCORE_TABLE}` (
-                bucket_time, symbol, watch_id, rank_no, score, price,
-                last_sell_price, day_up_pct, intraday_pos, reason
+                bucket_time,
+                symbol,
+                watch_id,
+                rank_no,
+                score,
+                price,
+                last_sell_price,
+                reclaim_pct,
+                day_up_pct,
+                intraday_pos,
+                reason
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE
                 watch_id=VALUES(watch_id),
                 rank_no=VALUES(rank_no),
                 score=VALUES(score),
                 price=VALUES(price),
                 last_sell_price=VALUES(last_sell_price),
+                reclaim_pct=VALUES(reclaim_pct),
                 day_up_pct=VALUES(day_up_pct),
                 intraday_pos=VALUES(intraday_pos),
                 reason=VALUES(reason);
             """
-            args = [
-                (
-                    bucket_time,
-                    item["symbol"],
-                    item["watch_id"],
-                    idx,
-                    item["score"],
-                    item["price"],
-                    item["last_sell_price"],
-                    item["day_up_pct"],
-                    item["intraday_pos"],
-                    item["reason"],
+
+            args = []
+
+            for idx, item in enumerate(top, start=1):
+                args.append(
+                    (
+                        bucket_time,
+                        item["symbol"],
+                        item["watch_id"],
+                        idx,
+                        item["score"],
+                        item["price"],
+                        item["last_sell_price"],
+                        item["reclaim_pct"],
+                        item["day_up_pct"],
+                        item["intraday_pos"],
+                        item["reason"],
+                    )
                 )
-                for idx, item in enumerate(top, start=1)
-            ]
+
             with conn.cursor() as cur:
                 cur.executemany(sql, args)
 
@@ -793,6 +714,7 @@ def strategy_F_scan(prepare_buy: bool = False):
         )
 
         selected = []
+
         if prepare_buy and top:
             confirm_sql = f"""
             SELECT
@@ -814,17 +736,38 @@ def strategy_F_scan(prepare_buy: bool = False):
             ORDER BY latest_rank ASC, avg_score DESC
             LIMIT 1;
             """
+
             with conn.cursor() as cur:
-                cur.execute(confirm_sql, (bucket_time, int(F_SCORE_CONFIRMATIONS), int(F_SCORE_CONFIRMATIONS)))
+                cur.execute(
+                    confirm_sql,
+                    (
+                        bucket_time,
+                        int(F_SCORE_CONFIRMATIONS),
+                        int(F_SCORE_CONFIRMATIONS),
+                    ),
+                )
                 confirmed = cur.fetchone()
 
             if confirmed:
                 symbol = str(confirmed.get("symbol") or "").upper()
                 item = next((x for x in top if x["symbol"] == symbol), None)
+
                 if item:
-                    note = f"PASS: F_TOP3_CONFIRM hits={confirmed.get('hits')} {item['reason']}"
+                    note = (
+                        f"PASS: F_TOP{F_SCORE_TOP_N}_CONFIRM "
+                        f"hits={confirmed.get('hits')} {item['reason']}"
+                    )
+
                     with conn.cursor() as cur:
-                        ready_ok = _upsert_ready_f_ops(cur, symbol, item["watch"], item["metrics"], item["detail"], note)
+                        ready_ok = _upsert_ready_f_ops(
+                            cur,
+                            symbol,
+                            item["watch"],
+                            item["metrics"],
+                            item["detail"],
+                            note,
+                        )
+
                         if ready_ok:
                             _mark_watch_status(cur, int(item["watch_id"]), "READY", note)
                             selected.append(item)
@@ -839,60 +782,53 @@ def strategy_F_scan(prepare_buy: bool = False):
 
 
 def strategy_F_refresh_candidates():
-    """
-    给主程序调用：扫描观察池，把满足二次启动的股票写成 F 候选。
-
-    注意：这里仍然不下单，只是让 stock_operations 出现 can_buy=1 的 F 记录。
-    真正下单由 strategy_F_buy 执行，并继续受主程序资金开关/大盘开关控制。
-    """
     rows = strategy_F_scan(prepare_buy=True)
     return len(rows)
 
 
 def strategy_F_buy(code: str) -> bool:
-    """
-    策略F买入：只买 stock_operations 里已经被标记为 F/can_buy=1 的二次启动候选。
-
-    和 B 的区别：
-    - F 来自 monster_watchlist，是 B 被洗出去后的二次启动。
-    - F 默认仓位更小。
-    - F 初始止损更宽，默认 6%。
-    """
     code = (code or "").strip().upper()
     print(f"[F BUY] {code}", flush=True)
 
     conn = None
     order_id = None
+
     try:
         conn = _connect()
+
         row = _load_one_f_row(conn, code)
+
         if not row:
             print(f"[F BUY] {code} skip: no F row", flush=True)
             return False
 
         can_buy = int(row.get("can_buy") or 0)
         is_bought = int(row.get("is_bought") or 0)
+
         if can_buy != 1:
             print(f"[F BUY] {code} skip: can_buy={can_buy}", flush=True)
             return False
+
         if is_bought == 1:
             print(f"[F BUY] {code} skip: already bought", flush=True)
             return False
 
         with conn.cursor() as cur:
             watch = _load_watch_row_by_code(cur, code)
+
         if not watch:
             print(f"[F BUY] {code} skip: no watch row", flush=True)
             return False
 
-        # 买前再确认一次 F 信号，避免 READY 后行情已经回落还继续买。
         try:
             item = _score_f_candidate(watch)
         except Exception as e:
             print(f"[F BUY] {code} skip: realtime snapshot failed {e}", flush=True)
             return False
+
         if not item:
             print(f"[F BUY] {code} skip: signal faded simple reclaim rule", flush=True)
+
             _update_ops_f_fields(
                 conn,
                 code,
@@ -900,15 +836,19 @@ def strategy_F_buy(code: str) -> bool:
                 last_order_intent=_intent_short("F:BUY_SIGNAL_FADED simple_reclaim_rule"),
                 updated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
+
             with conn.cursor() as cur:
                 _mark_watch_status(cur, int(watch["id"]), "WATCHING", "BUY_SIGNAL_FADED: simple_reclaim_rule")
+
             return False
+
         m = item["metrics"]
         detail = item["detail"]
 
         price = float(m.get("close") or 0.0)
         bid = float(m.get("bid") or 0.0)
         ask = float(m.get("ask") or 0.0)
+
         if price <= 0:
             print(f"[F BUY] {code} skip: invalid realtime price={price:.2f}", flush=True)
             return False
@@ -919,52 +859,68 @@ def strategy_F_buy(code: str) -> bool:
         tc = _get_trading_client()
         buying_power = _get_buying_power(tc)
         margin_plan = _f_margin_buy_plan(conn, buying_power)
+
         print(
             f"[F BUY PLAN] {code} buying_power={buying_power:.2f} "
-            f"pool_pct={margin_plan['pool_pct']:.2%} pool_cap={margin_plan['pool_cap']:.2f} "
-            f"used={margin_plan['used']:.2f} available={margin_plan['available']:.2f} "
+            f"pool_pct={margin_plan['pool_pct']:.2%} "
+            f"pool_cap={margin_plan['pool_cap']:.2f} "
+            f"used={margin_plan['used']:.2f} "
+            f"available={margin_plan['available']:.2f} "
             f"target={margin_plan['target']:.2f}",
             flush=True,
         )
+
         if margin_plan["target"] < float(F_MIN_TRADE_NOTIONAL):
             print(
-                f"[F BUY] {code} skip: F margin pool target={margin_plan['target']:.2f} "
+                f"[F BUY] {code} skip: target={margin_plan['target']:.2f} "
                 f"< min_trade={float(F_MIN_TRADE_NOTIONAL):.2f}",
                 flush=True,
             )
             return False
 
         required_bp = float(margin_plan["target"]) / max(float(F_BP_USE_RATIO), 0.01)
+
         if buying_power < required_bp:
-            print(f"[F BUY] {code} skip: buying_power={buying_power:.2f} < required_bp={required_bp:.2f}", flush=True)
+            print(
+                f"[F BUY] {code} skip: buying_power={buying_power:.2f} "
+                f"< required_bp={required_bp:.2f}",
+                flush=True,
+            )
             return False
 
         target = float(margin_plan["target"])
         qty = int(math.floor(target / price)) if price > 0 else 0
+
         if qty <= 0:
             print(f"[F BUY] {code} skip: qty={qty} target={target:.2f} price={price:.2f}", flush=True)
             return False
 
-        # F 是卖出价上方二次拉回，限价给一点成交空间，但不超过 last_sell * (1 + 上限)。
         raw_limit = (ask * 1.003) if ask > 0 else (price * 1.005)
         raw_limit = max(raw_limit, price * 1.002)
+
         if max_reclaim_price > 0:
             raw_limit = min(raw_limit, max_reclaim_price)
+
         limit_price = round(float(raw_limit), 2)
+
         if limit_price < price:
             print(f"[F BUY] {code} skip: limit={limit_price:.2f} < price={price:.2f}", flush=True)
             return False
 
         intent = (
             f"F:BUY qty={qty} rt={price:.2f} bid={bid:.2f} ask={ask:.2f} "
-            f"limit={limit_price:.2f} last_sell={last_sell:.2f} max={max_reclaim_price:.2f} "
-            f"day_up={m['day_up']:.2%} intraday_pos={m['intraday_pos']:.2f}"
+            f"limit={limit_price:.2f} last_sell={last_sell:.2f} "
+            f"max={max_reclaim_price:.2f} "
+            f"reclaim={item['reclaim_pct']:.2%} "
+            f"intraday_pos={m['intraday_pos']:.2f}"
         )
 
         _cancel_open_buy_orders(tc, code)
+
         order = _submit_limit_buy_qty(tc, code, qty, limit_price=limit_price)
         order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
         order_status = str(getattr(order, "status", "") or "")
+
         print(f"[F BUY] {code} order submitted: id={order_id} status={order_status}", flush=True)
 
         if order_status.lower() in ("rejected", "expired"):
@@ -978,12 +934,14 @@ def strategy_F_buy(code: str) -> bool:
                 last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 updated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
-            if watch:
-                with conn.cursor() as cur:
-                    _mark_watch_status(cur, int(watch["id"]), "WATCHING", f"BUY_REJECT: status={order_status}")
+
+            with conn.cursor() as cur:
+                _mark_watch_status(cur, int(watch["id"]), "WATCHING", f"BUY_REJECT: status={order_status}")
+
             return False
 
         filled_qty, filled_avg = _reconcile_fill(tc, code, str(order_id), wait_sec=4.0)
+
         if filled_qty <= 0 or filled_avg <= 0:
             _update_ops_f_fields(
                 conn,
@@ -995,9 +953,10 @@ def strategy_F_buy(code: str) -> bool:
                 last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 updated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
-            if watch:
-                with conn.cursor() as cur:
-                    _mark_watch_status(cur, int(watch["id"]), "WATCHING", "BUY_NO_FILL")
+
+            with conn.cursor() as cur:
+                _mark_watch_status(cur, int(watch["id"]), "WATCHING", "BUY_NO_FILL")
+
             return False
 
         cost_price = float(filled_avg)
@@ -1031,16 +990,16 @@ def strategy_F_buy(code: str) -> bool:
             updated_at=now_str,
         )
 
-        if watch:
-            with conn.cursor() as cur:
-                _mark_watch_status(
-                    cur,
-                    int(watch["id"]),
-                    "BOUGHT",
-                    f"BOUGHT: F qty={qty_to_write} cost={cost_price:.2f} sl={init_sl:.2f}",
-                )
+        with conn.cursor() as cur:
+            _mark_watch_status(
+                cur,
+                int(watch["id"]),
+                "BOUGHT",
+                f"BOUGHT: F qty={qty_to_write} cost={cost_price:.2f} sl={init_sl:.2f}",
+            )
 
         print(f"[F BUY] {code} ✅ bought qty={qty_to_write} cost={cost_price:.2f} sl={init_sl:.2f}", flush=True)
+
         return True
 
     except Exception as e:
@@ -1064,51 +1023,60 @@ def _f_giveback_pct_for_peak(peak_gain_pct: float):
 
 
 def _f_next_stage_rule(last_stage: int, up_pct: float):
-    """
-    F 分批止盈规则。
-
-    只推进下一档，不跳级连续卖，避免一天暴涨时一次性卖太多。
-    """
     next_stage = int(last_stage or 0) + 1
+
     for stage, threshold, sell_ratio in F_STAGE_RULES:
         if stage == next_stage and up_pct >= threshold:
             return stage, threshold, sell_ratio
+
     return None
 
 
 def strategy_F_extended_record(code: str, phase: str = "") -> bool:
     code = (code or "").strip().upper()
     conn = None
+
     try:
         conn = _connect()
         row = _load_one_f_row(conn, code)
+
         if not row or int(row.get("is_bought") or 0) != 1:
             return False
+
         q = _get_extended_quote_realtime(code)
+
         price = float(q["last"])
         regular_close = float(q["prev_close"] or q["regular_close"])
         qty = int(float(row.get("qty") or 0))
         cost = float(row.get("cost_price") or 0.0)
         old_peak = float(row.get("b_peak_price") or cost or regular_close)
         peak_price = max(old_peak, price)
+
         gain = (price - regular_close) / regular_close if regular_close > 0 else 0.0
+
         updates = {
             "b_last_profit": round((price - cost) * qty, 4) if cost > 0 and qty > 0 else 0,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+
         if peak_price > old_peak + 0.005:
             updates["b_peak_price"] = round(peak_price, 4)
             updates["b_peak_profit"] = round(max((peak_price - cost) * qty, 0.0), 4) if cost > 0 and qty > 0 else 0
+
         _update_ops_f_fields(conn, code, **updates)
+
         print(
-            f"[F EXT RECORD] {code} phase={phase} price={price:.2f} regular_close={regular_close:.2f} "
-            f"ext_gain={gain:.2%} peak={peak_price:.2f}",
+            f"[F EXT RECORD] {code} phase={phase} price={price:.2f} "
+            f"regular_close={regular_close:.2f} ext_gain={gain:.2%} peak={peak_price:.2f}",
             flush=True,
         )
+
         return False
+
     except Exception as e:
         print(f"[F EXT RECORD] {code} error: {e}", flush=True)
         return False
+
     finally:
         try:
             if conn:
@@ -1119,24 +1087,38 @@ def strategy_F_extended_record(code: str, phase: str = "") -> bool:
 
 def _f_sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason: str) -> bool:
     qty = int(qty or 0)
+
     if qty <= 0 or float(limit_price or 0) <= 0:
         return False
+
     tc = _get_trading_client()
     real_qty = _get_real_position_qty(tc, code)
+
     if real_qty is None:
         return False
+
     if real_qty == 0:
         _update_ops_f_fields(
-            conn, code,
-            qty=0, is_bought=0, can_sell=0, can_buy=0,
-            stop_loss_price=None, b_peak_price=None, b_peak_profit=0, b_last_profit=0,
+            conn,
+            code,
+            qty=0,
+            is_bought=0,
+            can_sell=0,
+            can_buy=0,
+            stop_loss_price=None,
+            b_peak_price=None,
+            b_peak_profit=0,
+            b_last_profit=0,
             last_order_side="sell",
             last_order_intent="F:EXT_SELL_SKIP no_real_pos",
             last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
         return False
+
     qty = min(qty, real_qty)
+
     row = _load_one_f_row(conn, code) or {}
+
     cost = float(row.get("cost_price") or 0.0)
     peak_price = float(row.get("b_peak_price") or cost)
     stage = int(float(row.get("b_stage") or 0))
@@ -1145,9 +1127,11 @@ def _f_sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason:
     order = _submit_limit_qty_ext(tc, code, qty, side="sell", limit_price=limit_price)
     order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
     status = str(getattr(order, "status", "") or "")
+
     if status.lower() in ("rejected", "expired"):
         _update_ops_f_fields(
-            conn, code,
+            conn,
+            code,
             last_order_side="sell",
             last_order_intent=_intent_short(f"F:EXT_SELL_REJECT {reason} status={status}"),
             last_order_id=str(order_id or ""),
@@ -1156,20 +1140,25 @@ def _f_sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason:
         return False
 
     sold_qty = _reconcile_sell_fill(tc, code, str(order_id), expected_real_qty=real_qty, wait_sec=12.0)
+
     if sold_qty <= 0:
         _update_ops_f_fields(
-            conn, code,
+            conn,
+            code,
             last_order_side="sell",
             last_order_intent=_intent_short(f"F:EXT_SELL_NO_FILL {reason}"),
             last_order_id=str(order_id or ""),
             last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
         return False
+
     sold_qty = min(sold_qty, qty)
     remaining_qty = max(real_qty - sold_qty, 0)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     _update_ops_f_fields(
-        conn, code,
+        conn,
+        code,
         qty=int(remaining_qty),
         is_bought=1 if remaining_qty > 0 else 0,
         can_sell=1 if remaining_qty > 0 else 0,
@@ -1185,157 +1174,79 @@ def _f_sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason:
         last_order_time=now_str,
         updated_at=now_str,
     )
+
     print(f"[F EXT SELL] {code} ✅ sold={sold_qty} remain={remaining_qty} reason={reason}", flush=True)
+
     return True
 
 
 def strategy_F_premarket_manage(code: str) -> bool:
     code = (code or "").strip().upper()
     conn = None
+
     try:
         conn = _connect()
         row = _load_one_f_row(conn, code)
+
         if not row or int(row.get("is_bought") or 0) != 1:
             return False
+
         qty = int(float(row.get("qty") or 0))
         cost = float(row.get("cost_price") or 0.0)
         stage = int(float(row.get("b_stage") or 0))
+
         if qty <= 0:
             return False
+
         q = _get_extended_quote_realtime(code)
+
         price = float(q["last"])
         regular_close = float(q["prev_close"] or q["regular_close"])
         old_peak = float(row.get("b_peak_price") or cost or regular_close)
         peak_price = max(old_peak, price)
+
         gain = (price - regular_close) / regular_close if regular_close > 0 else 0.0
         peak_gain = (peak_price - regular_close) / regular_close if regular_close > 0 else 0.0
+
         if peak_price > old_peak + 0.005:
             _update_ops_f_fields(
-                conn, code,
+                conn,
+                code,
                 b_peak_price=round(peak_price, 4),
                 b_peak_profit=round(max((peak_price - cost) * qty, 0.0), 4) if cost > 0 else 0,
                 updated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
+
         print(
             f"[F PRE] {code} price={price:.2f} regular_close={regular_close:.2f} "
             f"gain={gain:.2%} peak_gain={peak_gain:.2%} stage={stage}",
             flush=True,
         )
+
         if peak_gain >= 0.10:
             trigger = round(peak_price * 0.97, 2)
+
             if price <= trigger:
                 reason = f"F_PREMARKET_GIVEBACK price={price:.2f} <= trigger={trigger:.2f} peak={peak_price:.2f}"
                 return _f_sell_qty_limit_ext(conn, code, qty, trigger, reason)
+
             if stage < 1 and gain >= 0.10:
                 sell_qty = max(int(math.floor(qty * 0.20)), 1)
                 reason = f"F_PREMARKET_STAGE1_SELL20 price={price:.2f} gain={gain:.2%}"
                 ok = _f_sell_qty_limit_ext(conn, code, sell_qty, round(price * 0.997, 2), reason)
+
                 if ok:
                     _update_ops_f_fields(conn, code, b_stage=1, take_profit_price=1)
+
                 return ok
+
         return False
+
     except Exception as e:
         print(f"[F PRE] {code} error: {e}", flush=True)
         traceback.print_exc()
         return False
-    finally:
-        try:
-            if conn:
-                conn.close()
-        except Exception:
-            pass
 
-
-def strategy_F_afterhours_add(code: str) -> bool:
-    code = (code or "").strip().upper()
-    conn = None
-    try:
-        conn = _connect()
-        row = _load_one_f_row(conn, code)
-        if not row or int(row.get("is_bought") or 0) != 1:
-            return False
-        last_intent = str(row.get("last_order_intent") or "")
-        last_time = row.get("last_order_time")
-        if "F:AH_ADD" in last_intent and last_time:
-            try:
-                if (last_time.date() if hasattr(last_time, "date") else datetime.fromisoformat(str(last_time)[:19]).date()) == datetime.now().date():
-                    print(f"[F AH ADD] {code} skip: already attempted today", flush=True)
-                    return False
-            except Exception:
-                pass
-        tc = _get_trading_client()
-        real_qty = _get_real_position_qty(tc, code)
-        if real_qty is None or real_qty <= 0:
-            return False
-        q = _get_extended_quote_realtime(code)
-        price = float(q["last"])
-        regular_close = float(q["regular_close"])
-        after_gain = (price - regular_close) / regular_close if regular_close > 0 else 0.0
-        limit_price = round(regular_close * 1.03, 2)
-        add_qty = max(int(math.floor(real_qty * 0.50)), 1)
-        print(
-            f"[F AH ADD] {code} price={price:.2f} regular_close={regular_close:.2f} "
-            f"after_gain={after_gain:.2%} add_qty={add_qty} limit={limit_price:.2f}",
-            flush=True,
-        )
-        if after_gain < 0.05:
-            return False
-
-        _cancel_open_buy_orders(tc, code)
-        order = _submit_limit_qty_ext(tc, code, add_qty, side="buy", limit_price=limit_price)
-        order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
-        status = str(getattr(order, "status", "") or "")
-        if status.lower() in ("rejected", "expired"):
-            _update_ops_f_fields(
-                conn, code,
-                last_order_side="buy",
-                last_order_intent=_intent_short(f"F:AH_ADD_REJECT status={status} limit={limit_price:.2f}"),
-                last_order_id=str(order_id or ""),
-                last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            )
-            return False
-        filled_qty, filled_avg = _reconcile_fill(tc, code, str(order_id), wait_sec=12.0)
-        if filled_qty <= 0 or filled_avg <= 0:
-            _update_ops_f_fields(
-                conn, code,
-                last_order_side="buy",
-                last_order_intent=_intent_short(f"F:AH_ADD_NO_FILL limit={limit_price:.2f}"),
-                last_order_id=str(order_id or ""),
-                last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            )
-            return False
-        try:
-            pos = tc.get_open_position(code)
-            new_qty = int(float(getattr(pos, "qty", 0) or 0))
-            new_cost = float(getattr(pos, "avg_entry_price", 0) or 0)
-        except Exception:
-            old_qty = int(float(row.get("qty") or real_qty))
-            old_cost = float(row.get("cost_price") or filled_avg)
-            new_qty = old_qty + int(filled_qty)
-            new_cost = (old_qty * old_cost + int(filled_qty) * float(filled_avg)) / float(new_qty)
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        _update_ops_f_fields(
-            conn, code,
-            qty=int(new_qty),
-            cost_price=round(float(new_cost), 2),
-            base_qty=max(int(row.get("base_qty") or 0), int(new_qty)),
-            is_bought=1,
-            can_sell=1,
-            can_buy=0,
-            last_order_side="buy",
-            last_order_intent=_intent_short(
-                f"F:AH_ADD filled={filled_qty}@{filled_avg:.2f} limit={limit_price:.2f} after_gain={after_gain:.2%}"
-            ),
-            last_order_id=str(order_id or ""),
-            last_order_time=now_str,
-            updated_at=now_str,
-        )
-        print(f"[F AH ADD] {code} ✅ filled={filled_qty}@{filled_avg:.2f} new_qty={new_qty}", flush=True)
-        return True
-    except Exception as e:
-        print(f"[F AH ADD] {code} error: {e}", flush=True)
-        traceback.print_exc()
-        return False
     finally:
         try:
             if conn:
@@ -1345,22 +1256,15 @@ def strategy_F_afterhours_add(code: str) -> bool:
 
 
 def strategy_F_sell(code: str) -> bool:
-    """
-    策略F卖出：比 B 更宽的止损/回撤保护。
-
-    规则：
-    - 初始止损默认 -3%。
-    - 盈利 >=5% 后抬到保本。
-    - 最高涨幅 >=5% 且回撤 4% 时保护利润。
-    - +15%/+30%/+50% 分批止盈，剩余仓位继续跟趋势。
-    """
     code = (code or "").strip().upper()
     print(f"[F SELL] {code}", flush=True)
 
     conn = None
+
     try:
         conn = _connect()
         row = _load_one_f_row(conn, code)
+
         if not row:
             print(f"[F SELL] {code} skip: no F row", flush=True)
             return False
@@ -1371,18 +1275,22 @@ def strategy_F_sell(code: str) -> bool:
         cost = float(row.get("cost_price") or 0.0)
         sl = float(row.get("stop_loss_price") or 0.0)
         last_stage = int(float(row.get("b_stage") or 0))
+
         if is_bought != 1 or can_sell != 1:
             print(f"[F SELL] {code} skip: is_bought={is_bought} can_sell={can_sell}", flush=True)
             return False
+
         if qty <= 0 or cost <= 0:
             print(f"[F SELL] {code} skip: invalid qty/cost qty={qty} cost={cost:.2f}", flush=True)
             return False
 
         tc = _get_trading_client()
         real_qty = _get_real_position_qty(tc, code)
+
         if real_qty is None:
             print(f"[F SELL] {code} skip: failed to query real position", flush=True)
             return False
+
         if real_qty == 0:
             _update_ops_f_fields(
                 conn,
@@ -1400,10 +1308,12 @@ def strategy_F_sell(code: str) -> bool:
                 last_order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
             return False
+
         qty = min(qty, real_qty)
 
         price, prev_close, feed = get_snapshot_realtime(code)
         price = float(price or 0.0)
+
         if price <= 0:
             print(f"[F SELL] {code} skip: invalid price={price:.2f}", flush=True)
             return False
@@ -1411,13 +1321,16 @@ def strategy_F_sell(code: str) -> bool:
         up_pct = (price - cost) / cost if cost > 0 else 0.0
         old_peak = float(row.get("b_peak_price") or cost)
         peak_price = max(old_peak, price)
+
         profit_now = (price - cost) * qty
         peak_profit = max(float(row.get("b_peak_profit") or 0.0), (peak_price - cost) * qty)
 
         updates = {}
+
         if peak_price > old_peak + 0.005:
             updates["b_peak_price"] = round(peak_price, 4)
             updates["b_peak_profit"] = round(peak_profit, 4)
+
         if abs(profit_now - float(row.get("b_last_profit") or 0.0)) >= 20:
             updates["b_last_profit"] = round(profit_now, 4)
 
@@ -1426,8 +1339,10 @@ def strategy_F_sell(code: str) -> bool:
             updates["stop_loss_price"] = sl
 
         new_sl = sl
+
         if up_pct >= F_LOCK_BREAKEVEN_PCT:
             new_sl = max(new_sl, cost)
+
         if new_sl > sl + 0.01:
             sl = round(new_sl, 2)
             updates["stop_loss_price"] = sl
@@ -1444,30 +1359,38 @@ def strategy_F_sell(code: str) -> bool:
         reason = None
         sell_qty = qty
         new_stage = last_stage
+
         if sl > 0 and price <= sl:
             reason = f"F_STOP price={price:.2f} <= sl={sl:.2f}"
+
         else:
             stage_rule = _f_next_stage_rule(last_stage, up_pct)
+
             if stage_rule is not None:
                 stage, threshold, sell_ratio = stage_rule
                 raw_sell_qty = int(math.floor(qty * float(sell_ratio)))
                 sell_qty = max(raw_sell_qty, 1)
                 sell_qty = min(sell_qty, qty)
                 new_stage = stage
+
                 reason = (
                     f"F_STAGE{stage}_SELL{int(sell_ratio * 100)} "
                     f"price={price:.2f} up={up_pct:.2%} threshold={threshold:.2%} qty={sell_qty}"
                 )
+
             else:
                 peak_gain_pct = (peak_price - cost) / cost if cost > 0 else 0.0
                 giveback_pct = _f_giveback_pct_for_peak(peak_gain_pct)
+
                 if giveback_pct is not None:
                     trigger = round(peak_price * (1.0 - giveback_pct), 2)
+
                     print(
                         f"[F SELL] {code} giveback watch peak_gain={peak_gain_pct:.2%} "
                         f"pullback={giveback_pct:.2%} trigger={trigger:.2f}",
                         flush=True,
                     )
+
                     if price <= trigger:
                         sell_qty = qty
                         reason = (
@@ -1481,6 +1404,7 @@ def strategy_F_sell(code: str) -> bool:
         order = _submit_market_qty(tc, code, sell_qty, side="sell")
         order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
         status = str(getattr(order, "status", "") or "")
+
         if status.lower() in ("rejected", "expired"):
             _update_ops_f_fields(
                 conn,
@@ -1493,6 +1417,7 @@ def strategy_F_sell(code: str) -> bool:
             return False
 
         sold_qty = _reconcile_sell_fill(tc, code, str(order_id), expected_real_qty=real_qty, wait_sec=4.0)
+
         if sold_qty <= 0:
             _update_ops_f_fields(
                 conn,
@@ -1507,6 +1432,7 @@ def strategy_F_sell(code: str) -> bool:
         sold_qty = min(sold_qty, sell_qty)
         remaining_qty = max(real_qty - sold_qty, 0)
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         _update_ops_f_fields(
             conn,
             code,
@@ -1528,10 +1454,12 @@ def strategy_F_sell(code: str) -> bool:
 
         with conn.cursor() as cur:
             watch = _load_watch_row_by_code(cur, code)
+
             if watch and remaining_qty == 0:
                 _mark_watch_status(cur, int(watch["id"]), "SOLD", f"SOLD: {reason}")
 
         print(f"[F SELL] {code} ✅ sold={sold_qty} remain={remaining_qty} reason={reason}", flush=True)
+
         return True
 
     except Exception as e:
@@ -1548,7 +1476,7 @@ def strategy_F_sell(code: str) -> bool:
 
 
 def main():
-    strategy_F_scan()
+    strategy_F_scan(prepare_buy=False)
 
 
 if __name__ == "__main__":

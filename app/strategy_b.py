@@ -41,10 +41,8 @@ DB = dict(
 # =========================
 B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.03"))
 B_MAX_BUY_UP_PCT = float(os.getenv("B_MAX_BUY_UP_PCT", "0.10"))
-B_MAX_ENTRY_UP_PCT = float(os.getenv("B_MAX_ENTRY_UP_PCT", "0.04"))
+B_MAX_ENTRY_UP_PCT = float(os.getenv("B_MAX_ENTRY_UP_PCT", "0.4"))
 B_MIN_PRICE = float(os.getenv("B_MIN_PRICE", "5.0"))
-B_MAX_SPREAD_PCT = float(os.getenv("B_MAX_SPREAD_PCT", "0.015"))
-B_MIN_AVG_DOLLAR_VOL20 = float(os.getenv("B_MIN_AVG_DOLLAR_VOL20", "20000000"))
 B_MAX_ACTIVE_POSITIONS = int(os.getenv("B_MAX_ACTIVE_POSITIONS", "4"))
 B_MAX_BELOW_OPEN_PCT = float(os.getenv("B_MAX_BELOW_OPEN_PCT", "0.015"))
 B_MAX_PULLBACK_FROM_HIGH_PCT = float(os.getenv("B_MAX_PULLBACK_FROM_HIGH_PCT", "0.03"))
@@ -1538,28 +1536,6 @@ def get_b_buy_plan_for_gate() -> dict:
             pass
 
 
-def _get_avg_dollar_vol20(conn, code: str) -> float:
-    sql = f"""
-    SELECT AVG(close * volume) AS adv
-    FROM (
-        SELECT close, volume
-        FROM `{PRICES_TABLE}`
-        WHERE symbol=%s
-          AND close > 0
-          AND volume > 0
-        ORDER BY date DESC
-        LIMIT 20
-    ) x;
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (code,))
-        row = cur.fetchone() or {}
-    try:
-        return float(row.get("adv") or 0.0)
-    except Exception:
-        return 0.0
-
-
 def _get_avg_volume20(conn, code: str) -> float:
     sql = f"""
     SELECT AVG(volume) AS avg_vol
@@ -1725,8 +1701,6 @@ def _score_b_candidate(conn, code: str):
 
     snap = get_snapshot_quote_realtime(code)
     price = float(snap.get("last_price") or 0.0)
-    bid = float(snap.get("bid") or 0.0)
-    ask = float(snap.get("ask") or 0.0)
     day_open = float(snap.get("day_open") or 0.0)
     day_high = float(snap.get("day_high") or 0.0)
     prev_close = float(snap.get("prev_close") or 0.0)
@@ -1752,10 +1726,6 @@ def _score_b_candidate(conn, code: str):
     if reject_reversal:
         return None
 
-    avg_dollar_vol20 = _get_avg_dollar_vol20(conn, code)
-    if avg_dollar_vol20 > 0 and avg_dollar_vol20 < B_MIN_AVG_DOLLAR_VOL20:
-        return None
-
     (
         volume_ok,
         intraday_volume,
@@ -1767,30 +1737,22 @@ def _score_b_candidate(conn, code: str):
     if not volume_ok:
         return None
 
-    spread_pct = 0.0
-    if bid > 0 and ask > 0:
-        mid = (bid + ask) / 2.0
-        spread_pct = (ask - bid) / mid if mid > 0 else 0.0
-        if spread_pct > B_MAX_SPREAD_PCT:
-            return None
-
-    # 越接近 3%-8% 的强势突破、越接近入选价、流动性越好、价差越小，分越高。
+    # 越接近 3%-8% 的强势突破、越接近入选价、成交量越健康，分越高。
+    # 注意：不再用 bid/ask 价差和 20 日成交额过滤，避免依赖会员级全市场行情。
     momentum_score = max(0.0, min(day_up_pct, 0.08)) * 1000.0
     pullback_from_high = (day_high - price) / day_high if day_high > 0 else 0.0
     below_open = (day_open - price) / day_open if day_open > 0 else 0.0
     entry_penalty = max(entry_up_pct, 0.0) * 450.0
     reversal_penalty = max(pullback_from_high, 0.0) * 700.0 + max(below_open, 0.0) * 700.0
-    spread_penalty = spread_pct * 800.0
-    liquidity_score = min(avg_dollar_vol20 / 1_000_000.0, 120.0) * 0.15
+    volume_liquidity_score = min(avg_volume20 / 1_000_000.0, 120.0) * 0.15
     volume_score = min(volume_ratio / max(required_volume_ratio, 0.01), 2.0) * 18.0
     trigger_score = min(max((price - trigger) / trigger, 0.0), 0.08) * 180.0 if trigger > 0 else 0.0
     score = (
         momentum_score
-        + liquidity_score
+        + volume_liquidity_score
         + volume_score
         + trigger_score
         - entry_penalty
-        - spread_penalty
         - reversal_penalty
     )
 
@@ -1800,13 +1762,14 @@ def _score_b_candidate(conn, code: str):
         "price": price,
         "day_up_pct": day_up_pct,
         "entry_up_pct": entry_up_pct,
-        "spread_pct": spread_pct,
-        "avg_dollar_vol20": avg_dollar_vol20,
+        # 保留老表字段兼容历史 schema，但不再作为过滤/评分依据。
+        "spread_pct": 0.0,
+        "avg_dollar_vol20": 0.0,
         "reason": (
             f"day_up={day_up_pct:.2%} entry_up={entry_up_pct:.2%} "
             f"pullback={pullback_from_high:.2%} below_open={below_open:.2%} "
             f"vol={intraday_volume}/{avg_volume20:.0f}({volume_ratio:.2%}>={required_volume_ratio:.2%}) "
-            f"spread={spread_pct:.2%} adv20={avg_dollar_vol20:.0f}"
+            f"avg_vol20={avg_volume20:.0f}"
         )[:255],
     }
 
@@ -2098,15 +2061,6 @@ def strategy_B_buy(code: str) -> bool:
             print(f"[B BUY] {code} skip: weak intraday price {reversal_reason}", flush=True)
             return False
 
-        avg_dollar_vol20 = _get_avg_dollar_vol20(conn, code)
-        if avg_dollar_vol20 > 0 and avg_dollar_vol20 < B_MIN_AVG_DOLLAR_VOL20:
-            print(
-                f"[B BUY] {code} skip: avg_dollar_vol20={avg_dollar_vol20:.0f} "
-                f"< min={B_MIN_AVG_DOLLAR_VOL20:.0f}",
-                flush=True,
-            )
-            return False
-
         (
             volume_ok,
             intraday_volume,
@@ -2129,18 +2083,6 @@ def strategy_B_buy(code: str) -> bool:
             f"required={required_volume_ratio:.2%}",
             flush=True,
         )
-
-        # spread 保护
-        if bid > 0 and ask > 0:
-            mid = (bid + ask) / 2.0
-            spread_pct = (ask - bid) / mid if mid > 0 else 0.0
-            if spread_pct > B_MAX_SPREAD_PCT:
-                print(
-                    f"[B BUY] {code} skip: spread too wide bid={bid:.2f} ask={ask:.2f} "
-                    f"spread={spread_pct*100:.2f}% max={B_MAX_SPREAD_PCT*100:.2f}%",
-                    flush=True,
-                )
-                return False
 
         # ============================================================
         # 3) 资金 + 计算下单参数

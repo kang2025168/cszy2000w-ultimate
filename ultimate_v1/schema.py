@@ -263,6 +263,7 @@ def ensure_control_state_tables() -> None:
             default_controls = {
                 "dashboard_bot": 1,
                 "risk_bot": 1,
+                "rebalance_bot": 0,
                 "ac_bot": 1,
                 "b_buy_bot": 1,
                 "b_sell_bot": 1,
@@ -288,6 +289,53 @@ def ensure_control_state_tables() -> None:
                   cash DECIMAL(18,2) DEFAULT 0,
                   portfolio_value DECIMAL(18,2) DEFAULT 0,
                   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  INDEX idx_created_at (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS exposure_state (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  mode VARCHAR(16) NOT NULL DEFAULT 'SUGGEST',
+                  risk_mode VARCHAR(16) NULL,
+                  market_trend VARCHAR(16) NULL,
+                  vix DECIMAL(10,4) DEFAULT 0,
+                  equity DECIMAL(18,2) DEFAULT 0,
+                  current_market_value DECIMAL(18,2) DEFAULT 0,
+                  current_exposure_pct DECIMAL(10,6) DEFAULT 0,
+                  target_market_value DECIMAL(18,2) DEFAULT 0,
+                  target_exposure_pct DECIMAL(10,6) DEFAULT 0,
+                  exposure_gap_value DECIMAL(18,2) DEFAULT 0,
+                  exposure_gap_pct DECIMAL(10,6) DEFAULT 0,
+                  scale_ratio DECIMAL(10,6) DEFAULT 1,
+                  action VARCHAR(16) NOT NULL DEFAULT 'HOLD',
+                  reason VARCHAR(255) NULL,
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  INDEX idx_created_at (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rebalance_actions (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  round_id VARCHAR(64) NOT NULL,
+                  symbol VARCHAR(64) NOT NULL,
+                  strategy_group VARCHAR(8) NOT NULL,
+                  side VARCHAR(8) NOT NULL,
+                  current_value DECIMAL(18,2) DEFAULT 0,
+                  target_value DECIMAL(18,2) DEFAULT 0,
+                  delta_value DECIMAL(18,2) DEFAULT 0,
+                  qty DECIMAL(18,6) DEFAULT 0,
+                  price DECIMAL(18,6) DEFAULT 0,
+                  status VARCHAR(32) NOT NULL DEFAULT 'planned',
+                  reason VARCHAR(255) NULL,
+                  order_id VARCHAR(128) NULL,
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  executed_at DATETIME NULL,
+                  INDEX idx_round_id (round_id),
+                  INDEX idx_symbol_status (symbol, status),
                   INDEX idx_created_at (created_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """

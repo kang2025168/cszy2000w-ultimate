@@ -18,6 +18,7 @@ from .bot_supervisor import managed_bot_names, process_status, set_bot_runtime, 
 from .capital_manager import get_capital_allocation, get_strategy_used_capital
 from .config import env_str, settings
 from .db import db_conn, fetch_all
+from .exposure_manager import latest_exposure_state, latest_rebalance_actions, refresh_exposure_plan
 from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import CAPITAL_MODE_LABELS, get_risk_state
 from .schema import ensure_schema
@@ -165,6 +166,17 @@ def _state_payload() -> dict:
         "bot_heartbeats": bot_heartbeats(),
         "bot_controls": bot_controls(),
         "bot_processes": process_status(),
+        "exposure_state": latest_exposure_state(),
+        "rebalance_actions": latest_rebalance_actions(30),
+    }
+
+
+def _exposure_payload() -> dict:
+    """读取自动调仓机器人最新状态。"""
+    return {
+        "ok": True,
+        "state": latest_exposure_state(),
+        "actions": latest_rebalance_actions(100),
     }
 
 
@@ -1591,6 +1603,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_holdings_payload())
             elif path == "/api/state":
                 self._send_json(_state_payload())
+            elif path == "/api/exposure":
+                self._send_json(_exposure_payload())
             elif path == "/api/trade_phase":
                 self._send_json(_trade_phase_payload())
             elif path == "/api/market_categories":
@@ -1652,6 +1666,24 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": f"券商仓位同步失败：{detail or '请检查 Alpaca 配置和服务日志'}"}, 500)
                     return
                 self._send_json({"ok": True, "message": "展示表和交易控制表已同步"})
+            elif path == "/api/refresh_exposure":
+                if not self._check_password(payload):
+                    self._send_json({"ok": False, "error": "密码错误或未配置操作密码"}, 403)
+                    return
+                mode = str(payload.get("mode") or "SUGGEST").strip().upper()
+                if mode not in {"SUGGEST", "AUTO"}:
+                    mode = "SUGGEST"
+                plan = refresh_exposure_plan(mode=mode, execute=True)
+                self._send_json(
+                    {
+                        "ok": True,
+                        "mode": plan.mode,
+                        "action": plan.action,
+                        "current_exposure_pct": plan.current_exposure_pct,
+                        "target_exposure_pct": plan.target_exposure_pct,
+                        "actions": plan.actions,
+                    }
+                )
             elif path == "/api/refresh_market_categories":
                 selected = str(payload.get("category") or "")
                 self._send_json(_refresh_market_categories_payload(selected))

@@ -94,6 +94,11 @@ case "$cmd" in
     shift
     exec python -u -m app.bots.risk_bot "$@"
     ;;
+  ultimate_rebalance_bot)
+    echo "$(ts) ===== START rebalance bot ====="
+    shift
+    exec python -u -m app.bots.rebalance_bot "$@"
+    ;;
   ultimate_ac_bot)
     echo "$(ts) ===== START AC bot ====="
     shift
@@ -114,7 +119,7 @@ case "$cmd" in
     exit 0
     ;;
   *)
-    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|b_buy_bot|b_sell_bot|f_buy_bot|f_sell_bot|ops_volume|price_categories_once|price_categories_loop|unlock_can_sell|ultimate_startup|ultimate_web|ultimate_sync_positions|ultimate_flatten_d|ultimate_rebalance|ultimate_strategy|ultimate_dashboard_bot|ultimate_risk_bot|ultimate_ac_bot|ultimate_d_buy_bot|ultimate_d_sell_bot|healthcheck}" >&2
+    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|b_buy_bot|b_sell_bot|f_buy_bot|f_sell_bot|ops_volume|price_categories_once|price_categories_loop|unlock_can_sell|ultimate_startup|ultimate_web|ultimate_sync_positions|ultimate_flatten_d|ultimate_rebalance|ultimate_strategy|ultimate_dashboard_bot|ultimate_risk_bot|ultimate_rebalance_bot|ultimate_ac_bot|ultimate_d_buy_bot|ultimate_d_sell_bot|healthcheck}" >&2
     exit 2
     ;;
 esac
