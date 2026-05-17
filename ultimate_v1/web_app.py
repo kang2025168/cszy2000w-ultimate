@@ -806,7 +806,7 @@ INDEX_HTML = r"""<!doctype html>
             </div>
             <div class="exposure-card">
               <div class="exposure-head">
-                <span>总持仓比例</span>
+                <span>资金池使用率</span>
                 <span class="exposure-value" id="exposureValue">--</span>
               </div>
               <div class="exposure-bar"><div class="exposure-fill" id="exposureFill"></div></div>
@@ -1379,12 +1379,16 @@ INDEX_HTML = r"""<!doctype html>
       riskBadge.className = `risk-badge ${tone === 'ok' ? '' : tone}`;
       const riskSelect = document.getElementById('riskPreferenceSelect');
       if (riskSelect) riskSelect.value = risk.risk_preference || '中性';
+      const marketExposure = Number(risk.recommended_exposure || 0);
+      const rebalanceTarget = Number(state?.exposure_state?.target_exposure_pct ?? marketExposure);
+      const targetTone = rebalanceTarget <= 0.1 ? 'danger' : rebalanceTarget < 0.5 ? 'warn' : 'ok';
       document.getElementById('risk').innerHTML = [
         riskChip('风险', Number(risk.risk_multiplier || 0).toFixed(2), tone),
         riskChip('日亏', pct(risk.daily_pnl_pct), Number(risk.daily_pnl_pct || 0) < 0 ? 'danger' : 'ok'),
         riskChip('连亏', risk.loss_days || 0, Number(risk.loss_days || 0) > 0 ? 'warn' : 'ok'),
         riskChip('回撤', pct(risk.max_drawdown), Number(risk.max_drawdown || 0) > 0.04 ? 'danger' : 'ok'),
-        riskChip('本金仓位', `${(Number(risk.recommended_exposure || 0) * 100).toFixed(0)}%`, Number(risk.recommended_exposure || 0) < 0.5 ? 'warn' : 'ok'),
+        riskChip('市场仓位', `${(marketExposure * 100).toFixed(0)}%`, marketExposure < 0.5 ? 'warn' : 'ok'),
+        riskChip('调仓目标', `${(rebalanceTarget * 100).toFixed(0)}%`, targetTone),
         riskChip('AC', (risk.block_a || risk.block_c) ? '停' : '开', (risk.block_a || risk.block_c) ? 'danger' : 'ok'),
         riskChip('B', risk.block_b ? '停' : '开', risk.block_b ? 'danger' : 'ok'),
         riskChip('D', risk.block_d ? '停' : '开', risk.block_d ? 'danger' : 'ok')

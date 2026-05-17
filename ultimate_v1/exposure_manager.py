@@ -59,7 +59,8 @@ def _target_exposure_pct() -> tuple[float, str]:
     """根据当前风险状态给出总仓位目标。"""
     risk = get_risk_state()
     if risk.mode == "RISK_OFF" or risk.block_all_new or risk.risk_multiplier <= 0:
-        return env_float("REBALANCE_TARGET_RISK_OFF", 0.05), "risk_off"
+        reason = str(risk.reason or risk.suggest_mode or "risk_off")
+        return env_float("REBALANCE_TARGET_RISK_OFF", 0.05), f"risk_off:{reason}"
     if risk.market_trend == "向上" and risk.vix < env_float("REBALANCE_LOW_VIX", 20.0):
         return env_float("REBALANCE_TARGET_UP", 0.85), "up_low_vix"
     if risk.market_trend == "向下":
