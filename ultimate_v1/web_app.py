@@ -1375,7 +1375,7 @@ INDEX_HTML = r"""<!doctype html>
       }
       const tone = riskTone(risk);
       const riskBadge = document.getElementById('riskBadge');
-      riskBadge.textContent = risk.suggest_mode ? `建议 ${risk.suggest_mode}` : (tone === 'danger' ? '高风险' : tone === 'warn' ? '谨慎' : '正常');
+      riskBadge.textContent = risk.suggest_mode ? '风控预警' : (tone === 'danger' ? '高风险' : tone === 'warn' ? '谨慎' : '正常');
       riskBadge.className = `risk-badge ${tone === 'ok' ? '' : tone}`;
       const riskSelect = document.getElementById('riskPreferenceSelect');
       if (riskSelect) riskSelect.value = risk.risk_preference || '中性';
