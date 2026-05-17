@@ -393,6 +393,33 @@ def _update_ops_fields(conn, code: str, **kwargs):
         cur.execute(sql, tuple(vals))
 
 
+def _ensure_monster_watchlist_table(conn):
+    """确保 B->F 二次启动观察池存在。"""
+    sql = f"""
+    CREATE TABLE IF NOT EXISTS `{MONSTER_TABLE}` (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        stock_code VARCHAR(20) NOT NULL,
+        source_strategy VARCHAR(8) NOT NULL DEFAULT 'B',
+        source_reason VARCHAR(255) NULL,
+        last_sell_price DOUBLE NULL,
+        last_sell_time DATETIME NULL,
+        b_peak_price DOUBLE NULL,
+        b_peak_profit DOUBLE NULL,
+        watch_status VARCHAR(16) NOT NULL DEFAULT 'WATCHING',
+        watch_since DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_checked_at DATETIME NULL,
+        notes VARCHAR(500) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_symbol_source (stock_code, source_strategy),
+        KEY idx_status_source (watch_status, source_strategy),
+        KEY idx_watch_since (watch_since)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+
+
 def _write_monster_watchlist(conn, code: str, reason: str, sell_price, row: dict):
     """
     把“B 策略最终清仓卖出”的股票放入妖股观察池。
@@ -407,6 +434,7 @@ def _write_monster_watchlist(conn, code: str, reason: str, sell_price, row: dict
         return
 
     try:
+        _ensure_monster_watchlist_table(conn)
         peak_price = row.get("b_peak_price") if row else None
         peak_profit = row.get("b_peak_profit") if row else None
         cost_price = float(row.get("cost_price") or 0.0) if row else 0.0

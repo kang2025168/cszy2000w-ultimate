@@ -55,6 +55,7 @@ services:
 
     volumes:
       - ./app:/app/app
+      - ./ultimate_v1:/app/ultimate_v1
       - ./data:/app/data
       - ./logs:/app/logs
       - ./scripts:/app/scripts
@@ -92,6 +93,7 @@ services:
       LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
     volumes:
       - ./app:/app/app
+      - ./ultimate_v1:/app/ultimate_v1
       - ./data:/app/data
       - ./logs:/app/logs
       - ./scripts:/app/scripts
@@ -131,6 +133,7 @@ services:
       LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
     volumes:
       - ./app:/app/app
+      - ./ultimate_v1:/app/ultimate_v1
       - ./data:/app/data
       - ./logs:/app/logs
       - ./scripts:/app/scripts
@@ -169,6 +172,7 @@ services:
       LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
     volumes:
       - ./app:/app/app
+      - ./ultimate_v1:/app/ultimate_v1
       - ./data:/app/data
       - ./logs:/app/logs
       - ./scripts:/app/scripts
@@ -209,6 +213,7 @@ services:
       LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
     volumes:
       - ./app:/app/app
+      - ./ultimate_v1:/app/ultimate_v1
       - ./data:/app/data
       - ./logs:/app/logs
       - ./scripts:/app/scripts

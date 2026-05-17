@@ -76,7 +76,7 @@ docker compose up -d --build
 - `app/strategy_c.py`
   - 看起来偏向筛选/生成候选，而不是当前主循环直接交易。
 
-- `app/strategy_d.py` / `app/strategy_e.py`
+- `app/strategy_d.py`
   - 旧占位文件，不作为新的 ABCD 统一入口。
 
 ### 数据和表
@@ -198,13 +198,7 @@ docker compose run --rm tradebot ./scripts/run.sh healthcheck
 这些点只是观察，不代表必须马上改：
 
 - `requirements.txt` 中 `pandas-datareader>=0.10.0` 重复了一次。
-- 代码里存在多个旧入口或备份式入口，例如：
-  - `app/mainbott.py`
-  - `app/jiqireyuanban.py`
-  - `app/strategy_b-old.py`
-  - `app/strategy_b_v2.py`
 - 多个脚本里还保留数据库默认密码字符串。即使 `.env` 没提交，后续也建议逐步统一为“必须从环境变量读取”。
-- `app/AAA-UI.py` 看起来默认偏向 live 配置，使用前应再次确认环境保护。
 - 主入口文件中有大段旧逻辑注释，短期不影响运行，但长期会增加维护难度。
 - `app/common/db.py` 和 `app/common/log.py` 目前为空文件，说明公共层还没真正收口。
 

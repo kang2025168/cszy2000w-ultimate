@@ -129,6 +129,33 @@ def _safe_float(v, default=0.0):
         return default
 
 
+def _ensure_monster_watchlist_table(conn):
+    """确保 B->F 二次启动观察池存在，避免 F 启动时缺表。"""
+    sql = f"""
+    CREATE TABLE IF NOT EXISTS `{MONSTER_TABLE}` (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        stock_code VARCHAR(20) NOT NULL,
+        source_strategy VARCHAR(8) NOT NULL DEFAULT 'B',
+        source_reason VARCHAR(255) NULL,
+        last_sell_price DOUBLE NULL,
+        last_sell_time DATETIME NULL,
+        b_peak_price DOUBLE NULL,
+        b_peak_profit DOUBLE NULL,
+        watch_status VARCHAR(16) NOT NULL DEFAULT 'WATCHING',
+        watch_since DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_checked_at DATETIME NULL,
+        notes VARCHAR(500) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_symbol_source (stock_code, source_strategy),
+        KEY idx_status_source (watch_status, source_strategy),
+        KEY idx_watch_since (watch_since)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+
+
 def _load_watch_rows(cur):
     """
     全量扫描 B 卖出后的 WATCHING 状态观察池。
@@ -701,6 +728,7 @@ def strategy_F_scan(prepare_buy: bool = False):
     """
     conn = _connect()
     try:
+        _ensure_monster_watchlist_table(conn)
         _ensure_f_score_table(conn)
         with conn.cursor() as cur:
             rows = _load_watch_rows(cur)
