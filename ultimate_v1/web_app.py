@@ -88,6 +88,7 @@ def _allocation_payload() -> dict:
         "usable_total": usable_total,
         "used_total": used_total,
         "total_risk_percent": allocation.total_risk_percent,
+        "margin_usage_percent": allocation.total_risk_percent,
         "targets": {
             "A": allocation.A_target,
             "B": allocation.B_target,
@@ -796,7 +797,14 @@ INDEX_HTML = r"""<!doctype html>
                     <option value="激进">激进</option>
                   </select>
                   <button class="clear-btn" onclick="openClearModal()">清仓</button>
-                  <span class="risk-badge" id="riskBadge">--</span>
+                  <select class="risk-control-select" id="marginUsageSelect" onchange="updateMarginUsage(this.value)" title="A/B/C 保证金使用额度">
+                    <option value="1.0">额度 100%</option>
+                    <option value="1.1">额度 110%</option>
+                    <option value="1.2">额度 120%</option>
+                    <option value="1.3">额度 130%</option>
+                    <option value="1.4">额度 140%</option>
+                    <option value="1.5">额度 150%</option>
+                  </select>
                 </div>
               </div>
               <div class="risk-body">
@@ -1347,6 +1355,11 @@ INDEX_HTML = r"""<!doctype html>
       if (!result.ok) { alert(result.error || '风险偏好更新失败'); return; }
       await loadAll();
     }
+    async function updateMarginUsage(value) {
+      const result = await postJson('/api/risk_settings', {margin_usage:value});
+      if (!result.ok) { alert(result.error || '保证金额度更新失败'); return; }
+      await loadAll();
+    }
     async function loadAll() {
       const refreshBtn = document.querySelector('.refresh-btn');
       if (refreshBtn) refreshBtn.classList.add('loading');
@@ -1368,15 +1381,14 @@ INDEX_HTML = r"""<!doctype html>
         const totalRiskPct = Number(cap.total_risk_percent || 0) * 100;
         document.getElementById('exposureValue').textContent = `${exposurePct.toFixed(1)}% / 可用${totalRiskPct.toFixed(0)}% / ${money(usedTotal)}`;
         document.getElementById('exposureFill').style.width = `${Math.min(100, exposurePct)}%`;
+        const marginSelect = document.getElementById('marginUsageSelect');
+        if (marginSelect) marginSelect.value = String((Number(cap.margin_usage_percent || cap.total_risk_percent || 1)).toFixed(1));
         drawDonut(cap);
       } else {
         document.getElementById('modeValue').textContent = 'ERROR';
         document.getElementById('metrics').innerHTML = metric('账户', cap.error || '不可用');
       }
       const tone = riskTone(risk);
-      const riskBadge = document.getElementById('riskBadge');
-      riskBadge.textContent = risk.suggest_mode ? '风控预警' : (tone === 'danger' ? '高风险' : tone === 'warn' ? '谨慎' : '正常');
-      riskBadge.className = `risk-badge ${tone === 'ok' ? '' : tone}`;
       const riskSelect = document.getElementById('riskPreferenceSelect');
       if (riskSelect) riskSelect.value = risk.risk_preference || '中性';
       const marketExposure = Number(risk.recommended_exposure || 0);
@@ -1705,11 +1717,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "bot_name": bot_name, "enabled": enabled})
             elif path == "/api/risk_settings":
                 risk_preference = str(payload.get("risk_preference") or "").strip()
-                if risk_preference not in {"保守", "中性", "激进"}:
-                    self._send_json({"ok": False, "error": "不支持的风险偏好"}, 400)
+                margin_usage = payload.get("margin_usage")
+                response = {"ok": True}
+                if risk_preference:
+                    if risk_preference not in {"保守", "中性", "激进"}:
+                        self._send_json({"ok": False, "error": "不支持的风险偏好"}, 400)
+                        return
+                    set_app_setting("RISK_PREFERENCE", risk_preference)
+                    response["risk_preference"] = risk_preference
+                if margin_usage is not None:
+                    try:
+                        margin_value = float(margin_usage)
+                    except Exception:
+                        margin_value = 0.0
+                    if margin_value not in {1.0, 1.1, 1.2, 1.3, 1.4, 1.5}:
+                        self._send_json({"ok": False, "error": "不支持的保证金额度"}, 400)
+                        return
+                    set_app_setting("RISK_TOTAL_CAPITAL_PCT", f"{margin_value:.1f}")
+                    response["margin_usage"] = margin_value
+                if "risk_preference" not in response and "margin_usage" not in response:
+                    self._send_json({"ok": False, "error": "没有可更新的设置"}, 400)
                     return
-                set_app_setting("RISK_PREFERENCE", risk_preference)
-                self._send_json({"ok": True, "risk_preference": risk_preference})
+                self._send_json(response)
             elif path == "/api/sync_positions":
                 ok = sync_all_positions()
                 if not ok:

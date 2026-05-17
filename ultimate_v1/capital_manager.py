@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """多策略资金池管理：计算 A/B/C/D 目标资金、已用资金和开仓许可。"""
 
+import os
 from dataclasses import dataclass
 from datetime import date
 
@@ -9,6 +10,7 @@ from . import alpaca_gateway
 from .config import env_float, settings
 from .db import db_conn, fetch_all
 from .risk_controller import get_risk_state
+from .state_store import get_app_setting
 
 
 @dataclass
@@ -70,22 +72,26 @@ def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
 
 
 def _risk_percents() -> tuple[float, dict[str, float]]:
-    """计算风险机器人允许使用的总资金百分比和各资金池百分比。"""
+    """计算 A/B/C 可使用的保证金倍率和各资金池开关。"""
     risk = get_risk_state()
-    total_pct = max(0.0, min(1.0, env_float("RISK_TOTAL_CAPITAL_PCT", risk.recommended_exposure)))
+    raw_total = os.getenv("RISK_TOTAL_CAPITAL_PCT") or get_app_setting("RISK_TOTAL_CAPITAL_PCT", "1.0")
+    try:
+        total_pct = float(raw_total)
+        if total_pct > 10:
+            total_pct = total_pct / 100.0
+    except Exception:
+        total_pct = 1.0
+    total_pct = max(1.0, min(1.5, total_pct))
     pool_pct = {
         "A": max(0.0, min(1.0, env_float("RISK_A_POOL_PCT", 1.0))),
-        "B": max(0.0, min(1.0, env_float("RISK_B_POOL_PCT", risk.risk_multiplier))),
+        "B": max(0.0, min(1.0, env_float("RISK_B_POOL_PCT", 1.0))),
         "C": max(0.0, min(1.0, env_float("RISK_C_POOL_PCT", 1.0))),
         "D": max(0.0, min(1.0, env_float("RISK_D_POOL_PCT", risk.risk_multiplier))),
     }
     if risk.block_all_new:
-        total_pct = 0.0
-        pool_pct = {group: 0.0 for group in pool_pct}
+        pool_pct["D"] = 0.0
     if risk.block_a:
         pool_pct["A"] = 0.0
-    if risk.block_b:
-        pool_pct["B"] = 0.0
     if risk.block_c:
         pool_pct["C"] = 0.0
     if risk.block_d:
