@@ -1751,6 +1751,10 @@ class Handler(BaseHTTPRequestHandler):
                 if "risk_preference" not in response and "margin_usage" not in response:
                     self._send_json({"ok": False, "error": "没有可更新的设置"}, 400)
                     return
+                try:
+                    refresh_exposure_plan(mode="SUGGEST", execute=True)
+                except Exception as exc:
+                    response["exposure_refresh_error"] = str(exc)[:180]
                 self._send_json(response)
             elif path == "/api/sync_positions":
                 ok = sync_all_positions()

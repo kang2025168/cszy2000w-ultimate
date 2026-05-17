@@ -55,14 +55,39 @@ def _safe_float(v, default: float = 0.0) -> float:
         return default
 
 
+def _margin_usage_pct() -> float:
+    """读取保证金总额度上限：100%-150%。"""
+    raw = os.getenv("RISK_TOTAL_CAPITAL_PCT")
+    if raw is None:
+        row = fetch_one("SELECT setting_value FROM app_settings WHERE setting_key=%s LIMIT 1", ("RISK_TOTAL_CAPITAL_PCT",))
+        raw = str((row or {}).get("setting_value") or "1.0")
+    try:
+        value = float(raw)
+        if value > 10:
+            value = value / 100.0
+    except Exception:
+        value = 1.0
+    return max(1.0, min(1.5, value))
+
+
 def _target_exposure_pct() -> tuple[float, str]:
-    """根据市场大环境给出总仓位目标，不再用 RISK_OFF 把目标压到 5%。"""
+    """根据保证金额度和市场大环境给出总仓位目标。"""
     risk = get_risk_state()
     if risk.market_trend == "向上" and risk.vix < env_float("REBALANCE_LOW_VIX", 20.0):
-        return env_float("REBALANCE_TARGET_UP", 0.85), "up_low_vix"
-    if risk.market_trend == "向下":
-        return env_float("REBALANCE_TARGET_DOWN", 0.25), "downtrend"
-    return env_float("REBALANCE_TARGET_SIDEWAYS", 0.55), "sideways"
+        market_pct = env_float("REBALANCE_TARGET_UP", 0.85)
+        reason = "up_low_vix"
+    elif risk.market_trend == "向下":
+        market_pct = env_float("REBALANCE_TARGET_DOWN", 0.25)
+        reason = "downtrend"
+    else:
+        market_pct = env_float("REBALANCE_TARGET_SIDEWAYS", 0.55)
+        reason = "sideways"
+    margin_pct = _margin_usage_pct()
+    return market_pct * margin_pct, f"{reason}; margin={margin_pct:.0%}"
+
+
+def _target_exposure_cap() -> float:
+    return max(1.0, min(1.5, _margin_usage_pct()))
 
 
 def _split_symbols(raw: str, default: str) -> list[str]:
@@ -316,7 +341,7 @@ def build_exposure_plan(mode: str | None = None) -> ExposurePlan:
     current_value = sum(h.market_value for h in holdings)
     current_pct = current_value / equity if equity > 0 else 0.0
     target_pct, target_reason = _target_exposure_pct()
-    target_pct = max(0.0, min(1.0, float(target_pct)))
+    target_pct = max(0.0, min(_target_exposure_cap(), float(target_pct)))
     target_value = equity * target_pct if equity > 0 else 0.0
     gap_value = target_value - current_value
     gap_pct = target_pct - current_pct
