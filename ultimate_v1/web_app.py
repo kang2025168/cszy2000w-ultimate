@@ -567,6 +567,7 @@ INDEX_HTML = r"""<!doctype html>
     .fill { height:100%; width:0%; background:var(--blue); }
     .right-top { display:grid; grid-template-columns:1.05fr .95fr; gap:16px; min-height:286px; }
     .donut-panel, .bot-panel { min-height:286px; display:flex; flex-direction:column; }
+    .bot-panel .mobile-collapse-body { flex:1; min-height:0; display:flex; flex-direction:column; }
     .donut-wrap { flex:1; display:flex; align-items:center; justify-content:center; gap:18px; min-height:160px; }
     canvas { max-width:100%; }
     #capitalDonut { width:176px; height:176px; }
@@ -574,7 +575,7 @@ INDEX_HTML = r"""<!doctype html>
     .legend-row { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); }
     .legend-amount { display:none; }
     .swatch { width:9px; height:9px; border-radius:2px; }
-    .bot-grid { flex:1; display:flex; flex-direction:column; gap:9px; padding:12px 2px 4px; }
+    .bot-grid { flex:1; min-height:174px; display:flex; flex-direction:column; gap:9px; padding:12px 2px 4px; }
     .bot-row { display:grid; grid-template-columns:minmax(90px,1fr) 18px 42px; align-items:center; gap:10px; min-height:24px; font-size:12px; color:var(--ink); }
     .bot-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .bot-dot { width:14px; height:14px; flex:0 0 auto; border-radius:50%; box-shadow:0 0 0 4px rgba(21,147,106,.10), inset 0 0 0 1px rgba(255,255,255,.8); background:var(--green); }
@@ -583,7 +584,7 @@ INDEX_HTML = r"""<!doctype html>
     .bot-switch::after { content:""; display:block; width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 4px rgba(15,23,42,.2); transition:transform .15s ease; }
     .bot-switch.on { background:#15936a; }
     .bot-switch.on::after { transform:translateX(18px); }
-    .bot-pager { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 2px 0; border-top:1px solid #eef2f6; }
+    .bot-pager { margin-top:auto; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 2px 0; border-top:1px solid #eef2f6; }
     .bot-page-btn { width:28px; height:26px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--muted); font-weight:900; line-height:1; }
     .bot-page-btn:disabled { opacity:.35; }
     .bot-page-dots { display:flex; align-items:center; justify-content:center; gap:6px; flex:1; }
@@ -962,9 +963,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     function renderBots(bots, controls) {
       const botPages = [
-        ['b_buy_bot','b_sell_bot','d_buy_bot','d_sell_bot'],
-        ['dashboard_bot','risk_bot','ac_bot','f_buy_bot','f_sell_bot'],
-        ['rebalance_bot']
+        ['rebalance_bot','b_buy_bot','b_sell_bot','d_buy_bot','d_sell_bot'],
+        ['dashboard_bot','risk_bot','ac_bot','f_buy_bot','f_sell_bot']
       ];
       botPage = Math.max(0, Math.min(botPage, botPages.length - 1));
       const known = botPages[botPage];
@@ -988,7 +988,7 @@ INDEX_HTML = r"""<!doctype html>
       `;
     }
     function setBotPage(page) {
-      botPage = Math.max(0, Math.min(Number(page || 0), 2));
+      botPage = Math.max(0, Math.min(Number(page || 0), 1));
       renderBots(latestBotHeartbeats, latestBotControls);
     }
     function renderPhase(phase) {
