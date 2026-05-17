@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""总仓位管理器：按风险目标仓位，对各策略当前持仓做等比例调仓规划。"""
+"""总仓位管理器：按风险目标仓位生成自动调仓建议，默认只建议不下单。"""
 
 import math
 import os
@@ -14,6 +14,7 @@ from .risk_controller import get_risk_state
 
 
 GROUPS = ("A", "B", "C", "D", "F")
+SIGNAL_POOL_SYMBOLS = {"B_SIGNAL_POOL", "D_SIGNAL_POOL", "F_SIGNAL_POOL"}
 
 
 @dataclass
@@ -64,6 +65,74 @@ def _target_exposure_pct() -> tuple[float, str]:
     if risk.market_trend == "向下":
         return env_float("REBALANCE_TARGET_DOWN", 0.25), "downtrend"
     return env_float("REBALANCE_TARGET_SIDEWAYS", 0.55), "sideways"
+
+
+def _split_symbols(raw: str, default: str) -> list[str]:
+    symbols = []
+    for item in (raw or default).replace("，", ",").split(","):
+        symbol = item.strip().upper()
+        if symbol:
+            symbols.append(symbol)
+    return symbols
+
+
+def _symbols_for_group(group: str) -> list[str]:
+    """自动调仓建议使用的目标池；B/D/F 仍交给各自机器人信号池。"""
+    group = group.upper()
+    if group == "A":
+        return _split_symbols(env_str("REBALANCE_A_SYMBOLS", "QQQ"), "QQQ")
+    if group == "C":
+        return _split_symbols(
+            env_str("REBALANCE_C_SYMBOLS", "NVDA,MSFT,AAPL,AMZN,META,GOOGL,AVGO,TSLA"),
+            "NVDA,MSFT,AAPL,AMZN,META,GOOGL,AVGO,TSLA",
+        )
+    if group == "B":
+        return ["B_SIGNAL_POOL"]
+    if group == "D":
+        return ["D_SIGNAL_POOL"]
+    if group == "F":
+        return ["F_SIGNAL_POOL"]
+    return []
+
+
+def _strategy_weights(risk) -> dict[str, float]:
+    """给加仓建议使用的策略目标权重，减仓不使用这里，减仓按现有持仓等比例。"""
+    if risk.recommended_weights:
+        weights = {
+            group: max(0.0, _safe_float(risk.recommended_weights.get(group), 0.0))
+            for group in ("A", "B", "C", "D")
+        }
+    else:
+        a, b, c, d = {
+            "NORMAL": (0.30, 0.40, 0.30, 0.30),
+            "SAFE": (0.40, 0.25, 0.35, 0.00),
+            "ATTACK": (0.25, 0.45, 0.30, 0.30),
+            "RISK_OFF": (0.70, 0.00, 0.30, 0.00),
+        }.get(str(risk.mode or "NORMAL").upper(), (0.30, 0.40, 0.30, 0.30))
+        weights = {"A": a, "B": b, "C": c, "D": d}
+
+    if os.getenv("REBALANCE_INCLUDE_D_BUY", "0") != "1":
+        weights["D"] = 0.0
+
+    f_weight = env_float("REBALANCE_F_WEIGHT", 0.0)
+    if f_weight > 0:
+        weights["F"] = f_weight
+
+    if risk.block_all_new or risk.risk_multiplier <= 0:
+        return {}
+    if risk.block_a:
+        weights["A"] = 0.0
+    if risk.block_b:
+        weights["B"] = 0.0
+    if risk.block_c:
+        weights["C"] = 0.0
+    if risk.block_d:
+        weights["D"] = 0.0
+
+    total = sum(max(0.0, v) for v in weights.values())
+    if total <= 0:
+        return {}
+    return {group: max(0.0, value) / total for group, value in weights.items() if value > 0}
 
 
 def _load_open_holdings() -> list[Holding]:
@@ -127,8 +196,121 @@ def _latest_position_map() -> dict[str, float]:
     return out
 
 
+def _holding_maps(holdings: list[Holding]) -> tuple[dict[str, float], dict[str, Holding]]:
+    group_values = {group: 0.0 for group in GROUPS}
+    by_symbol: dict[str, Holding] = {}
+    for holding in holdings:
+        group_values[holding.strategy_group] = group_values.get(holding.strategy_group, 0.0) + holding.market_value
+        by_symbol[holding.symbol] = holding
+    return group_values, by_symbol
+
+
+def _build_proportional_sell_actions(
+    *,
+    round_id: str,
+    holdings: list[Holding],
+    target_value: float,
+    current_value: float,
+    target_pct: float,
+    min_trade: float,
+    reason: str,
+) -> tuple[float, list[dict]]:
+    scale_ratio = target_value / current_value if current_value > 0 else 0.0
+    actions: list[dict] = []
+    for holding in holdings:
+        target_holding_value = holding.market_value * scale_ratio
+        delta_value = target_holding_value - holding.market_value
+        if abs(delta_value) < min_trade:
+            continue
+        qty = abs(delta_value) / holding.price if holding.price > 0 else 0.0
+        if qty <= 0:
+            continue
+        actions.append(
+            {
+                "round_id": round_id,
+                "symbol": holding.symbol,
+                "strategy_group": holding.strategy_group,
+                "side": "sell",
+                "current_value": round(holding.market_value, 2),
+                "target_value": round(target_holding_value, 2),
+                "delta_value": round(abs(delta_value), 2),
+                "qty": qty,
+                "price": holding.price,
+                "status": "planned",
+                "reason": f"proportional_sell scale={scale_ratio:.4f} target={target_pct:.0%} {reason}",
+            }
+        )
+    return scale_ratio, actions
+
+
+def _build_weighted_buy_actions(
+    *,
+    round_id: str,
+    risk,
+    holdings: list[Holding],
+    target_value: float,
+    current_value: float,
+    target_pct: float,
+    min_trade: float,
+    reason: str,
+) -> tuple[float, list[dict]]:
+    group_values, by_symbol = _holding_maps(holdings)
+    weights = _strategy_weights(risk)
+    if not weights:
+        return 1.0, []
+
+    scale_ratio = target_value / current_value if current_value > 0 else 1.0
+    group_gaps: list[tuple[str, float, float]] = []
+    for group, weight in weights.items():
+        group_target = target_value * weight
+        gap = group_target - group_values.get(group, 0.0)
+        if gap >= min_trade:
+            group_gaps.append((group, group_target, gap))
+
+    # 如果现有仓位结构已经让所有目标组超配，但总仓位仍不足，就把新增资金放进 A 核心池。
+    if not group_gaps and target_value - current_value >= min_trade:
+        group = "A" if "A" in weights else next(iter(weights))
+        group_target = target_value * weights[group]
+        group_gaps.append((group, group_target, target_value - current_value))
+
+    actions: list[dict] = []
+    for group, group_target, group_gap in group_gaps:
+        symbols = _symbols_for_group(group)
+        if not symbols:
+            continue
+        each_value = group_gap / float(len(symbols))
+        for symbol in symbols:
+            if each_value < min_trade:
+                continue
+            holding = by_symbol.get(symbol)
+            current_symbol_value = holding.market_value if holding else 0.0
+            price = holding.price if holding else 0.0
+            qty = each_value / price if price > 0 else 0.0
+            is_pool = symbol in SIGNAL_POOL_SYMBOLS
+            actions.append(
+                {
+                    "round_id": round_id,
+                    "symbol": symbol,
+                    "strategy_group": group,
+                    "side": "buy",
+                    "current_value": round(current_symbol_value, 2),
+                    "target_value": round(current_symbol_value + each_value, 2),
+                    "delta_value": round(each_value, 2),
+                    "qty": qty,
+                    "price": price,
+                    "status": "planned",
+                    "reason": (
+                        f"{'signal_pool_' if is_pool else ''}weighted_buy "
+                        f"group_target={group_target:.2f} weight={weights[group]:.0%} "
+                        f"target={target_pct:.0%} {reason}"
+                    ),
+                }
+            )
+    return scale_ratio, actions
+
+
 def build_exposure_plan(mode: str | None = None) -> ExposurePlan:
-    """生成一次等比例总仓位调仓计划。"""
+    """生成一次总仓位调仓计划：降仓等比例，升仓按策略权重。"""
     mode = (mode or env_str("REBALANCE_BOT_MODE", "SUGGEST")).strip().upper()
     risk = get_risk_state()
     equity = _account_equity()
@@ -146,39 +328,36 @@ def build_exposure_plan(mode: str | None = None) -> ExposurePlan:
 
     if equity <= 0:
         return ExposurePlan(round_id, mode, risk.mode, risk.market_trend, risk.vix, equity, current_value, current_pct, target_value, target_pct, gap_value, gap_pct, 1.0, "HOLD", "equity_unavailable", [])
-    if current_value <= 0:
-        return ExposurePlan(round_id, mode, risk.mode, risk.market_trend, risk.vix, equity, current_value, current_pct, target_value, target_pct, gap_value, gap_pct, 1.0, "HOLD", "no_open_holdings", [])
     if abs(gap_pct) <= tolerance:
         return ExposurePlan(round_id, mode, risk.mode, risk.market_trend, risk.vix, equity, current_value, current_pct, target_value, target_pct, gap_value, gap_pct, 1.0, "HOLD", f"within_tolerance {target_reason}", [])
 
-    scale_ratio = target_value / current_value if current_value > 0 else 1.0
-    action = "BUY" if scale_ratio > 1 else "SELL"
-    actions: list[dict] = []
-
-    for holding in holdings:
-        target_holding_value = holding.market_value * scale_ratio
-        delta_value = target_holding_value - holding.market_value
-        if abs(delta_value) < min_trade:
-            continue
-        side = "buy" if delta_value > 0 else "sell"
-        qty = abs(delta_value) / holding.price if holding.price > 0 else 0.0
-        if qty <= 0:
-            continue
-        actions.append(
-            {
-                "round_id": round_id,
-                "symbol": holding.symbol,
-                "strategy_group": holding.strategy_group,
-                "side": side,
-                "current_value": round(holding.market_value, 2),
-                "target_value": round(target_holding_value, 2),
-                "delta_value": round(abs(delta_value), 2),
-                "qty": qty,
-                "price": holding.price,
-                "status": "planned",
-                "reason": f"proportional_{action.lower()} scale={scale_ratio:.4f} target={target_pct:.0%} {target_reason}",
-            }
+    if gap_value < -min_trade and current_value > 0:
+        action = "SELL"
+        scale_ratio, actions = _build_proportional_sell_actions(
+            round_id=round_id,
+            holdings=holdings,
+            target_value=target_value,
+            current_value=current_value,
+            target_pct=target_pct,
+            min_trade=min_trade,
+            reason=target_reason,
         )
+    elif gap_value > min_trade:
+        action = "BUY"
+        scale_ratio, actions = _build_weighted_buy_actions(
+            round_id=round_id,
+            risk=risk,
+            holdings=holdings,
+            target_value=target_value,
+            current_value=current_value,
+            target_pct=target_pct,
+            min_trade=min_trade,
+            reason=target_reason,
+        )
+    else:
+        action = "HOLD"
+        scale_ratio = 1.0
+        actions = []
 
     return ExposurePlan(
         round_id=round_id,
@@ -195,7 +374,7 @@ def build_exposure_plan(mode: str | None = None) -> ExposurePlan:
         exposure_gap_pct=gap_pct,
         scale_ratio=scale_ratio,
         action=action,
-        reason=f"{target_reason}; proportional resize current={current_pct:.1%} target={target_pct:.1%}",
+        reason=f"{target_reason}; {action.lower()} current={current_pct:.1%} target={target_pct:.1%}",
         actions=actions,
     )
 
@@ -301,9 +480,15 @@ def execute_exposure_plan(plan: ExposurePlan) -> list[dict]:
         status = "skipped"
         order_id = ""
         reason = str(action["reason"])
+        symbol = str(action["symbol"]).upper()
+        price = float(action.get("price") or 0.0)
 
         if value < min_trade:
             reason = "below_min_trade"
+        elif symbol in SIGNAL_POOL_SYMBOLS:
+            reason = "strategy_signal_pool_suggestion_only"
+        elif side == "buy" and price <= 0:
+            reason = "missing_realtime_price_for_auto_buy"
         elif not _group_allowed(side, group):
             reason = f"permission_denied {group}_{side}"
         elif side == "buy" and bought + value > max_buy:
