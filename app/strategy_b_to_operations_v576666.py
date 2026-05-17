@@ -68,9 +68,6 @@ def _fetch_as_of_date(cur):
     return as_of
 
 
-# =========================
-# 维护逻辑：旧池子（B且未买入）
-# =========================
 def _maintain_old_unbought_b(cur, as_of):
     """
     仅做淘汰删除，不再动态修改 trigger_price。
@@ -111,9 +108,6 @@ def _maintain_old_unbought_b(cur, as_of):
     )
 
 
-# =========================
-# 候选阶段：提前过滤价格>2 和 成交量>100万
-# =========================
 def _load_candidates(cur, as_of):
     sql = f"""
     SELECT
@@ -164,10 +158,7 @@ def _load_recent_bars(cur, symbol, as_of, limit=30):
 
 
 def _compute_metrics(bars_desc):
-    """
-    bars_desc: 最近日期在前（DESC）
-    需要至少 21 天
-    """
+    """bars_desc: 最近日期在前（DESC），需要至少 21 天。"""
     if len(bars_desc) < 21:
         return None
 
@@ -231,18 +222,8 @@ def _compute_metrics(bars_desc):
     }
 
 
-# =========================
-# 写入：只插入“全新”股票
-# =========================
 def _insert_new_ops_b_only(cur, rows):
-    """
-    只插入不存在的股票。
-
-    entry_date / entry_open / entry_close / trigger_price
-    只在首次 INSERT 时写入。
-
-    trigger_price = strategy_b_levels.pressure_price
-    """
+    """只插入不存在的股票。"""
     if not rows:
         return 0
 
@@ -279,16 +260,7 @@ def _insert_new_ops_b_only(cur, rows):
 
 
 def _already_exists(cur, code: str) -> bool:
-    """
-    只要股票已存在于 stock_operations，就返回 True。
-
-    包括：
-      - 已买入
-      - A 类型
-      - B 未买入
-
-    全部跳过，保护现有数据。
-    """
+    """只要股票已存在于 stock_operations，就返回 True。"""
     sql = f"""
     SELECT 1
     FROM `{OPS_TABLE}`
@@ -414,3 +386,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

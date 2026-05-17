@@ -1342,4 +1342,17 @@ def strategy_B_sell(code: str) -> bool:
             if conn:
                 conn.close()
         except Exception:
+<<<<<<< ours
             pass
+=======
+<<<<<<< ours
+<<<<<<< ours
+            pass
+=======
+            pass
+>>>>>>> theirs
+>>>>>>> theirs
+=======
+            pass
+>>>>>>> theirs
+>>>>>>> theirs

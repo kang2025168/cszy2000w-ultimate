@@ -1283,4 +1283,8 @@ def strategy_B_sell_v2(code: str) -> bool:
 # 对外统一入口
 # =========================
 def strategy_B_sell(code: str) -> bool:
+<<<<<<< ours
     return strategy_B_sell_v2(code)
+=======
+    return strategy_B_sell_v2(code)
+>>>>>>> theirs
