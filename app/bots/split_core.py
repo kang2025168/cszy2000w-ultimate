@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Shared runtime for independent buy and sell bots.
+独立买卖机器人的共享运行核心。
 
-The strategy functions still live in their current modules. This layer only
-separates the process loops so buying and selling can be operated, scheduled,
-and optimized independently.
+这个文件不直接代表某一个策略。它负责：
+- 读取 BOT_STRATEGIES，决定当前进程只跑 B、F 或多个策略
+- 根据 buy/sell 角色扫描 stock_operations
+- 把具体股票分发给 strategy_B_buy / strategy_F_sell 等策略函数
+- 控制每轮休眠、阶段判断、全局买入闸门和日志
 """
 from __future__ import annotations
 
@@ -14,7 +16,7 @@ import time as t
 import traceback
 from dataclasses import dataclass
 
-from app import trade_bot_main as tb
+from app.bots import runtime_core as tb
 
 
 DEFAULT_STRATEGIES = ("B", "F")

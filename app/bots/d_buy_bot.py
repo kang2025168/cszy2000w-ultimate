@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-"""D 买入机器人：只负责日内开仓，必须听 D 资金池和风险状态。"""
+"""D 买入机器人。
+
+负责 D 策略日内开仓入口。必须听 D 资金池和风险状态；
+当前未指定 symbol 时只保留扫描占位。
+"""
 
 import argparse
 import time
 
-from ..schema import ensure_schema
-from ..state_store import heartbeat, is_bot_enabled
-from ..strategies.strategy_d import strategy_D_buy
+from ultimate_v1.schema import ensure_schema
+from ultimate_v1.state_store import heartbeat, is_bot_enabled
+from app.strategies.abcd_strategy import strategy_D_buy
 
 BOT_NAME = "d_buy_bot"
 
@@ -27,7 +31,7 @@ def run_once(symbol: str | None = None):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ultimate V1 D 买入机器人")
+    parser = argparse.ArgumentParser(description="D 买入机器人")
     parser.add_argument("symbol", nargs="?")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=30)

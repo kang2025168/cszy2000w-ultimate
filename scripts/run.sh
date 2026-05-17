@@ -18,23 +18,31 @@ echo "$(ts) ===== DONE healthcheck ====="
 
 case "$cmd" in
   main)
-    echo "$(ts) ===== START tradebot main ====="
-    exec python -u app/trade_bot_main.py
+    echo "$(ts) old tradebot main has been removed. Use b_buy_bot/b_sell_bot/f_buy_bot/f_sell_bot." >&2
+    exit 2
     ;;
   getdata_full)
     exec python -u app/getdata_alpaca.py
     ;;
   strategy_a)
-    echo "$(ts) ===== START tradebot main (strategy_a) ====="
-    exec python -u app/trade_bot_main.py
+    echo "$(ts) old strategy_a main entry has been removed. Use independent bots." >&2
+    exit 2
     ;;
-  buy_bot)
-    echo "$(ts) ===== START independent buy bot ====="
-    exec python -u app/buy_bot.py
+  b_buy_bot)
+    echo "$(ts) ===== START independent B buy bot ====="
+    exec python -u -m app.bots.b_buy_bot
     ;;
-  sell_bot)
-    echo "$(ts) ===== START independent sell bot ====="
-    exec python -u app/sell_bot.py
+  b_sell_bot)
+    echo "$(ts) ===== START independent B sell bot ====="
+    exec python -u -m app.bots.b_sell_bot
+    ;;
+  f_buy_bot)
+    echo "$(ts) ===== START independent F buy bot ====="
+    exec python -u -m app.bots.f_buy_bot
+    ;;
+  f_sell_bot)
+    echo "$(ts) ===== START independent F sell bot ====="
+    exec python -u -m app.bots.f_sell_bot
     ;;
   ops_volume)
     echo "$(ts) ===== START local ops intraday volume sync ====="
@@ -77,46 +85,36 @@ case "$cmd" in
     exec python -u -m ultimate_v1.strategy_runner "$@"
     ;;
   ultimate_dashboard_bot)
-    echo "$(ts) ===== START ultimate_v1 dashboard bot ====="
+    echo "$(ts) ===== START dashboard bot ====="
     shift
-    exec python -u -m ultimate_v1.bots.dashboard_bot "$@"
+    exec python -u -m app.bots.dashboard_bot "$@"
     ;;
   ultimate_risk_bot)
-    echo "$(ts) ===== START ultimate_v1 risk bot ====="
+    echo "$(ts) ===== START risk bot ====="
     shift
-    exec python -u -m ultimate_v1.bots.risk_bot "$@"
+    exec python -u -m app.bots.risk_bot "$@"
     ;;
   ultimate_ac_bot)
-    echo "$(ts) ===== START ultimate_v1 AC bot ====="
+    echo "$(ts) ===== START AC bot ====="
     shift
-    exec python -u -m ultimate_v1.bots.ac_bot "$@"
-    ;;
-  ultimate_b_buy_bot)
-    echo "$(ts) ===== START ultimate_v1 B buy bot ====="
-    shift
-    exec python -u -m ultimate_v1.bots.b_buy_bot "$@"
-    ;;
-  ultimate_b_sell_bot)
-    echo "$(ts) ===== START ultimate_v1 B sell bot ====="
-    shift
-    exec python -u -m ultimate_v1.bots.b_sell_bot "$@"
+    exec python -u -m app.bots.ac_bot "$@"
     ;;
   ultimate_d_buy_bot)
-    echo "$(ts) ===== START ultimate_v1 D buy bot ====="
+    echo "$(ts) ===== START D buy bot ====="
     shift
-    exec python -u -m ultimate_v1.bots.d_buy_bot "$@"
+    exec python -u -m app.bots.d_buy_bot "$@"
     ;;
   ultimate_d_sell_bot)
-    echo "$(ts) ===== START ultimate_v1 D sell bot ====="
+    echo "$(ts) ===== START D sell bot ====="
     shift
-    exec python -u -m ultimate_v1.bots.d_sell_bot "$@"
+    exec python -u -m app.bots.d_sell_bot "$@"
     ;;
   healthcheck)
     echo "$(ts) healthcheck only done."
     exit 0
     ;;
   *)
-    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|buy_bot|sell_bot|ops_volume|price_categories_once|price_categories_loop|unlock_can_sell|ultimate_startup|ultimate_web|ultimate_sync_positions|ultimate_flatten_d|ultimate_rebalance|ultimate_strategy|ultimate_dashboard_bot|ultimate_risk_bot|ultimate_ac_bot|ultimate_b_buy_bot|ultimate_b_sell_bot|ultimate_d_buy_bot|ultimate_d_sell_bot|healthcheck}" >&2
+    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|b_buy_bot|b_sell_bot|f_buy_bot|f_sell_bot|ops_volume|price_categories_once|price_categories_loop|unlock_can_sell|ultimate_startup|ultimate_web|ultimate_sync_positions|ultimate_flatten_d|ultimate_rebalance|ultimate_strategy|ultimate_dashboard_bot|ultimate_risk_bot|ultimate_ac_bot|ultimate_d_buy_bot|ultimate_d_sell_bot|healthcheck}" >&2
     exit 2
     ;;
 esac

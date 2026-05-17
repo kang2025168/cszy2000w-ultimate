@@ -9,7 +9,7 @@
 
 说明：
 - 这个服务只改 bot_control 表，不直接下单。
-- 主程序 trade_bot_main.py 每轮读取 bot_control，再决定是否允许买入/暂停。
+- 独立机器人每轮读取 bot_control，再决定是否允许买入/暂停。
 """
 
 from __future__ import annotations
@@ -174,7 +174,7 @@ def _alpaca_keys_for_env():
     """
     手机控制台需要自己选择 Alpaca key。
 
-    trade_bot_main.py 会在启动时把 PAPER/LIVE key 注入到 APCA_API_KEY_ID，
+    独立机器人启动时会把 PAPER/LIVE key 注入到 APCA_API_KEY_ID，
     但 monitor 是独立进程，不能依赖主程序已经注入过的环境变量。
     所以这里按 TRADE_ENV/ALPACA_MODE 主动选择：
       - live  -> LIVE_APCA_API_KEY_ID / LIVE_APCA_API_SECRET_KEY

@@ -13,10 +13,9 @@
 
 ```text
 docker compose up -d --build
-  -> tradebot service
-  -> ./scripts/run.sh strategy_a
-  -> python -u app/trade_bot_main.py
-  -> import strategy_a / strategy_b / strategy_c / strategy_d / strategy_e
+  -> split-bots profile
+  -> ./scripts/run.sh b_buy_bot / b_sell_bot / f_buy_bot / f_sell_bot
+  -> import strategy_b / strategy_f 等当前实盘策略
   -> main_loop()
   -> one_round()
   -> load_rows()
@@ -42,13 +41,13 @@ docker compose up -d --build
 
 - `scripts/run.sh`
   - 先执行 `app/healthcheck.py`。
-  - `main` 和 `strategy_a` 都会运行 `app/trade_bot_main.py`。
-  - 还支持 `getdata_full`、`unlock_can_sell`、`healthcheck`。
+  - 当前交易入口是 `b_buy_bot`、`b_sell_bot`、`f_buy_bot`、`f_sell_bot`。
+  - 还支持 `getdata_full`、`unlock_can_sell`、`healthcheck` 和 Ultimate V1 辅助入口。
 
 ### 主循环
 
-- `app/trade_bot_main.py`
-  - 当前主入口。
+- `app/bots/runtime_core.py`
+  - 当前独立机器人的运行时公共工具。
   - 读取 `TRADE_ENV` / `ALPACA_MODE`，只允许 `paper` 或 `live`。
   - 根据环境把 paper/live key 注入到通用变量：
     - `APCA_API_KEY_ID`
@@ -69,17 +68,16 @@ docker compose up -d --build
     - `strategy_B_buy(code)`
     - `strategy_B_sell(code)`
 
-- `app/strategy_a.py`
-  - A 策略买卖逻辑存在：
-    - `strategy_A_buy(stock_code)`
-    - `strategy_A_sell(stock_code)`
-  - 当前主循环没有分发到 A 策略。
+- `app/strategies/abcd_strategy.py`
+  - A/B/C/D 买卖策略统一入口。
+  - A/C/D 目前仍是新系统占位和风控检查入口。
+  - B 会先经过 Ultimate V1 风控和资金池检查，再调用 `app.strategy_b` 的成熟买卖逻辑。
 
 - `app/strategy_c.py`
   - 看起来偏向筛选/生成候选，而不是当前主循环直接交易。
 
 - `app/strategy_d.py` / `app/strategy_e.py`
-  - 目前只有简单打印函数。
+  - 旧占位文件，不作为新的 ABCD 统一入口。
 
 ### 数据和表
 
@@ -203,7 +201,6 @@ docker compose run --rm tradebot ./scripts/run.sh healthcheck
 - 代码里存在多个旧入口或备份式入口，例如：
   - `app/mainbott.py`
   - `app/jiqireyuanban.py`
-  - `app/trade22_bot_main.py`
   - `app/strategy_b-old.py`
   - `app/strategy_b_v2.py`
 - 多个脚本里还保留数据库默认密码字符串。即使 `.env` 没提交，后续也建议逐步统一为“必须从环境变量读取”。
@@ -221,7 +218,7 @@ docker compose run --rm tradebot ./scripts/run.sh healthcheck
 4. 给 live 模式增加更明显的启动确认日志或保护开关。
 5. 统一 DB 配置读取方式。
 6. 标记旧入口，确认没有使用后再归档。
-7. 最后才考虑改 `trade_bot_main.py`、`strategy_a.py`、`strategy_b.py` 的交易逻辑。
+7. 最后才考虑改 `app/bots/runtime_core.py`、`app/strategies/abcd_strategy.py`、`app/strategy_b.py` 的交易逻辑。
 
 ## 改代码前检查清单
 

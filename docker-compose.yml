@@ -24,6 +24,7 @@ services:
       retries: 30
 
   tradebot:
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -60,7 +61,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    command: ["bash", "-lc", "./scripts/run.sh strategy_a"]
+    command: ["bash", "-lc", "./scripts/run.sh main"]
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -73,7 +74,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: cszy_buybot
+    container_name: cszy_b_buybot
     working_dir: /app
     env_file:
       - .env
@@ -82,7 +83,7 @@ services:
       DB_PORT: 3306
       TZ: America/Los_Angeles
       TRADE_ENV: ${ALPACA_MODE}
-      BOT_PROCESS_NAME: buy_bot
+      BOT_PROCESS_NAME: b_buy_bot
       PAPER_APCA_API_KEY_ID: ${PAPER_APCA_API_KEY_ID}
       PAPER_APCA_API_SECRET_KEY: ${PAPER_APCA_API_SECRET_KEY}
       PAPER_ALPACA_BASE_URL: ${PAPER_ALPACA_BASE_URL}
@@ -97,7 +98,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    command: ["bash", "-lc", "./scripts/run.sh buy_bot"]
+    command: ["bash", "-lc", "./scripts/run.sh b_buy_bot"]
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -110,7 +111,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: cszy_sellbot
+    container_name: cszy_b_sellbot
     working_dir: /app
     env_file:
       - .env
@@ -119,7 +120,7 @@ services:
       DB_PORT: 3306
       TZ: America/Los_Angeles
       TRADE_ENV: ${ALPACA_MODE}
-      BOT_PROCESS_NAME: sell_bot
+      BOT_PROCESS_NAME: b_sell_bot
       SELL_BOT_FORCE_PHASE: ${SELL_BOT_FORCE_PHASE:-}
       SPLIT_BOT_LOG_EACH_SYMBOL: ${SPLIT_BOT_LOG_EACH_SYMBOL:-1}
       PAPER_APCA_API_KEY_ID: ${PAPER_APCA_API_KEY_ID}
@@ -136,7 +137,85 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    command: ["bash", "-lc", "./scripts/run.sh sell_bot"]
+    command: ["bash", "-lc", "./scripts/run.sh b_sell_bot"]
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  f_buybot:
+    profiles: ["split-bots"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cszy_f_buybot
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      TZ: America/Los_Angeles
+      TRADE_ENV: ${ALPACA_MODE}
+      BOT_PROCESS_NAME: f_buy_bot
+      BOT_SLEEP_BETWEEN_ROUNDS: ${F_BUY_BOT_SLEEP_BETWEEN_ROUNDS:-60}
+      PAPER_APCA_API_KEY_ID: ${PAPER_APCA_API_KEY_ID}
+      PAPER_APCA_API_SECRET_KEY: ${PAPER_APCA_API_SECRET_KEY}
+      PAPER_ALPACA_BASE_URL: ${PAPER_ALPACA_BASE_URL}
+      LIVE_APCA_API_KEY_ID: ${LIVE_APCA_API_KEY_ID}
+      LIVE_APCA_API_SECRET_KEY: ${LIVE_APCA_API_SECRET_KEY}
+      LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./scripts:/app/scripts
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["bash", "-lc", "./scripts/run.sh f_buy_bot"]
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  f_sellbot:
+    profiles: ["split-bots"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cszy_f_sellbot
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      TZ: America/Los_Angeles
+      TRADE_ENV: ${ALPACA_MODE}
+      BOT_PROCESS_NAME: f_sell_bot
+      BOT_SLEEP_BETWEEN_ROUNDS: ${F_SELL_BOT_SLEEP_BETWEEN_ROUNDS:-60}
+      SELL_BOT_FORCE_PHASE: ${F_SELL_BOT_FORCE_PHASE:-}
+      SPLIT_BOT_LOG_EACH_SYMBOL: ${SPLIT_BOT_LOG_EACH_SYMBOL:-1}
+      PAPER_APCA_API_KEY_ID: ${PAPER_APCA_API_KEY_ID}
+      PAPER_APCA_API_SECRET_KEY: ${PAPER_APCA_API_SECRET_KEY}
+      PAPER_ALPACA_BASE_URL: ${PAPER_ALPACA_BASE_URL}
+      LIVE_APCA_API_KEY_ID: ${LIVE_APCA_API_KEY_ID}
+      LIVE_APCA_API_SECRET_KEY: ${LIVE_APCA_API_SECRET_KEY}
+      LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./scripts:/app/scripts
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["bash", "-lc", "./scripts/run.sh f_sell_bot"]
     restart: unless-stopped
     logging:
       driver: "json-file"

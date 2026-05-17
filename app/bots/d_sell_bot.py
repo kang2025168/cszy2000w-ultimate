@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-"""D 卖出机器人：负责 D 类止盈止损和收盘前强制平仓。"""
+"""D 卖出机器人。
+
+负责 D 策略止盈止损和收盘前强制平仓。
+未指定 symbol 时会执行 D 强平检查。
+"""
 
 import argparse
 import time
 
-from ..intraday_flatten import flatten_d_positions
-from ..schema import ensure_schema
-from ..state_store import heartbeat, is_bot_enabled
-from ..strategies.strategy_d import strategy_D_sell
+from ultimate_v1.intraday_flatten import flatten_d_positions
+from ultimate_v1.schema import ensure_schema
+from ultimate_v1.state_store import heartbeat, is_bot_enabled
+from app.strategies.abcd_strategy import strategy_D_sell
 
 BOT_NAME = "d_sell_bot"
 
@@ -31,7 +35,7 @@ def run_once(symbol: str | None = None, flatten: bool = False):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ultimate V1 D 卖出机器人")
+    parser = argparse.ArgumentParser(description="D 卖出机器人")
     parser.add_argument("symbol", nargs="?")
     parser.add_argument("--flatten", action="store_true")
     parser.add_argument("--loop", action="store_true")

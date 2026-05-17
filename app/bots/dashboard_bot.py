@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-"""看板机器人：管理资金仓位状态，影响 A/B/C/D 买入机器人。"""
+"""看板状态机器人。
+
+负责刷新账户快照、资金池、持仓占用和 capital_state，
+供网页看板和其它机器人读取。
+"""
 
 import argparse
 import time
 
-from ..capital_manager import get_capital_allocation, get_strategy_used_capital
-from ..config import settings
-from ..risk_controller import get_risk_state
-from ..schema import ensure_schema
-from ..state_store import heartbeat, replace_capital_state, write_account_snapshot
-from ..sync_positions import sync_position_holdings
+from ultimate_v1.capital_manager import get_capital_allocation, get_strategy_used_capital
+from ultimate_v1.config import settings
+from ultimate_v1.risk_controller import get_risk_state
+from ultimate_v1.schema import ensure_schema
+from ultimate_v1.state_store import heartbeat, replace_capital_state, write_account_snapshot
+from ultimate_v1.sync_positions import sync_position_holdings
 
 BOT_NAME = "dashboard_bot"
 
@@ -79,7 +83,7 @@ def loop(interval_sec: int) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ultimate V1 看板机器人")
+    parser = argparse.ArgumentParser(description="看板状态机器人")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=settings().position_sync_interval_sec)
     args = parser.parse_args()

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-"""风险机器人：计算风险状态，写入 risk_state，影响看板机器人。"""
+"""风险机器人。
+
+负责计算最新风险状态并写入 risk_state，
+看板和资金池会根据这里的结果限制新开仓。
+"""
 
 import argparse
 import time
 
-from ..risk_controller import get_risk_state, log_risk_state
-from ..schema import ensure_schema
-from ..state_store import heartbeat, write_risk_state
+from ultimate_v1.risk_controller import log_risk_state
+from ultimate_v1.schema import ensure_schema
+from ultimate_v1.state_store import heartbeat, write_risk_state
 
 BOT_NAME = "risk_bot"
 
@@ -33,7 +37,7 @@ def loop(interval_sec: int) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ultimate V1 风险机器人")
+    parser = argparse.ArgumentParser(description="风险机器人")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=60)
     args = parser.parse_args()

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-"""A/C 低频买卖机器人：长期指数底仓和长期优质股共用。"""
+"""A/C 低频机器人。
+
+负责 A/C 低频买卖入口。scan 模式当前只打心跳；
+手动 buy/sell 时需要指定 --group A/C 和 --symbol。
+"""
 
 import argparse
 import time
 
-from ..schema import ensure_schema
-from ..state_store import heartbeat, is_bot_enabled
-from ..strategies.strategy_a import strategy_A_buy, strategy_A_sell
-from ..strategies.strategy_c import strategy_C_buy, strategy_C_sell
+from ultimate_v1.schema import ensure_schema
+from ultimate_v1.state_store import heartbeat, is_bot_enabled
+from app.strategies.abcd_strategy import strategy_A_buy, strategy_A_sell, strategy_C_buy, strategy_C_sell
 
 BOT_NAME = "ac_bot"
 
@@ -35,7 +38,7 @@ def run_once(action: str = "scan", symbol: str | None = None, group: str | None 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ultimate V1 A/C 低频机器人")
+    parser = argparse.ArgumentParser(description="A/C 低频机器人")
     parser.add_argument("action", nargs="?", default="scan", choices=["scan", "buy", "sell"])
     parser.add_argument("--group", choices=["A", "C"])
     parser.add_argument("--symbol")

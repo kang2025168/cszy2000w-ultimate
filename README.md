@@ -4,31 +4,34 @@
 
 ### 关键入口
 
-- 主服务：`tradebot`
-- 主入口：`app/trade_bot_main.py`
-- 独立买入机器人：`app/buy_bot.py`
-- 独立卖出机器人：`app/sell_bot.py`
-- 拆分后的共享运行层：`app/bots/split_core.py`
-- 策略 A 买卖逻辑：`app/strategy_a.py`
+- 主交易服务：`buybot` / `sellbot` / `f_buybot` / `f_sellbot`
+- 机器人运行核心：`app/bots/runtime_core.py`
+- B 买入机器人：`app/bots/b_buy_bot.py`
+- B 卖出机器人：`app/bots/b_sell_bot.py`
+- F 买入机器人：`app/bots/f_buy_bot.py`
+- F 卖出机器人：`app/bots/f_sell_bot.py`
+- 机器人共享运行层：`app/bots/split_core.py`
+- ABCD 买卖策略统一入口：`app/strategies/abcd_strategy.py`
 
 ### 买卖机器人拆分
 
-买入和卖出可以分开运行：
+每个策略的买入和卖出都可以单独运行：
 
 ```bash
-./scripts/run.sh buy_bot
-./scripts/run.sh sell_bot
+./scripts/run.sh b_buy_bot
+./scripts/run.sh b_sell_bot
+./scripts/run.sh f_buy_bot
+./scripts/run.sh f_sell_bot
 ```
 
 Docker 里已经预留了 `split-bots` profile，默认不影响现有 `tradebot`：
 
 ```bash
-docker compose --profile split-bots up -d --build buybot sellbot
+docker compose --profile split-bots up -d --build buybot sellbot f_buybot f_sellbot
 ```
 
 可用环境变量：
 
-- `BOT_STRATEGIES=B,F`：控制拆分机器人扫描哪些策略。
 - `BUY_BOT_SLEEP_BETWEEN_ROUNDS=10`：买入机器人空转休眠秒数。
 - `SELL_BOT_SLEEP_BETWEEN_ROUNDS=5`：卖出机器人空转休眠秒数，默认比买入更频繁。
 - `B_BUY_WINDOW_START_LA=06:50`：B 策略默认避开开盘前 20 分钟。

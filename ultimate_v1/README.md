@@ -97,40 +97,42 @@ docker compose --profile ultimate up -d ultimate_v1
 单次刷新风险状态：
 
 ```bash
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.risk_bot
+docker compose exec -T ultimate_v1 python -m app.bots.risk_bot
 ```
 
 单次刷新看板资金/仓位状态：
 
 ```bash
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.dashboard_bot
+docker compose exec -T ultimate_v1 python -m app.bots.dashboard_bot
 ```
 
 循环运行风险机器人：
 
 ```bash
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.risk_bot --loop --interval 60
+docker compose exec -T ultimate_v1 python -m app.bots.risk_bot --loop --interval 60
 ```
 
 循环运行看板机器人：
 
 ```bash
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.dashboard_bot --loop --interval 300
+docker compose exec -T ultimate_v1 python -m app.bots.dashboard_bot --loop --interval 300
 ```
 
 ## 策略机器人命令
 
 ```bash
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.ac_bot scan
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.ac_bot buy --group A --symbol QQQ
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.ac_bot buy --group C --symbol MSFT
+docker compose exec -T ultimate_v1 python -m app.bots.ac_bot scan
+docker compose exec -T ultimate_v1 python -m app.bots.ac_bot buy --group A --symbol QQQ
+docker compose exec -T ultimate_v1 python -m app.bots.ac_bot buy --group C --symbol MSFT
 
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.b_buy_bot TSLA
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.b_sell_bot TSLA
+docker compose exec -T ultimate_v1 ./scripts/run.sh b_buy_bot
+docker compose exec -T ultimate_v1 ./scripts/run.sh b_sell_bot
+docker compose exec -T ultimate_v1 ./scripts/run.sh f_buy_bot
+docker compose exec -T ultimate_v1 ./scripts/run.sh f_sell_bot
 
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.d_buy_bot QQQ
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.d_sell_bot
-docker compose exec -T ultimate_v1 python -m ultimate_v1.bots.d_sell_bot --flatten
+docker compose exec -T ultimate_v1 python -m app.bots.d_buy_bot QQQ
+docker compose exec -T ultimate_v1 python -m app.bots.d_sell_bot
+docker compose exec -T ultimate_v1 python -m app.bots.d_sell_bot --flatten
 ```
 
 也可以通过统一调度器：
