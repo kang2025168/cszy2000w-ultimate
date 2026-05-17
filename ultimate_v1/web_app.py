@@ -529,17 +529,20 @@ INDEX_HTML = r"""<!doctype html>
     .metric { border:1px solid var(--line); border-radius:8px; padding:15px 16px; min-height:76px; }
     .metric-label, .pool-meta, .small-muted { color:var(--muted); font-size:12px; }
     .metric-value { font-size:20px; font-weight:850; margin-top:6px; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .risk-strip { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:14px; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:14px; }
-    .risk-main { min-width:0; }
-    .risk-head { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:14px; }
+    .risk-strip { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:14px; display:grid; gap:12px; background:linear-gradient(180deg, #fff, #fbfcfe); }
+    .risk-topbar { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+    .risk-main { min-width:0; display:grid; gap:10px; }
+    .risk-head { display:flex; align-items:center; gap:14px; flex-wrap:wrap; min-width:0; }
     .risk-head h2 { white-space:nowrap; }
-    .risk-line { display:flex; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:12px; margin-top:9px; }
-    .risk-chip { border-radius:999px; padding:5px 9px; background:#eef2f6; color:#475467; font-weight:750; }
+    .risk-body { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(260px,.9fr); gap:12px; align-items:stretch; }
+    .risk-line { display:flex; gap:8px; flex-wrap:wrap; align-content:flex-start; color:var(--muted); font-size:12px; }
+    .risk-chip { border-radius:999px; padding:5px 9px; background:#eef2f6; color:#475467; font-weight:750; white-space:nowrap; }
     .risk-chip.ok { background:#e7f6ef; color:#08734f; }
     .risk-chip.warn { background:#fff3d6; color:#9a5b00; }
     .risk-chip.danger { background:#fee2e2; color:#b42318; }
     .risk-chip.info { background:#e0f2fe; color:#075985; }
     .market-risk-inline { display:flex; gap:8px; flex-wrap:wrap; align-items:center; min-width:0; }
+    .market-risk-inline .risk-chip { padding:6px 11px; font-size:13px; }
     .market-risk-inline.fresh .risk-chip { animation:freshPulse .85s ease-out 1; }
     @keyframes freshPulse {
       0% { transform:scale(1); box-shadow:0 0 0 0 rgba(21,147,106,.24); filter:brightness(1); }
@@ -553,8 +556,10 @@ INDEX_HTML = r"""<!doctype html>
     .risk-control-select { height:34px; border:1px solid var(--line); border-radius:7px; padding:0 10px; background:#fff; color:var(--ink); font-weight:800; }
     .clear-btn { height:30px; padding:0 14px; border:0; border-radius:7px; background:#fee2e2; color:#b42318; font-weight:850; }
     .clear-btn:hover { background:#fecaca; }
-    .rebalance-advice { margin-top:10px; min-height:28px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:12px; font-weight:750; }
-    .rebalance-advice .advice-title { color:var(--ink); font-weight:900; }
+    .rebalance-advice { min-height:64px; display:grid; grid-template-columns:auto 1fr; grid-template-areas:"icon title" "icon detail"; align-items:center; column-gap:10px; row-gap:4px; padding:10px 12px; border:1px solid #dbeafe; border-radius:8px; background:#f0f9ff; color:var(--muted); font-size:12px; font-weight:750; }
+    .rebalance-icon { grid-area:icon; width:34px; height:34px; border-radius:8px; display:grid; place-items:center; background:#fff; color:#075985; font-weight:950; box-shadow:inset 0 0 0 1px #bfdbfe; }
+    .rebalance-title { grid-area:title; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--ink); font-weight:900; }
+    .rebalance-detail { grid-area:detail; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
     .exposure-card { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:#fbfcfe; }
     .exposure-head { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; font-weight:800; }
     .exposure-value { color:var(--muted); font-size:12px; font-weight:700; }
@@ -699,9 +704,12 @@ INDEX_HTML = r"""<!doctype html>
       .metric { min-height:70px; padding:12px; }
       .metric-label, .pool-meta, .small-muted { font-size:11px; }
       .metric-value { font-size:17px; margin-top:7px; }
-      .risk-strip { grid-template-columns:1fr; align-items:flex-start; padding:12px; }
+      .risk-strip { padding:12px; }
+      .risk-topbar, .risk-head { align-items:flex-start; }
+      .risk-topbar, .risk-body { grid-template-columns:1fr; display:grid; gap:10px; }
       .risk-line { gap:10px; line-height:1.5; }
       .risk-actions { width:100%; justify-content:flex-end; }
+      .rebalance-advice { min-height:0; }
       .clear-btn { height:32px; }
       .exposure-card { margin-top:12px; padding:12px; }
       .exposure-head { align-items:flex-start; flex-direction:column; gap:4px; }
@@ -776,22 +784,24 @@ INDEX_HTML = r"""<!doctype html>
               <div class="metric-grid" id="metrics"></div>
             </div>
             <div class="risk-strip">
-              <div class="risk-main">
+              <div class="risk-topbar">
                 <div class="risk-head">
                   <h2>风险状态</h2>
                   <div class="market-risk-inline" id="marketRisk"></div>
                 </div>
+                <div class="risk-actions">
+                  <select class="risk-control-select" id="riskPreferenceSelect" onchange="updateRiskPreference(this.value)">
+                    <option value="保守">保守</option>
+                    <option value="中性">中性</option>
+                    <option value="激进">激进</option>
+                  </select>
+                  <button class="clear-btn" onclick="openClearModal()">清仓</button>
+                  <span class="risk-badge" id="riskBadge">--</span>
+                </div>
+              </div>
+              <div class="risk-body">
                 <div class="risk-line" id="risk"></div>
                 <div class="rebalance-advice" id="rebalanceAdvice"></div>
-              </div>
-              <div class="risk-actions">
-                <select class="risk-control-select" id="riskPreferenceSelect" onchange="updateRiskPreference(this.value)">
-                  <option value="保守">保守</option>
-                  <option value="中性">中性</option>
-                  <option value="激进">激进</option>
-                </select>
-                <button class="clear-btn" onclick="openClearModal()">清仓</button>
-                <span class="risk-badge" id="riskBadge">--</span>
               </div>
             </div>
             <div class="exposure-card">
@@ -1307,7 +1317,11 @@ INDEX_HTML = r"""<!doctype html>
       if (!el) return;
       if (!exposureState) {
         const target = Number(risk?.recommended_exposure || 0);
-        el.innerHTML = `<span class="advice-title">自动调仓建议</span><span class="risk-chip info">等待rebalance_bot生成</span><span>当前风险目标仓位 ${target ? (target * 100).toFixed(0) + '%' : '--'}</span>`;
+        el.innerHTML = `
+          <span class="rebalance-icon">调</span>
+          <span class="rebalance-title">自动调仓 <span class="risk-chip info">等待建议</span></span>
+          <span class="rebalance-detail"><span>目标仓位 ${target ? (target * 100).toFixed(0) + '%' : '--'}</span><span>rebalance_bot 未生成</span></span>
+        `;
         return;
       }
       const cur = Number(exposureState.current_exposure_pct || 0);
@@ -1317,13 +1331,16 @@ INDEX_HTML = r"""<!doctype html>
       const mode = String(exposureState.mode || 'SUGGEST').toUpperCase();
       const tone = action === 'SELL' ? 'danger' : action === 'BUY' ? 'ok' : 'info';
       const label = action === 'SELL' ? '建议减仓' : action === 'BUY' ? '建议加仓' : '保持仓位';
-      el.innerHTML = [
-        `<span class="advice-title">自动调仓建议</span>`,
-        `<span class="risk-chip ${tone}">${label}</span>`,
-        `<span>当前 ${(cur * 100).toFixed(1)}% / 目标 ${(target * 100).toFixed(1)}%</span>`,
-        `<span>差额 ${money(Math.abs(gap))}</span>`,
-        `<span>模式 ${mode}</span>`
-      ].join('');
+      el.innerHTML = `
+        <span class="rebalance-icon">调</span>
+        <span class="rebalance-title">自动调仓 <span class="risk-chip ${tone}">${label}</span></span>
+        <span class="rebalance-detail">
+          <span>当前 ${(cur * 100).toFixed(1)}%</span>
+          <span>目标 ${(target * 100).toFixed(1)}%</span>
+          <span>差额 ${money(Math.abs(gap))}</span>
+          <span>${mode}</span>
+        </span>
+      `;
     }
     async function updateRiskPreference(value) {
       const result = await postJson('/api/risk_settings', {risk_preference:value});
