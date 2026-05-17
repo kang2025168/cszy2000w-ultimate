@@ -530,14 +530,16 @@ INDEX_HTML = r"""<!doctype html>
     .metric-label, .pool-meta, .small-muted { color:var(--muted); font-size:12px; }
     .metric-value { font-size:20px; font-weight:850; margin-top:6px; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .risk-strip { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:14px; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:14px; }
-    .risk-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    .risk-main { min-width:0; }
+    .risk-head { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:14px; }
+    .risk-head h2 { white-space:nowrap; }
     .risk-line { display:flex; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:12px; margin-top:9px; }
     .risk-chip { border-radius:999px; padding:5px 9px; background:#eef2f6; color:#475467; font-weight:750; }
     .risk-chip.ok { background:#e7f6ef; color:#08734f; }
     .risk-chip.warn { background:#fff3d6; color:#9a5b00; }
     .risk-chip.danger { background:#fee2e2; color:#b42318; }
     .risk-chip.info { background:#e0f2fe; color:#075985; }
-    .market-risk-inline { display:flex; gap:8px; flex-wrap:wrap; }
+    .market-risk-inline { display:flex; gap:8px; flex-wrap:wrap; align-items:center; min-width:0; }
     .market-risk-inline.fresh .risk-chip { animation:freshPulse .85s ease-out 1; }
     @keyframes freshPulse {
       0% { transform:scale(1); box-shadow:0 0 0 0 rgba(21,147,106,.24); filter:brightness(1); }
@@ -551,6 +553,8 @@ INDEX_HTML = r"""<!doctype html>
     .risk-control-select { height:34px; border:1px solid var(--line); border-radius:7px; padding:0 10px; background:#fff; color:var(--ink); font-weight:800; }
     .clear-btn { height:30px; padding:0 14px; border:0; border-radius:7px; background:#fee2e2; color:#b42318; font-weight:850; }
     .clear-btn:hover { background:#fecaca; }
+    .rebalance-advice { margin-top:10px; min-height:28px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:12px; font-weight:750; }
+    .rebalance-advice .advice-title { color:var(--ink); font-weight:900; }
     .exposure-card { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:#fbfcfe; }
     .exposure-head { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; font-weight:800; }
     .exposure-value { color:var(--muted); font-size:12px; font-weight:700; }
@@ -772,12 +776,13 @@ INDEX_HTML = r"""<!doctype html>
               <div class="metric-grid" id="metrics"></div>
             </div>
             <div class="risk-strip">
-              <div>
+              <div class="risk-main">
                 <div class="risk-head">
                   <h2>风险状态</h2>
                   <div class="market-risk-inline" id="marketRisk"></div>
                 </div>
                 <div class="risk-line" id="risk"></div>
+                <div class="rebalance-advice" id="rebalanceAdvice"></div>
               </div>
               <div class="risk-actions">
                 <select class="risk-control-select" id="riskPreferenceSelect" onchange="updateRiskPreference(this.value)">
@@ -1297,6 +1302,29 @@ INDEX_HTML = r"""<!doctype html>
       if (risk.suggest_mode || risk.market_trend === '横盘' || Number(risk.vix || 0) >= 20 || Number(risk.recommended_exposure || 0) < 0.5) return 'warn';
       return 'ok';
     }
+    function renderRebalanceAdvice(exposureState, risk) {
+      const el = document.getElementById('rebalanceAdvice');
+      if (!el) return;
+      if (!exposureState) {
+        const target = Number(risk?.recommended_exposure || 0);
+        el.innerHTML = `<span class="advice-title">自动调仓建议</span><span class="risk-chip info">等待rebalance_bot生成</span><span>当前风险目标仓位 ${target ? (target * 100).toFixed(0) + '%' : '--'}</span>`;
+        return;
+      }
+      const cur = Number(exposureState.current_exposure_pct || 0);
+      const target = Number(exposureState.target_exposure_pct || 0);
+      const gap = Number(exposureState.exposure_gap_value || 0);
+      const action = String(exposureState.action || 'HOLD').toUpperCase();
+      const mode = String(exposureState.mode || 'SUGGEST').toUpperCase();
+      const tone = action === 'SELL' ? 'danger' : action === 'BUY' ? 'ok' : 'info';
+      const label = action === 'SELL' ? '建议减仓' : action === 'BUY' ? '建议加仓' : '保持仓位';
+      el.innerHTML = [
+        `<span class="advice-title">自动调仓建议</span>`,
+        `<span class="risk-chip ${tone}">${label}</span>`,
+        `<span>当前 ${(cur * 100).toFixed(1)}% / 目标 ${(target * 100).toFixed(1)}%</span>`,
+        `<span>差额 ${money(Math.abs(gap))}</span>`,
+        `<span>模式 ${mode}</span>`
+      ].join('');
+    }
     async function updateRiskPreference(value) {
       const result = await postJson('/api/risk_settings', {risk_preference:value});
       if (!result.ok) { alert(result.error || '风险偏好更新失败'); return; }
@@ -1353,6 +1381,7 @@ INDEX_HTML = r"""<!doctype html>
       marketRisk.classList.remove('fresh');
       void marketRisk.offsetWidth;
       marketRisk.classList.add('fresh');
+      renderRebalanceAdvice(state.exposure_state, risk);
       window.latestBotProcesses = state.bot_processes || [];
       latestBotHeartbeats = state.bot_heartbeats || [];
       latestBotControls = state.bot_controls || [];
