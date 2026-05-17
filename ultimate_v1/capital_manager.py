@@ -71,17 +71,31 @@ def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
     return {"A": a, "B": b, "C": c, "D": d}, allow_d
 
 
-def _risk_percents() -> tuple[float, dict[str, float]]:
-    """计算 A/B/C 可使用的保证金倍率和各资金池开关。"""
-    risk = get_risk_state()
+def _margin_usage_pct() -> float:
+    """读取保证金总额度上限：100%-150%。"""
     raw_total = os.getenv("RISK_TOTAL_CAPITAL_PCT") or get_app_setting("RISK_TOTAL_CAPITAL_PCT", "1.0")
     try:
-        total_pct = float(raw_total)
-        if total_pct > 10:
-            total_pct = total_pct / 100.0
+        margin_pct = float(raw_total)
+        if margin_pct > 10:
+            margin_pct = margin_pct / 100.0
     except Exception:
-        total_pct = 1.0
-    total_pct = max(1.0, min(1.5, total_pct))
+        margin_pct = 1.0
+    return max(1.0, min(1.5, margin_pct))
+
+
+def _market_exposure_pct(risk) -> float:
+    """读取市场环境目标仓位：向上/VIX低 85%，横盘 55%，向下 25%。"""
+    if risk.market_trend == "向上" and risk.vix < env_float("REBALANCE_LOW_VIX", 20.0):
+        return env_float("REBALANCE_TARGET_UP", 0.85)
+    if risk.market_trend == "向下":
+        return env_float("REBALANCE_TARGET_DOWN", 0.25)
+    return env_float("REBALANCE_TARGET_SIDEWAYS", 0.55)
+
+
+def _risk_percents() -> tuple[float, dict[str, float]]:
+    """计算 A/B/C 有效可用额度：保证金上限 × 市场仓位目标。"""
+    risk = get_risk_state()
+    total_pct = _margin_usage_pct() * _market_exposure_pct(risk)
     pool_pct = {
         "A": max(0.0, min(1.0, env_float("RISK_A_POOL_PCT", 1.0))),
         "B": max(0.0, min(1.0, env_float("RISK_B_POOL_PCT", 1.0))),

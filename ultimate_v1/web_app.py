@@ -22,7 +22,7 @@ from .exposure_manager import latest_exposure_state, latest_rebalance_actions, r
 from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import CAPITAL_MODE_LABELS, get_risk_state
 from .schema import ensure_schema
-from .state_store import add_command, bot_controls, bot_heartbeats, capital_state_rows, equity_curve, latest_risk_state, set_app_setting
+from .state_store import add_command, bot_controls, bot_heartbeats, capital_state_rows, equity_curve, get_app_setting, latest_risk_state, set_app_setting
 from .sync_positions import last_sync_error, sync_all_positions
 
 try:
@@ -70,6 +70,7 @@ def _allocation_payload() -> dict:
     allocation = get_capital_allocation()
     if allocation is None:
         return {"ok": False, "error": "account_snapshot_failed"}
+    margin_usage = _parse_margin_usage_setting()
     used = allocation.used
     available = allocation.available
     usable_total = sum(allocation.target_for(g) for g in ("A", "B", "C", "D"))
@@ -88,7 +89,8 @@ def _allocation_payload() -> dict:
         "usable_total": usable_total,
         "used_total": used_total,
         "total_risk_percent": allocation.total_risk_percent,
-        "margin_usage_percent": allocation.total_risk_percent,
+        "margin_usage_percent": margin_usage,
+        "market_exposure_percent": allocation.total_risk_percent / margin_usage if margin_usage > 0 else 0.0,
         "targets": {
             "A": allocation.A_target,
             "B": allocation.B_target,
@@ -101,6 +103,17 @@ def _allocation_payload() -> dict:
         "used": used,
         "available": available,
     }
+
+
+def _parse_margin_usage_setting() -> float:
+    raw = get_app_setting("RISK_TOTAL_CAPITAL_PCT", "1.0")
+    try:
+        value = float(raw)
+        if value > 10:
+            value = value / 100.0
+    except Exception:
+        value = 1.0
+    return max(1.0, min(1.5, value))
 
 
 def _risk_payload() -> dict:
