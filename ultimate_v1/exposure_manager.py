@@ -141,17 +141,6 @@ def _strategy_weights(risk) -> dict[str, float]:
     if f_weight > 0:
         weights["F"] = f_weight
 
-    if risk.block_all_new or risk.risk_multiplier <= 0:
-        return {}
-    if risk.block_a:
-        weights["A"] = 0.0
-    if risk.block_b:
-        weights["B"] = 0.0
-    if risk.block_c:
-        weights["C"] = 0.0
-    if risk.block_d:
-        weights["D"] = 0.0
-
     total = sum(max(0.0, v) for v in weights.values())
     if total <= 0:
         return {}

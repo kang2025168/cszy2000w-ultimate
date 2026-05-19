@@ -11,7 +11,6 @@ import time
 
 from ultimate_v1.capital_manager import get_capital_allocation, get_strategy_used_capital
 from ultimate_v1.config import settings
-from ultimate_v1.risk_controller import get_risk_state
 from ultimate_v1.schema import ensure_schema
 from ultimate_v1.state_store import heartbeat, replace_capital_state, write_account_snapshot
 from ultimate_v1.sync_positions import sync_position_holdings
@@ -32,7 +31,6 @@ def refresh_dashboard_state(sync_positions: bool = False) -> list[dict]:
         return []
     write_account_snapshot(allocation.equity, allocation.buying_power, allocation.cash, allocation.portfolio_value)
 
-    risk = get_risk_state()
     rows = []
     for group in ("A", "B", "C", "D"):
         target = allocation.target_for(group)
@@ -40,22 +38,7 @@ def refresh_dashboard_state(sync_positions: bool = False) -> list[dict]:
         available = allocation.available.get(group, max(0.0, target - used))
         can_open = True
         reason = "allow"
-        if risk.block_all_new:
-            can_open = False
-            reason = risk.reason or "risk_block_all"
-        elif group == "A" and risk.block_a:
-            can_open = False
-            reason = risk.reason or "risk_block_a"
-        elif group == "B" and risk.block_b:
-            can_open = False
-            reason = risk.reason or "risk_block_b"
-        elif group == "C" and risk.block_c:
-            can_open = False
-            reason = risk.reason or "risk_block_c"
-        elif group == "D" and risk.block_d:
-            can_open = False
-            reason = risk.reason or "risk_block_d"
-        elif available <= 0:
+        if available <= 0:
             can_open = False
             reason = "no_available_capital"
         rows.append(

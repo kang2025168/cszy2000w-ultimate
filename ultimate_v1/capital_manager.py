@@ -100,16 +100,8 @@ def _risk_percents() -> tuple[float, dict[str, float]]:
         "A": max(0.0, min(1.0, env_float("RISK_A_POOL_PCT", 1.0))),
         "B": max(0.0, min(1.0, env_float("RISK_B_POOL_PCT", 1.0))),
         "C": max(0.0, min(1.0, env_float("RISK_C_POOL_PCT", 1.0))),
-        "D": max(0.0, min(1.0, env_float("RISK_D_POOL_PCT", risk.risk_multiplier))),
+        "D": max(0.0, min(1.0, env_float("RISK_D_POOL_PCT", 1.0))),
     }
-    if risk.block_all_new:
-        pool_pct["D"] = 0.0
-    if risk.block_a:
-        pool_pct["A"] = 0.0
-    if risk.block_c:
-        pool_pct["C"] = 0.0
-    if risk.block_d:
-        pool_pct["D"] = 0.0
     return total_pct, pool_pct
 
 
@@ -346,13 +338,6 @@ def can_open_new_position(strategy_group: str, estimated_notional: float) -> tup
     if not s.enable_capital_manager:
         return True, "capital_manager_disabled"
     try:
-        mode = get_risk_state().mode
-        if mode == "SAFE" and group == "D":
-            print(f"[CAPITAL BLOCK] strategy=D allow=False reason=safe_mode_blocks_d", flush=True)
-            return False, "safe_mode_blocks_d"
-        if mode == "RISK_OFF" and group in {"B", "D"}:
-            print(f"[CAPITAL BLOCK] strategy={group} allow=False reason=risk_off_blocks_attack", flush=True)
-            return False, "risk_off_blocks_attack"
         allocation = get_capital_allocation()
         if allocation is None:
             return False, "account_snapshot_failed"

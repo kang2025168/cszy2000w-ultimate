@@ -55,13 +55,18 @@ from app.strategy_b import (  # noqa: E402
     strategy_B_sell,
 )
 from app.strategy_f import (  # noqa: E402
-    strategy_F_afterhours_add,
     strategy_F_buy,
     strategy_F_extended_record,
     strategy_F_premarket_manage,
     strategy_F_refresh_candidates,
     strategy_F_sell,
 )
+try:  # noqa: E402
+    from app.strategy_f import strategy_F_afterhours_add  # type: ignore
+except ImportError:  # noqa: E402
+    def strategy_F_afterhours_add(code: str) -> bool:
+        log.warning(f"[F AFTERHOURS] {code} strategy_F_afterhours_add 未实现，跳过")
+        return False
 
 LA_TZ_NAME = os.getenv("TZ", "America/Los_Angeles")
 LA_TZ = ZoneInfo(LA_TZ_NAME) if ZoneInfo else None
@@ -344,4 +349,3 @@ def get_market_gate(conn) -> int:
         return int(float(row.get("entry_open") or 0))
     except Exception:
         return 0
-

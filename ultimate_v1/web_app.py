@@ -256,6 +256,31 @@ def _trade_records_payload() -> dict:
     except Exception as exc:
         print(f"[WEB TRADE RECORDS] stock_operations unavailable: {exc}", flush=True)
 
+    try:
+        rows.extend(
+            fetch_all(
+                """
+                SELECT
+                    created_at AS event_time,
+                    bot_name AS symbol,
+                    action AS side,
+                    'BOT' AS strategy_group,
+                    0 AS qty,
+                    0 AS price,
+                    status,
+                    CONCAT(message, IF(pid IS NULL, '', CONCAT(' pid=', pid))) AS note,
+                    CAST(id AS CHAR) AS order_id,
+                    'bot_lifecycle_events' AS source
+                FROM bot_lifecycle_events
+                WHERE DATE(created_at)=CURDATE()
+                ORDER BY created_at DESC, id DESC
+                LIMIT 200
+                """
+            )
+        )
+    except Exception as exc:
+        print(f"[WEB TRADE RECORDS] bot_lifecycle_events unavailable: {exc}", flush=True)
+
     def key(row: dict) -> str:
         return "|".join(
             [
@@ -614,25 +639,25 @@ INDEX_HTML = r"""<!doctype html>
     .bot-page-dot { width:7px; height:7px; border-radius:999px; background:#d0d5dd; cursor:pointer; }
     .bot-page-dot.active { width:18px; background:#101828; }
     .bot-page-label { min-width:42px; color:var(--muted); font-size:11px; font-weight:800; text-align:right; }
-    .chart-panel { flex:1; min-height:0; display:flex; flex-direction:column; }
-    .chart-panel .mobile-collapse-body { flex:1; min-height:0; display:flex; flex-direction:column; }
+    .chart-panel { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
+    .chart-panel .mobile-collapse-body { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
     .chart-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
     .chart-title { display:flex; align-items:baseline; gap:14px; }
     .today-pnl { font-size:15px; font-weight:850; color:var(--green); }
     .tabs { display:flex; gap:6px; flex-wrap:wrap; }
     .tab { height:28px; border-radius:6px; padding:0 10px; color:var(--muted); }
     .tab.active { background:#101828; color:#fff; border-color:#101828; }
-    .trade-records { margin-top:12px; border-top:1px solid #eef2f6; padding-top:10px; min-height:180px; flex:1; display:flex; flex-direction:column; }
+    .trade-records { margin-top:12px; border-top:1px solid #eef2f6; padding-top:10px; flex:0 0 auto; display:flex; flex-direction:column; }
     .trade-records-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .trade-records-title { font-size:13px; font-weight:850; color:var(--ink); }
     .trade-records-count { color:var(--muted); font-size:11px; font-weight:800; }
-    .trade-records-scroll { flex:1; min-height:126px; overflow:auto; border:1px solid #eef2f6; border-radius:8px; }
+    .trade-records-scroll { height:190px; overflow:auto; border:1px solid #eef2f6; border-radius:8px; }
     .trade-records table { min-width:680px; }
     .trade-records th, .trade-records td { padding:8px 10px; font-size:11px; }
     .side-pill { border-radius:999px; padding:3px 7px; font-weight:850; font-size:11px; }
     .side-pill.buy { background:#e7f6ef; color:#08734f; }
     .side-pill.sell { background:#fee2e2; color:#b42318; }
-    #equityChart { width:100%; flex:1; min-height:260px; }
+    #equityChart { width:100%; height:260px; flex:0 0 260px; min-height:0; }
     .section-head { display:flex; align-items:center; justify-content:space-between; margin:18px 0 10px; }
     table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
     th, td { border-bottom:1px solid var(--line); padding:10px 9px; text-align:left; font-size:13px; white-space:nowrap; }
@@ -746,9 +771,9 @@ INDEX_HTML = r"""<!doctype html>
       .chart-title { width:100%; justify-content:space-between; gap:8px; }
       .today-pnl { font-size:14px; }
       .tabs { width:100%; justify-content:flex-end; }
-      #equityChart { min-height:238px; }
+      #equityChart { height:238px; flex-basis:238px; }
       .chart-panel.mobile-open .mobile-collapse-body { display:flex; flex-direction:column; }
-      .trade-records-scroll { max-height:190px; }
+      .trade-records-scroll { height:190px; }
       .holdings-panel { min-height:520px; margin-top:12px; }
       .holding-head { flex-direction:column; align-items:stretch; gap:10px; margin:0 0 12px; }
       .holding-left-tools { flex-wrap:wrap; gap:8px; align-items:center; }
@@ -1010,7 +1035,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('botLights').innerHTML = known.map(name => {
         const b = byName[name];
         const p = processMap[name];
-        const ok = Boolean(p && p.running) || Boolean(b && b.status === 'running');
+        const ok = p ? Boolean(p.running) : Boolean(b && b.status === 'running');
         const controllable = controlMap[name] !== undefined;
         const enabled = controlMap[name] !== false;
         const title = b ? `${name} ${b.status} pid=${p?.pid || '-'} ${b.last_seen_at || ''} ${b.last_message || ''}` : `${name} no heartbeat pid=${p?.pid || '-'}`;
@@ -1213,8 +1238,9 @@ INDEX_HTML = r"""<!doctype html>
       tableEl.innerHTML = `<thead><tr>${['时间','方向','策略','代码','数量','价格','状态','说明'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
         rows.map(r => {
           const side = String(r.side || '').toUpperCase();
-          const sideClass = side === 'SELL' ? 'sell' : 'buy';
-          const sideLabel = side === 'SELL' ? '卖出' : '买入';
+          const isBotEvent = r.source === 'bot_lifecycle_events';
+          const sideClass = side === 'SELL' || side === 'STOP' ? 'sell' : 'buy';
+          const sideLabel = isBotEvent ? (side === 'STOP' ? '关闭' : '开启') : (side === 'SELL' ? '卖出' : '买入');
           const timeText = String(r.event_time || '').slice(11,19) || String(r.event_time || '').slice(0,16);
           const price = Number(r.price || 0);
           const priceText = price > 0 ? money(price) : '--';
@@ -1414,9 +1440,9 @@ INDEX_HTML = r"""<!doctype html>
         riskChip('回撤', pct(risk.max_drawdown), Number(risk.max_drawdown || 0) > 0.04 ? 'danger' : 'ok'),
         riskChip('市场仓位', `${(marketExposure * 100).toFixed(0)}%`, marketExposure < 0.5 ? 'warn' : 'ok'),
         riskChip('调仓目标', `${(rebalanceTarget * 100).toFixed(0)}%`, targetTone),
-        riskChip('AC', (risk.block_a || risk.block_c) ? '停' : '开', (risk.block_a || risk.block_c) ? 'danger' : 'ok'),
-        riskChip('B', risk.block_b ? '停' : '开', risk.block_b ? 'danger' : 'ok'),
-        riskChip('D', risk.block_d ? '停' : '开', risk.block_d ? 'danger' : 'ok')
+        riskChip('AC', (risk.block_a || risk.block_c) ? '警' : '正常', (risk.block_a || risk.block_c) ? 'danger' : 'ok'),
+        riskChip('B', risk.block_b ? '警' : '正常', risk.block_b ? 'danger' : 'ok'),
+        riskChip('D', risk.block_d ? '警' : '正常', risk.block_d ? 'danger' : 'ok')
       ].join('');
       document.getElementById('marketRisk').innerHTML = [
         riskChip('趋势', risk.market_trend || '--', risk.market_trend === '向上' ? 'ok' : risk.market_trend === '向下' ? 'danger' : 'warn'),
@@ -1726,8 +1752,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": "不支持的机器人"}, 400)
                     return
                 enabled = bool(enabled_raw is True or str(enabled_raw).lower() in {"1", "true", "yes", "on"})
-                set_bot_runtime(bot_name, enabled)
-                self._send_json({"ok": True, "bot_name": bot_name, "enabled": enabled})
+                running = set_bot_runtime(bot_name, enabled)
+                self._send_json({"ok": True, "bot_name": bot_name, "enabled": enabled, "running": running})
             elif path == "/api/risk_settings":
                 risk_preference = str(payload.get("risk_preference") or "").strip()
                 margin_usage = payload.get("margin_usage")

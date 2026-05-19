@@ -616,25 +616,15 @@ def can_open(strategy_group: str) -> tuple[bool, str]:
     try:
         state = get_risk_state()
         group = (strategy_group or "").upper().strip()
-        if state.block_all_new:
-            print(f"[RISK BLOCK] reason={state.reason} strategy={group}", flush=True)
-            return False, state.reason or "block_all_new"
-        if group == "A" and state.block_a:
-            print(f"[RISK BLOCK] reason={state.reason or 'block_a'} strategy=A", flush=True)
-            return False, state.reason or "block_a"
-        if group == "B" and state.block_b:
-            print(f"[RISK BLOCK] reason={state.reason or 'block_b'} strategy=B", flush=True)
-            return False, state.reason or "block_b"
-        if group == "C" and state.block_c:
-            print(f"[RISK BLOCK] reason={state.reason or 'block_c'} strategy=C", flush=True)
-            return False, state.reason or "block_c"
-        if group == "D" and state.block_d:
-            print(f"[RISK BLOCK] reason={state.reason or 'block_d'} strategy=D", flush=True)
-            return False, state.reason or "block_d"
-        return True, "allow"
+        print(
+            f"[RISK ADVISORY] strategy={group} mode={state.mode} "
+            f"risk={state.risk_multiplier:.2f} reason={state.reason or 'allow'}",
+            flush=True,
+        )
+        return True, "risk_advisory_only"
     except Exception as exc:
-        print(f"[RISK ERROR] cannot calculate risk: {exc}", flush=True)
-        return False, "risk_calc_failed"
+        print(f"[RISK ERROR] advisory unavailable: {exc}", flush=True)
+        return True, "risk_advisory_unavailable"
 
 
 def log_risk_state() -> RiskState:

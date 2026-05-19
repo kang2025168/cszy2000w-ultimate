@@ -151,6 +151,19 @@ def set_bot_enabled(bot_name: str, enabled: bool) -> None:
             )
 
 
+def log_bot_lifecycle(bot_name: str, action: str, status: str, message: str = "", pid: int | None = None) -> None:
+    """把机器人启动/关闭关键事件写入看板交易记录。"""
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bot_lifecycle_events (bot_name, action, status, pid, message)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (bot_name, action[:16], status[:32], pid, message[:255]),
+            )
+
+
 def pending_commands(bot_name: str) -> list[dict]:
     """读取某个机器人的待执行命令。"""
     return fetch_all(

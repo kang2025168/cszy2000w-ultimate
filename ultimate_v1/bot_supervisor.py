@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from os import environ
 
 from .config import settings
-from .state_store import bot_controls, heartbeat, set_bot_enabled
+from .state_store import bot_controls, heartbeat, log_bot_lifecycle, set_bot_enabled
 
 
 @dataclass(frozen=True)
@@ -72,14 +73,24 @@ def start_bot(bot_name: str) -> bool:
     proc = _PROCESSES.get(bot_name)
     if _process_running(proc):
         heartbeat(bot_name, "running", "机器人已经运行")
+        log_bot_lifecycle(bot_name, "START", "ALREADY_RUNNING", "机器人已经运行", proc.pid if proc else None)
         return True
     cmd = [sys.executable, "-u", "-m", spec.module, *spec.args]
     heartbeat(bot_name, "starting", "正在启动机器人")
+    log_bot_lifecycle(bot_name, "START", "STARTING", "正在启动机器人")
     child_env = dict(environ)
     if spec.env:
         child_env.update(spec.env)
     proc = subprocess.Popen(cmd, env=child_env)
     _PROCESSES[bot_name] = proc
+    time.sleep(0.2)
+    if proc.poll() is not None:
+        heartbeat(bot_name, "failed", f"机器人启动后退出 returncode={proc.returncode}")
+        log_bot_lifecycle(bot_name, "START", "FAILED", f"机器人启动后退出 returncode={proc.returncode}", proc.pid)
+        print(f"[BOT SUPERVISOR] {bot_name} exited immediately returncode={proc.returncode}", flush=True)
+        return False
+    heartbeat(bot_name, "running", f"机器人已启动 pid={proc.pid}")
+    log_bot_lifecycle(bot_name, "START", "RUNNING", "机器人已启动", proc.pid)
     print(f"[BOT SUPERVISOR] started {bot_name} pid={proc.pid}", flush=True)
     return True
 
@@ -90,6 +101,7 @@ def stop_bot(bot_name: str) -> bool:
     if not proc:
         heartbeat(bot_name, "stopped", "机器人已关闭")
         return True
+    log_bot_lifecycle(bot_name, "STOP", "STOPPING", "正在关闭机器人", proc.pid)
     if proc.poll() is None:
         proc.terminate()
         try:
@@ -98,17 +110,18 @@ def stop_bot(bot_name: str) -> bool:
             proc.kill()
             proc.wait(timeout=5)
     heartbeat(bot_name, "stopped", "机器人已关闭")
+    log_bot_lifecycle(bot_name, "STOP", "STOPPED", f"机器人已关闭 returncode={proc.returncode}", proc.pid)
     print(f"[BOT SUPERVISOR] stopped {bot_name}", flush=True)
     return True
 
 
-def set_bot_runtime(bot_name: str, enabled: bool) -> None:
+def set_bot_runtime(bot_name: str, enabled: bool) -> bool:
     """写入开关，并启动或停止对应进程。"""
     set_bot_enabled(bot_name, enabled)
     if enabled:
-        start_bot(bot_name)
-    else:
-        stop_bot(bot_name)
+        return start_bot(bot_name)
+    stop_bot(bot_name)
+    return False
 
 
 def sync_from_controls() -> None:
@@ -127,6 +140,8 @@ def process_status() -> list[dict]:
     for bot_name in sorted(BOT_SPECS):
         proc = _PROCESSES.get(bot_name)
         running = _process_running(proc)
+        if proc and not running:
+            heartbeat(bot_name, "failed", f"进程已退出 returncode={proc.returncode}")
         rows.append(
             {
                 "bot_name": bot_name,

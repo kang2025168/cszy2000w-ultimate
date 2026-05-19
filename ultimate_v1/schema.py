@@ -260,6 +260,21 @@ def ensure_control_state_tables() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_lifecycle_events (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  bot_name VARCHAR(64) NOT NULL,
+                  action VARCHAR(16) NOT NULL,
+                  status VARCHAR(32) NOT NULL,
+                  pid INT NULL,
+                  message VARCHAR(255),
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  INDEX idx_created_at (created_at),
+                  INDEX idx_bot_created (bot_name, created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
             default_controls = {
                 "dashboard_bot": 1,
                 "risk_bot": 1,
