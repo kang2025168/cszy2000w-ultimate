@@ -710,10 +710,17 @@ INDEX_HTML = r"""<!doctype html>
     @media (max-width: 1180px) { .dash { grid-template-columns:1fr; } .capital-hero { flex:none; } .chart-panel { min-height:324px; } }
     @media (max-width: 760px) {
       body { background:#f7f9fc; }
-      main { padding:10px 10px 28px; max-width:none; }
+      main { padding:10px 10px 28px; max-width:none; display:flex; flex-direction:column; gap:12px; }
       h1 { font-size:23px; line-height:1.05; max-width:128px; }
       h2 { font-size:15px; }
-      .dash, .left-stack, .right-stack { gap:12px; }
+      .dash, .left-stack, .right-stack, .right-top { display:contents; }
+      .left-titlebar { order:0; }
+      .chart-panel { order:1; }
+      .holdings-panel { order:2; }
+      .capital-hero { order:3; }
+      .donut-panel { order:4; }
+      .bot-panel { order:5; }
+      .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .donut-panel, .bot-panel { width:100%; }
       .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:center; }
       .brand-lockup { gap:8px; flex:1 1 auto; }
       .brand-logo { width:38px; height:38px; border-radius:8px; }
@@ -733,8 +740,6 @@ INDEX_HTML = r"""<!doctype html>
       .mobile-collapsible.mobile-open .mobile-collapse-body { display:block; }
       .mobile-collapsible.mobile-open .mobile-collapse-toggle span:last-child::before { content:"收起"; }
       .mobile-collapsible:not(.mobile-open) .mobile-collapse-toggle span:last-child::before { content:"展开"; }
-      #donutPanel .mobile-collapse-toggle span:last-child { display:none; }
-      #donutPanel .mobile-collapse-body > h2 { display:none; }
       .hero-top, .pool-grid, .right-top { grid-template-columns:1fr; gap:10px; }
       .mode-card { min-height:112px; padding:14px; }
       .mode-card .label { font-size:12px; }
@@ -863,7 +868,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
       <div class="right-stack">
         <div class="right-top">
-          <div class="panel donut-panel mobile-collapsible mobile-open" id="donutPanel">
+          <div class="panel donut-panel mobile-collapsible" id="donutPanel">
             <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('donutPanel')"><span>资金比例</span><span></span></button>
             <div class="mobile-collapse-body">
               <h2>资金比例</h2>
@@ -882,7 +887,7 @@ INDEX_HTML = r"""<!doctype html>
             </div>
           </div>
         </div>
-        <div class="panel chart-panel mobile-collapsible" id="chartPanel">
+        <div class="panel chart-panel mobile-collapsible mobile-open" id="chartPanel">
           <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('chartPanel')"><span>收益曲线</span><span></span></button>
           <div class="mobile-collapse-body">
             <div class="chart-head">
@@ -1068,7 +1073,6 @@ INDEX_HTML = r"""<!doctype html>
     function toggleMobilePanel(id) {
       const panel = document.getElementById(id);
       if (!panel) return;
-      if (id === 'donutPanel' && isMobileView()) return;
       panel.classList.toggle('mobile-open');
       if (id === 'chartPanel' && panel.classList.contains('mobile-open')) {
         setTimeout(() => loadCurve(currentPeriod), 50);
