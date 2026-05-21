@@ -802,7 +802,7 @@ INDEX_HTML = r"""<!doctype html>
     <section class="dash">
       <div class="left-stack">
         <div class="left-titlebar">
-          <div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" /><div class="brand-copy"><h1>CSZY Ultimate V1</h1><div class="dashboard-motto">把每一次回撤，都变成下一次出手的纪律。</div></div></div>
+          <div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" /><div class="brand-copy"><h1>CSZY Ultimate V1</h1><div class="dashboard-motto">把每一次回撤，都变成下一次出手的纪律。上升启动趋势，龙头回调完毕上升趋势。</div></div></div>
           <div class="title-actions">
             <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
             <button class="refresh-btn" onclick="loadAll()">刷新</button>
