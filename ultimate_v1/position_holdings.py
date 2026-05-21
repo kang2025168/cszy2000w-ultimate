@@ -224,15 +224,27 @@ def sync_open_holding_from_position(pos, strategy_group: str = "B") -> None:
 def mark_missing_from_alpaca(open_symbols: set[str]) -> None:
     with db_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, symbol FROM position_holdings WHERE status='open'")
+            cur.execute(
+                """
+                SELECT id, symbol, strategy_group, stock_type, status
+                FROM position_holdings
+                WHERE status IN ('open', 'needs_review')
+                """
+            )
             for row in cur.fetchall():
                 symbol = str(row["symbol"]).upper()
                 if symbol not in open_symbols:
-                    cur.execute(
-                        "UPDATE position_holdings SET status='needs_review', last_update_time=NOW(), notes=CONCAT(COALESCE(notes,''), ' local_open_but_not_in_alpaca') WHERE id=%s",
-                        (row["id"],),
-                    )
-                    print(f"[POSITION SYNC] symbol={symbol} local_open_but_not_in_alpaca status=needs_review", flush=True)
+                    group = str(row.get("stock_type") or row.get("strategy_group") or "").upper()
+                    if group in {"B", "D"}:
+                        cur.execute("DELETE FROM position_holdings WHERE id=%s", (row["id"],))
+                        print(f"[POSITION SYNC] symbol={symbol} group={group} local_not_in_alpaca deleted", flush=True)
+                        continue
+                    if group in {"A", "C"} and row.get("status") != "needs_review":
+                        cur.execute(
+                            "UPDATE position_holdings SET status='needs_review', last_update_time=NOW(), notes=CONCAT(COALESCE(notes,''), ' local_open_but_not_in_alpaca') WHERE id=%s",
+                            (row["id"],),
+                        )
+                        print(f"[POSITION SYNC] symbol={symbol} group={group} local_open_but_not_in_alpaca kept=needs_review", flush=True)
 
 
 def summary_counts() -> dict:

@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import alpaca_gateway
 from .bot_supervisor import managed_bot_names, process_status, set_bot_runtime, sync_from_controls
 from .capital_manager import get_capital_allocation, get_strategy_used_capital
 from .config import env_str, settings
@@ -22,7 +23,7 @@ from .exposure_manager import latest_exposure_state, latest_rebalance_actions, r
 from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import CAPITAL_MODE_LABELS, get_risk_state
 from .schema import ensure_schema
-from .state_store import add_command, bot_controls, bot_heartbeats, capital_state_rows, equity_curve, get_app_setting, latest_risk_state, set_app_setting
+from .state_store import bot_controls, bot_heartbeats, capital_state_rows, equity_curve, get_app_setting, latest_risk_state, set_app_setting
 from .sync_positions import last_sync_error, sync_all_positions
 
 try:
@@ -954,11 +955,12 @@ INDEX_HTML = r"""<!doctype html>
   <div class="modal-backdrop" id="clearModal">
     <div class="modal">
       <h2>确认清仓</h2>
-      <p>该操作会写入清仓命令。请输入操作密码确认。</p>
+      <p>该操作会按 Alpaca 当前价提交 DAY + extended hours 限价卖单。可先预检价格，不会下单。</p>
       <input id="clearPassword" type="password" placeholder="操作密码" />
       <div class="modal-actions">
         <button onclick="closeClearModal()">取消</button>
-        <button class="danger-action" onclick="submitClearPosition()">确认清仓</button>
+        <button onclick="submitClearPosition(true)">预检</button>
+        <button class="danger-action" onclick="submitClearPosition(false)">确认清仓</button>
       </div>
     </div>
   </div>
@@ -1500,12 +1502,19 @@ INDEX_HTML = r"""<!doctype html>
       setTimeout(() => document.getElementById('clearPassword').focus(), 50);
     }
     function closeClearModal() { document.getElementById('clearModal').classList.remove('show'); }
-    async function submitClearPosition() {
+    function clearResultText(result) {
+      const rows = (result.results || []).slice(0, 12).map(r => `${r.symbol} qty=${Number(r.qty || 0).toFixed(6)} limit=${money(r.limit_price)} ${r.status || ''}${r.error ? ' ' + r.error : ''}`);
+      const suffix = (result.results || []).length > rows.length ? `\n... 另有 ${(result.results || []).length - rows.length} 条` : '';
+      return `${result.message || '清仓限价卖单处理完成'}${rows.length ? '\n\n' + rows.join('\n') + suffix : ''}`;
+    }
+    async function submitClearPosition(dryRun=false) {
       const password = document.getElementById('clearPassword').value;
-      const result = await postJson('/api/clear_position', {password});
+      if (!dryRun && !confirm('确认按当前价限价卖出全部股票持仓？')) return;
+      const result = await postJson('/api/clear_position', {password, dry_run:dryRun});
       if (!result.ok) { alert(result.error || '清仓命令失败'); return; }
-      closeClearModal();
-      alert('清仓命令已写入');
+      if (!dryRun) closeClearModal();
+      alert(clearResultText(result));
+      await loadAll();
     }
     async function toggleBot(botName, enabled) {
       const result = await postJson('/api/bot_control', {bot_name:botName, enabled});
@@ -1747,8 +1756,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._check_password(payload):
                     self._send_json({"ok": False, "error": "密码错误或未配置操作密码"}, 403)
                     return
-                add_command("d_sell_bot", "flatten_all", {"source": "web_dashboard"})
-                self._send_json({"ok": True, "message": "清仓命令已写入"})
+                dry_run = bool(payload.get("dry_run") is True or str(payload.get("dry_run") or "").lower() in {"1", "true", "yes", "on"})
+                result = alpaca_gateway.submit_current_price_limit_sell_all(dry_run=dry_run)
+                action = "预检" if dry_run else "提交"
+                result["ok"] = True
+                result["message"] = f"清仓限价卖单{action}完成：成功={result.get('ok_count', 0)} 失败={result.get('error_count', 0)} 总数={result.get('count', 0)}"
+                self._send_json(result)
             elif path == "/api/bot_control":
                 bot_name = str(payload.get("bot_name") or "")
                 enabled_raw = payload.get("enabled")

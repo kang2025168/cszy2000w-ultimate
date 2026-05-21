@@ -98,3 +98,80 @@ def submit_market_sell(symbol: str, qty: float):
         time_in_force=TimeInForce.DAY,
     )
     return trading_client().submit_order(order_data=request)
+
+
+def stock_limit_price(price: float) -> float:
+    """股票限价精度：>=1 美元保留 2 位，低价股保留 4 位。"""
+    price = float(price or 0.0)
+    if price <= 0:
+        return 0.0
+    return round(price, 4 if price < 1 else 2)
+
+
+def _is_equity_position(position) -> bool:
+    asset_class = str(getattr(position, "asset_class", "") or "").upper()
+    return "EQUITY" in asset_class or asset_class in {"US_EQUITY", "US_EQUITIES"}
+
+
+def submit_current_price_limit_sell_all(dry_run: bool = False) -> dict:
+    """按 Alpaca 持仓 current_price 对所有股票持仓提交限价卖单。"""
+    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest
+
+    client = trading_client()
+    positions = client.get_all_positions() or []
+    results = []
+
+    for pos in positions:
+        if not _is_equity_position(pos):
+            continue
+        symbol = str(getattr(pos, "symbol", "") or "").strip().upper()
+        qty = float(getattr(pos, "qty", 0) or 0)
+        current_price = float(getattr(pos, "current_price", 0) or 0)
+        limit_price = stock_limit_price(current_price)
+        row = {
+            "symbol": symbol,
+            "qty": qty,
+            "current_price": current_price,
+            "limit_price": limit_price,
+            "status": "DRY_RUN" if dry_run else "",
+            "order_id": "",
+            "error": "",
+        }
+        if not symbol or qty <= 0:
+            row["status"] = "SKIPPED"
+            row["error"] = "qty<=0 or empty symbol"
+            results.append(row)
+            continue
+        if limit_price <= 0:
+            row["status"] = "ERROR"
+            row["error"] = "current_price missing"
+            results.append(row)
+            continue
+        if not dry_run:
+            try:
+                req = LimitOrderRequest(
+                    symbol=symbol,
+                    qty=str(getattr(pos, "qty", qty)),
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.DAY,
+                    limit_price=limit_price,
+                    extended_hours=True,
+                )
+                order = client.submit_order(order_data=req)
+                row["status"] = str(getattr(order, "status", "") or "")
+                row["order_id"] = str(getattr(order, "id", "") or "")
+            except Exception as exc:
+                row["status"] = "ERROR"
+                row["error"] = str(exc)
+        results.append(row)
+
+    ok_count = sum(1 for r in results if r.get("order_id") or r.get("status") == "DRY_RUN")
+    error_count = sum(1 for r in results if r.get("error"))
+    return {
+        "dry_run": dry_run,
+        "count": len(results),
+        "ok_count": ok_count,
+        "error_count": error_count,
+        "results": results,
+    }
