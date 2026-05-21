@@ -218,12 +218,13 @@ def write_account_snapshot(equity: float, buying_power: float, cash: float, port
 
 
 def equity_curve_bounds(period: str = "week") -> tuple[date | None, date | None]:
-    """计算收益曲线固定窗口：周一到周五、月初到月末、年初到 12 月 30 日。"""
+    """计算收益曲线固定窗口：周视图以上周五收盘为起点，月初到月末、年初到 12 月 30 日。"""
     today = date.today()
     period = (period or "week").lower()
     if period == "week":
-        start = today - timedelta(days=today.weekday())
-        return start, start + timedelta(days=4)
+        current_monday = today - timedelta(days=today.weekday())
+        previous_friday = current_monday - timedelta(days=3)
+        return previous_friday, current_monday + timedelta(days=4)
     if period == "month":
         return today.replace(day=1), today.replace(day=monthrange(today.year, today.month)[1])
     if period == "year":

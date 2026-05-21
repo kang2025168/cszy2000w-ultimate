@@ -13,6 +13,8 @@
 - 机器人共享运行层：`app/bots/split_core.py`
 - ABCD 买卖策略统一入口：`app/strategies/abcd_strategy.py`
 
+机器人运行状态、日志、开关和排障命令详见：`ultimate_v1/README.md` 的“机器人运行查看和排障命令”。
+
 ### 买卖机器人拆分
 
 每个策略的买入和卖出都可以单独运行：
