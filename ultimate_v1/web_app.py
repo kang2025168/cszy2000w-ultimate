@@ -1061,7 +1061,7 @@ INDEX_HTML = r"""<!doctype html>
     let dOptionMode = 'BULL_CALL';
     let dOptionWidth = 10;
     let selectedDCombo = null;
-    let dOptionShouldCenterScroll = false;
+    let dOptionScrollMode = 'preserve';
     async function api(path) {
       const r = await fetch(path);
       if (r.status === 401) { location.reload(); return {ok:false, error:'unauthorized'}; }
@@ -1344,10 +1344,11 @@ INDEX_HTML = r"""<!doctype html>
       renderTodayPnl(curve);
       renderTradeRecords(trades);
     }
-    function renderDTactical(payload) {
+    function renderDTactical(payload, options={}) {
       const underlyings = payload.option_underlyings || [];
       const modes = payload.option_modes || [];
       const candidates = payload.intraday_candidates || [];
+      const hadOptionSymbol = !!dOptionSymbol;
       if (!dOptionSymbol && underlyings.length) dOptionSymbol = underlyings[0].symbol;
       document.getElementById('dIntradayCount').textContent = `${candidates.length} 条`;
       document.getElementById('dIntradayTable').innerHTML = candidates.length
@@ -1355,7 +1356,7 @@ INDEX_HTML = r"""<!doctype html>
         : `<tbody><tr><td class="small-muted" style="padding:14px;text-align:center;">暂无 D 日内股票候选</td></tr></tbody>`;
       document.getElementById('dOptionSymbols').innerHTML = underlyings.map(r => `<button class="d-symbol-btn ${r.symbol === dOptionSymbol ? 'active' : ''}" onclick="selectDOptionSymbol('${r.symbol}')">${r.symbol}</button>`).join('');
       document.getElementById('dOptionModes').innerHTML = modes.map(r => `<button class="d-mode-btn ${r.mode === dOptionMode ? 'active' : ''}" title="${r.desc || ''}" onclick="selectDOptionMode('${r.mode}')">${r.label}</button>`).join('');
-      if (dOptionSymbol) loadDOptionPreview();
+      if (dOptionSymbol) loadDOptionPreview({center: options.centerOptionPreview || !hadOptionSymbol});
     }
     function renderDOptionPreview(payload) {
       document.getElementById('dOptionMeta').textContent = `${payload.symbol} ${money(payload.price)} · ${payload.price_source || ''}`;
@@ -1371,17 +1372,32 @@ INDEX_HTML = r"""<!doctype html>
           const marker = !markerInserted && o.side === 'below' ? (markerInserted = true, currentMarker) : '';
           return `${marker}<div class="d-option-row${selected}" onclick="selectDCombo('${packed}')"><div class="d-option-head"><span>${o.side === 'below' ? '下方' : '上方'} ${Number(o.strike).toFixed(2)} · 距现价 ${Number(o.distance).toFixed(2)} · 宽 ${Number(o.width || p.width || 0).toFixed(2)}</span><span class="d-option-price">${o.price_label} ${money(o.spread_mid)}</span></div><div class="d-note">买入限价 ${Number(o.alpaca_limit_price || 0).toFixed(2)} · 单组最大亏损 ${money(o.max_loss_per_spread)}</div>${legLine(o.buy)}${legLine(o.sell)}</div>`;
         }).join('');
-        const scrollRows = optionRows ? `<div class="d-option-scroll">${optionRows}${markerInserted ? '' : currentMarker}</div>` : '';
+        const scrollKey = `${payload.symbol}|${payload.mode}|${p.expiry}`;
+        const scrollRows = optionRows ? `<div class="d-option-scroll" data-scroll-key="${scrollKey}">${optionRows}${markerInserted ? '' : currentMarker}</div>` : '';
         const legs = scrollRows || (p.legs || []).map(l => `<div class="d-leg"><span>${l.side} ${l.cp} ${Number(l.strike).toFixed(2)}</span><span>${l.option_symbol || ''}</span></div>`).join('');
         const priceLine = p.error
           ? `<div class="d-error">${p.error}</div>`
           : modeHelpHtml(payload.mode);
         return `<div class="d-preview-card"><div class="d-preview-top"><div><div class="d-preview-title">${idx === 0 ? '下周五' : '下下周五'} ${p.expiry}</div><div class="small-muted">${p.mode} · width ${Number(payload.width || p.width || 0).toFixed(2)}</div></div><button class="d-confirm-btn" onclick="confirmDOptionBuy()" ${selectedDCombo ? '' : 'disabled'}>确认买入</button></div>${priceLine}${legs}</div>`;
       }).join('') || `<div class="d-note">暂无预览</div>`;
-      if (dOptionShouldCenterScroll) {
-        dOptionShouldCenterScroll = false;
+      if (dOptionScrollMode === 'center') {
+        dOptionScrollMode = 'preserve';
         setTimeout(centerDOptionScrolls, 0);
       }
+    }
+    function captureDOptionScrolls() {
+      const positions = {};
+      document.querySelectorAll('.d-option-scroll').forEach(scroller => {
+        const key = scroller.dataset.scrollKey || '';
+        if (key) positions[key] = scroller.scrollTop;
+      });
+      return positions;
+    }
+    function restoreDOptionScrolls(positions) {
+      document.querySelectorAll('.d-option-scroll').forEach(scroller => {
+        const key = scroller.dataset.scrollKey || '';
+        if (key && positions[key] !== undefined) scroller.scrollTop = positions[key];
+      });
     }
     function centerDOptionScrolls() {
       document.querySelectorAll('.d-option-scroll').forEach(scroller => {
@@ -1438,7 +1454,9 @@ INDEX_HTML = r"""<!doctype html>
     function selectDCombo(packed) {
       selectedDCombo = JSON.parse(decodeURIComponent(packed));
       document.querySelectorAll('.d-option-row').forEach(el => el.classList.remove('selected'));
+      const scrollPositions = captureDOptionScrolls();
       renderDOptionPreview(window.latestDOptionPreview || {symbol:dOptionSymbol, mode:dOptionMode, price:0, previews:[]});
+      setTimeout(() => restoreDOptionScrolls(scrollPositions), 0);
     }
     async function confirmDOptionBuy() {
       if (!selectedDCombo) { alert('请先选择一组期权组合'); return; }
@@ -1449,17 +1467,20 @@ INDEX_HTML = r"""<!doctype html>
       if (!result.ok) { alert(result.error || '期权买入失败'); return; }
       alert(`期权买入已提交\n订单 ${result.order_id || '--'}\n状态 ${result.status || '--'}`);
     }
-    async function loadDOptionPreview() {
+    async function loadDOptionPreview(options={}) {
       const el = document.getElementById('dOptionPreview');
       const hasContent = el.children.length > 0;
+      const scrollPositions = captureDOptionScrolls();
+      const shouldCenterScroll = options.center || !hasContent;
+      dOptionScrollMode = shouldCenterScroll ? 'center' : 'preserve';
       if (hasContent) el.classList.add('refreshing');
       else el.innerHTML = `<div class="d-note">正在读取期权链...</div>`;
       try {
         const payload = await api(`/api/d_option_preview?symbol=${encodeURIComponent(dOptionSymbol)}&mode=${encodeURIComponent(dOptionMode)}&width=${encodeURIComponent(dOptionWidth)}`);
         if (!payload.ok) throw new Error(payload.error || 'preview failed');
         window.latestDOptionPreview = payload;
-        dOptionShouldCenterScroll = true;
         renderDOptionPreview(payload);
+        if (!shouldCenterScroll) setTimeout(() => restoreDOptionScrolls(scrollPositions), 0);
       } catch (e) {
         if (!hasContent) el.innerHTML = `<div class="d-error">${e.message || e}</div>`;
         else document.getElementById('dOptionMeta').textContent = `刷新失败：${e.message || e}`;
@@ -1470,22 +1491,22 @@ INDEX_HTML = r"""<!doctype html>
     function selectDOptionSymbol(symbol) {
       dOptionSymbol = symbol;
       selectedDCombo = null;
-      loadDTactical();
+      loadDTactical({centerOptionPreview: true});
     }
     function selectDOptionMode(mode) {
       dOptionMode = mode;
       selectedDCombo = null;
-      loadDTactical();
+      loadDTactical({centerOptionPreview: true});
     }
     function changeDOptionWidth(value) {
       const n = Number(value || 10);
       dOptionWidth = Math.max(1, n || 10);
       selectedDCombo = null;
-      loadDOptionPreview();
+      loadDOptionPreview({center: true});
     }
-    async function loadDTactical() {
+    async function loadDTactical(options={}) {
       const payload = await api('/api/d_tactical');
-      if (payload.ok) renderDTactical(payload);
+      if (payload.ok) renderDTactical(payload, options);
     }
     function renderHoldings() {
       const rows = currentHolding === 'ALL'
