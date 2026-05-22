@@ -3,6 +3,7 @@ from __future__ import annotations
 """D 战术仓：日内候选和手动期权计划预览。"""
 
 from datetime import date, timedelta
+import os
 from typing import Any
 
 from . import alpaca_gateway
@@ -11,6 +12,7 @@ from .db import db_conn, fetch_all
 
 D_OPTION_UNDERLYINGS_TABLE = "d_option_underlyings"
 D_INTRADAY_CANDIDATES_TABLE = "d_intraday_candidates"
+D_OPTION_PREVIEW_SIDE_LIMIT = int(os.getenv("D_OPTION_PREVIEW_SIDE_LIMIT", "24"))
 
 OPTION_MODES = [
     {"mode": "BULL_CALL", "label": "看涨进攻", "desc": "Bull Call 借方价差"},
@@ -164,11 +166,12 @@ def _mode_cp(strategy_c, mode: str) -> str:
 def _option_rows_around_price(strategy_c, symbol: str, mode: str, expiry: date, price: float, width: float) -> list[dict]:
     cp = _mode_cp(strategy_c, mode)
     width = max(float(width or strategy_c.C_SPREAD_WIDTH or 1.0), 0.01)
-    strike_range = max(strategy_c.C_OPTION_CHAIN_STRIKE_RANGE, width * 4.0, 30.0)
+    strike_range = max(strategy_c.C_OPTION_CHAIN_STRIKE_RANGE, width * 8.0, 80.0)
     chain_quotes = strategy_c._get_option_chain_quotes(symbol, expiry, cp, price, strike_range)
     strikes = sorted(chain_quotes.keys())
-    below = [s for s in strikes if s < price][-3:]
-    above = [s for s in strikes if s > price][:3]
+    side_limit = max(int(D_OPTION_PREVIEW_SIDE_LIMIT or 24), 3)
+    below = [s for s in strikes if s < price][-side_limit:]
+    above = [s for s in strikes if s > price][:side_limit]
     selected = sorted(below + above, reverse=True)
     rows = []
     for strike in selected:

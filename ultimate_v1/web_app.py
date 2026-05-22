@@ -724,6 +724,10 @@ INDEX_HTML = r"""<!doctype html>
     .d-preview-card { border:1px solid #dbe3ee; border-radius:8px; background:#fff; padding:12px; display:grid; gap:10px; }
     .d-preview-top { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
     .d-preview-title { font-weight:900; }
+    .d-option-scroll { max-height:640px; overflow-y:auto; display:grid; gap:0; padding-right:4px; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; scrollbar-gutter:stable; }
+    .d-current-marker { position:relative; display:flex; align-items:center; justify-content:center; min-height:34px; margin:4px 0; color:#475467; font-size:12px; font-weight:900; }
+    .d-current-marker:before { content:""; position:absolute; left:0; right:0; top:50%; border-top:2px solid #f04438; }
+    .d-current-marker span { position:relative; z-index:1; background:#fff; border:1px solid #fecaca; border-radius:999px; padding:4px 10px; color:#b42318; box-shadow:0 1px 3px rgba(16,24,40,.08); }
     .d-leg { display:flex; align-items:center; justify-content:space-between; gap:8px; border-top:1px solid #eef2f6; padding-top:7px; font-size:12px; color:#344054; }
     .d-option-row { border:1px solid transparent; border-top-color:#eef2f6; border-radius:8px; padding:9px 10px; display:grid; gap:7px; font-size:12px; color:#344054; cursor:pointer; transition:background .12s ease, border-color .12s ease, box-shadow .12s ease; }
     .d-option-row:hover { background:#f8fafc; border-color:#dbe3ee; }
@@ -843,6 +847,7 @@ INDEX_HTML = r"""<!doctype html>
       .d-panel { margin-top:12px; }
       .d-grid, .d-preview-grid, .d-help-grid { grid-template-columns:1fr; }
       .d-subpanel { padding:12px; }
+      .d-option-scroll { max-height:520px; }
     }
   </style>
 </head>
@@ -1056,6 +1061,7 @@ INDEX_HTML = r"""<!doctype html>
     let dOptionMode = 'BULL_CALL';
     let dOptionWidth = 10;
     let selectedDCombo = null;
+    let dOptionShouldCenterScroll = false;
     async function api(path) {
       const r = await fetch(path);
       if (r.status === 401) { location.reload(); return {ok:false, error:'unauthorized'}; }
@@ -1356,18 +1362,33 @@ INDEX_HTML = r"""<!doctype html>
       const rows = payload.previews || [];
       document.getElementById('dOptionPreview').innerHTML = rows.map((p, idx) => {
         const legLine = leg => `<div class="d-leg-line"><span>${leg.label} ${Number(leg.strike).toFixed(2)}</span><span><span class="d-option-code">${leg.option_symbol || ''}</span><br><span class="d-leg-quote">mid ${money(leg.mid)} · bid ${money(leg.bid)} / ask ${money(leg.ask)}</span></span></div>`;
+        const currentMarker = `<div class="d-current-marker" data-current-marker="1"><span>当前价 ${money(payload.price)}</span></div>`;
+        let markerInserted = false;
         const optionRows = (p.option_rows || []).map((o, rowIdx) => {
           const key = `${payload.symbol}|${payload.mode}|${p.expiry}|${rowIdx}`;
           const selected = selectedDCombo && selectedDCombo.key === key ? ' selected' : '';
           const packed = encodeURIComponent(JSON.stringify({key, symbol:payload.symbol, mode:payload.mode, expiry:p.expiry, row:o}));
-          return `<div class="d-option-row${selected}" onclick="selectDCombo('${packed}')"><div class="d-option-head"><span>${o.side === 'below' ? '下方' : '上方'} ${Number(o.strike).toFixed(2)} · 距现价 ${Number(o.distance).toFixed(2)} · 宽 ${Number(o.width || p.width || 0).toFixed(2)}</span><span class="d-option-price">${o.price_label} ${money(o.spread_mid)}</span></div><div class="d-note">买入限价 ${Number(o.alpaca_limit_price || 0).toFixed(2)} · 单组最大亏损 ${money(o.max_loss_per_spread)}</div>${legLine(o.buy)}${legLine(o.sell)}</div>`;
+          const marker = !markerInserted && o.side === 'below' ? (markerInserted = true, currentMarker) : '';
+          return `${marker}<div class="d-option-row${selected}" onclick="selectDCombo('${packed}')"><div class="d-option-head"><span>${o.side === 'below' ? '下方' : '上方'} ${Number(o.strike).toFixed(2)} · 距现价 ${Number(o.distance).toFixed(2)} · 宽 ${Number(o.width || p.width || 0).toFixed(2)}</span><span class="d-option-price">${o.price_label} ${money(o.spread_mid)}</span></div><div class="d-note">买入限价 ${Number(o.alpaca_limit_price || 0).toFixed(2)} · 单组最大亏损 ${money(o.max_loss_per_spread)}</div>${legLine(o.buy)}${legLine(o.sell)}</div>`;
         }).join('');
-        const legs = optionRows || (p.legs || []).map(l => `<div class="d-leg"><span>${l.side} ${l.cp} ${Number(l.strike).toFixed(2)}</span><span>${l.option_symbol || ''}</span></div>`).join('');
+        const scrollRows = optionRows ? `<div class="d-option-scroll">${optionRows}${markerInserted ? '' : currentMarker}</div>` : '';
+        const legs = scrollRows || (p.legs || []).map(l => `<div class="d-leg"><span>${l.side} ${l.cp} ${Number(l.strike).toFixed(2)}</span><span>${l.option_symbol || ''}</span></div>`).join('');
         const priceLine = p.error
           ? `<div class="d-error">${p.error}</div>`
           : modeHelpHtml(payload.mode);
         return `<div class="d-preview-card"><div class="d-preview-top"><div><div class="d-preview-title">${idx === 0 ? '下周五' : '下下周五'} ${p.expiry}</div><div class="small-muted">${p.mode} · width ${Number(payload.width || p.width || 0).toFixed(2)}</div></div><button class="d-confirm-btn" onclick="confirmDOptionBuy()" ${selectedDCombo ? '' : 'disabled'}>确认买入</button></div>${priceLine}${legs}</div>`;
       }).join('') || `<div class="d-note">暂无预览</div>`;
+      if (dOptionShouldCenterScroll) {
+        dOptionShouldCenterScroll = false;
+        setTimeout(centerDOptionScrolls, 0);
+      }
+    }
+    function centerDOptionScrolls() {
+      document.querySelectorAll('.d-option-scroll').forEach(scroller => {
+        const marker = scroller.querySelector('[data-current-marker="1"]');
+        if (!marker) return;
+        scroller.scrollTop = marker.offsetTop - (scroller.clientHeight / 2) + (marker.offsetHeight / 2);
+      });
     }
     function modeHelpHtml(mode) {
       const map = {
@@ -1437,6 +1458,7 @@ INDEX_HTML = r"""<!doctype html>
         const payload = await api(`/api/d_option_preview?symbol=${encodeURIComponent(dOptionSymbol)}&mode=${encodeURIComponent(dOptionMode)}&width=${encodeURIComponent(dOptionWidth)}`);
         if (!payload.ok) throw new Error(payload.error || 'preview failed');
         window.latestDOptionPreview = payload;
+        dOptionShouldCenterScroll = true;
         renderDOptionPreview(payload);
       } catch (e) {
         if (!hasContent) el.innerHTML = `<div class="d-error">${e.message || e}</div>`;
