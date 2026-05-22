@@ -653,10 +653,10 @@ INDEX_HTML = r"""<!doctype html>
     .trade-records-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .trade-records-title { font-size:13px; font-weight:850; color:var(--ink); }
     .trade-records-count { color:var(--muted); font-size:11px; font-weight:800; }
-    .trade-records-scroll { height:230px; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; touch-action:pan-y; border:1px solid #eef2f6; border-radius:8px; }
-    .trade-records table { width:100%; min-width:0; table-layout:fixed; }
+    .trade-records-scroll { height:230px; overflow:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; border:1px solid #eef2f6; border-radius:8px; }
+    .trade-records table { width:100%; min-width:940px; table-layout:auto; }
     .trade-records th, .trade-records td { padding:8px 10px; font-size:11px; }
-    .trade-records th, .trade-records td { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .trade-records th, .trade-records td { white-space:nowrap; }
     .side-pill { border-radius:999px; padding:3px 7px; font-weight:850; font-size:11px; }
     .side-pill.buy { background:#e7f6ef; color:#08734f; }
     .side-pill.sell { background:#fee2e2; color:#b42318; }
@@ -752,9 +752,14 @@ INDEX_HTML = r"""<!doctype html>
     .d-note { color:var(--muted); font-size:12px; line-height:1.5; }
     .d-confirm-btn { height:32px; border:0; border-radius:7px; background:#e0f2fe; color:#075985; font-weight:850; }
     .d-confirm-btn:disabled { opacity:.45; cursor:not-allowed; }
-    .d-mode-help { border:1px solid #dbeafe; border-radius:8px; background:#f8fbff; padding:12px; display:grid; gap:10px; color:#344054; }
+    .d-mode-help { border:1px solid #dbeafe; border-radius:8px; background:#f8fbff; padding:0; color:#344054; overflow:hidden; }
+    .d-mode-help summary { list-style:none; cursor:pointer; padding:12px; }
+    .d-mode-help summary::-webkit-details-marker { display:none; }
     .d-help-title { display:flex; align-items:center; justify-content:space-between; gap:10px; font-weight:950; color:var(--ink); }
+    .d-help-title:after { content:"展开"; color:var(--blue); font-size:12px; font-weight:900; white-space:nowrap; }
+    .d-mode-help[open] .d-help-title:after { content:"收起"; }
     .d-help-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; }
+    .d-mode-help .d-help-grid { padding:0 12px 12px; }
     .d-help-item { border-top:1px solid #e8eef7; padding-top:8px; line-height:1.5; font-size:12px; }
     .d-help-item b { display:block; color:#101828; margin-bottom:3px; font-size:12px; }
     .empty-state { min-height:260px; display:flex; align-items:center; justify-content:center; color:var(--muted); font-weight:750; }
@@ -796,6 +801,7 @@ INDEX_HTML = r"""<!doctype html>
       .mobile-collapse-toggle { width:100%; height:48px; border:0; border-radius:0; background:#fff; display:flex; align-items:center; justify-content:space-between; padding:0 14px; font-size:15px; font-weight:850; color:var(--ink); }
       .mobile-collapse-toggle span:last-child { color:var(--blue); font-size:12px; font-weight:850; }
       .mobile-collapse-body { display:none; padding:12px; border-top:1px solid #eef2f6; }
+      .mobile-collapsible:not(.mobile-open) > .mobile-collapse-body { display:none !important; }
       .mobile-collapsible.mobile-open .mobile-collapse-body { display:block; }
       .mobile-collapsible.mobile-open .mobile-collapse-toggle span:last-child::before { content:"收起"; }
       .mobile-collapsible:not(.mobile-open) .mobile-collapse-toggle span:last-child::before { content:"展开"; }
@@ -839,7 +845,8 @@ INDEX_HTML = r"""<!doctype html>
       #equityChart { height:238px; flex-basis:238px; }
       .chart-panel.mobile-open .mobile-collapse-body { display:flex; flex-direction:column; }
       .trade-records-panel.mobile-open .mobile-collapse-body { display:flex; flex-direction:column; }
-      .trade-records-scroll { height:220px; }
+      .trade-records-scroll { height:260px; overflow:auto; }
+      .trade-records table { min-width:980px; }
       .trade-records th, .trade-records td { padding:8px 7px; font-size:11px; }
       .holdings-panel { min-height:520px; margin-top:12px; }
       .holding-head { flex-direction:column; align-items:stretch; gap:10px; margin:0 0 12px; }
@@ -1353,8 +1360,8 @@ INDEX_HTML = r"""<!doctype html>
         tableEl.innerHTML = `<tbody><tr><td class="small-muted" style="padding:18px;text-align:center;">今日暂无买卖机器人交易记录</td></tr></tbody>`;
         return;
       }
-      const widths = [9,8,8,13,9,10,12,31];
-      const colgroup = `<colgroup>${widths.map(w => `<col style="width:${w}%">`).join('')}</colgroup>`;
+      const widths = [92, 82, 90, 160, 92, 108, 128, 248];
+      const colgroup = `<colgroup>${widths.map(w => `<col style="width:${w}px">`).join('')}</colgroup>`;
       tableEl.innerHTML = `${colgroup}<thead><tr>${['时间','方向','策略','代码','数量','价格','状态','说明'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
         rows.map(r => {
           const side = String(r.side || '').toUpperCase();
@@ -1477,14 +1484,14 @@ INDEX_HTML = r"""<!doctype html>
         }
       };
       const h = map[mode] || map.BULL_CALL;
-      return `<div class="d-mode-help"><div class="d-help-title"><span>${h.title}</span><span class="small-muted">先点选组合，再确认买入</span></div><div class="d-help-grid">${[
+      return `<details class="d-mode-help"><summary><div class="d-help-title"><span>${h.title}</span><span class="small-muted">先点选组合，再确认买入</span></div></summary><div class="d-help-grid">${[
         ['怎么赚钱', h.earn],
         ['成本/收款', h.cost],
         ['最大收益', h.maxProfit],
         ['最大亏损', h.maxLoss],
         ['什么时候触发', h.trigger],
         ['当前列表怎么看', '每一块是一组可买价差。绿色金额是预估成本或预估收款；下面两行分别是买入保护腿和卖出腿的实时 bid/ask/mid。']
-      ].map(([k,v]) => `<div class="d-help-item"><b>${k}</b>${v}</div>`).join('')}</div></div>`;
+      ].map(([k,v]) => `<div class="d-help-item"><b>${k}</b>${v}</div>`).join('')}</div></details>`;
     }
     function selectDCombo(packed) {
       selectedDCombo = JSON.parse(decodeURIComponent(packed));
