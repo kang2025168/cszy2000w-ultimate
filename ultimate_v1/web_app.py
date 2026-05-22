@@ -641,21 +641,22 @@ INDEX_HTML = r"""<!doctype html>
     .bot-page-dot { width:7px; height:7px; border-radius:999px; background:#d0d5dd; cursor:pointer; }
     .bot-page-dot.active { width:18px; background:#101828; }
     .bot-page-label { min-width:42px; color:var(--muted); font-size:11px; font-weight:800; text-align:right; }
-    .chart-panel { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
-    .chart-panel .mobile-collapse-body { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
+    .chart-panel, .trade-records-panel { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
+    .chart-panel .mobile-collapse-body, .trade-records-panel .mobile-collapse-body { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
     .chart-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
     .chart-title { display:flex; align-items:baseline; gap:14px; }
     .today-pnl { font-size:15px; font-weight:850; color:var(--green); }
     .tabs { display:flex; gap:6px; flex-wrap:wrap; }
     .tab { height:28px; border-radius:6px; padding:0 10px; color:var(--muted); }
     .tab.active { background:#101828; color:#fff; border-color:#101828; }
-    .trade-records { margin-top:12px; border-top:1px solid #eef2f6; padding-top:10px; flex:0 0 auto; display:flex; flex-direction:column; }
+    .trade-records { flex:0 0 auto; display:flex; flex-direction:column; }
     .trade-records-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .trade-records-title { font-size:13px; font-weight:850; color:var(--ink); }
     .trade-records-count { color:var(--muted); font-size:11px; font-weight:800; }
-    .trade-records-scroll { height:190px; overflow:auto; border:1px solid #eef2f6; border-radius:8px; }
-    .trade-records table { min-width:680px; }
+    .trade-records-scroll { height:230px; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; touch-action:pan-y; border:1px solid #eef2f6; border-radius:8px; }
+    .trade-records table { width:100%; min-width:0; table-layout:fixed; }
     .trade-records th, .trade-records td { padding:8px 10px; font-size:11px; }
+    .trade-records th, .trade-records td { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .side-pill { border-radius:999px; padding:3px 7px; font-weight:850; font-size:11px; }
     .side-pill.buy { background:#e7f6ef; color:#08734f; }
     .side-pill.sell { background:#fee2e2; color:#b42318; }
@@ -777,7 +778,8 @@ INDEX_HTML = r"""<!doctype html>
       .capital-hero { order:3; }
       .donut-panel { order:4; }
       .bot-panel { order:5; }
-      .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .donut-panel, .bot-panel { width:100%; }
+      .trade-records-panel { order:6; }
+      .left-titlebar, .chart-panel, .trade-records-panel, .holdings-panel, .capital-hero, .donut-panel, .bot-panel { width:100%; }
       .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:center; }
       .brand-lockup { gap:8px; flex:1 1 auto; }
       .brand-logo { width:38px; height:38px; border-radius:8px; }
@@ -828,14 +830,17 @@ INDEX_HTML = r"""<!doctype html>
       .bot-grid { padding-top:10px; gap:8px; }
       .bot-row { grid-template-columns:minmax(120px,1fr) 18px 42px; }
       .bot-pager { padding-top:8px; }
-      .chart-panel { min-height:330px; }
+      .chart-panel, .trade-records-panel { min-height:0; }
       .chart-head { align-items:flex-start; flex-direction:column; gap:9px; }
       .chart-title { width:100%; justify-content:space-between; gap:8px; }
+      .chart-title h2 { display:none; }
       .today-pnl { font-size:14px; }
       .tabs { width:100%; justify-content:flex-end; }
       #equityChart { height:238px; flex-basis:238px; }
       .chart-panel.mobile-open .mobile-collapse-body { display:flex; flex-direction:column; }
-      .trade-records-scroll { height:190px; }
+      .trade-records-panel.mobile-open .mobile-collapse-body { display:flex; flex-direction:column; }
+      .trade-records-scroll { height:220px; }
+      .trade-records th, .trade-records td { padding:8px 7px; font-size:11px; }
       .holdings-panel { min-height:520px; margin-top:12px; }
       .holding-head { flex-direction:column; align-items:stretch; gap:10px; margin:0 0 12px; }
       .holding-left-tools { flex-wrap:wrap; gap:8px; align-items:center; }
@@ -961,6 +966,11 @@ INDEX_HTML = r"""<!doctype html>
               </div>
             </div>
             <canvas id="equityChart" width="760" height="260"></canvas>
+          </div>
+        </div>
+        <div class="panel trade-records-panel mobile-collapsible" id="tradeRecordsPanel">
+          <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('tradeRecordsPanel')"><span>今日交易记录</span><span></span></button>
+          <div class="mobile-collapse-body">
             <div class="trade-records">
               <div class="trade-records-head">
                 <span class="trade-records-title">今日交易记录</span>
@@ -1343,7 +1353,9 @@ INDEX_HTML = r"""<!doctype html>
         tableEl.innerHTML = `<tbody><tr><td class="small-muted" style="padding:18px;text-align:center;">今日暂无买卖机器人交易记录</td></tr></tbody>`;
         return;
       }
-      tableEl.innerHTML = `<thead><tr>${['时间','方向','策略','代码','数量','价格','状态','说明'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
+      const widths = [9,8,8,13,9,10,12,31];
+      const colgroup = `<colgroup>${widths.map(w => `<col style="width:${w}%">`).join('')}</colgroup>`;
+      tableEl.innerHTML = `${colgroup}<thead><tr>${['时间','方向','策略','代码','数量','价格','状态','说明'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
         rows.map(r => {
           const side = String(r.side || '').toUpperCase();
           const isBotEvent = r.source === 'bot_lifecycle_events';
