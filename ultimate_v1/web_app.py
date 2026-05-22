@@ -703,14 +703,21 @@ INDEX_HTML = r"""<!doctype html>
     .market-refresh-btn:hover { background:#bae6fd; }
     .market-refresh-btn.loading { opacity:.65; pointer-events:none; }
     .d-panel { margin-top:16px; }
-    .d-grid { display:grid; grid-template-columns:minmax(320px,.9fr) minmax(520px,1.1fr); gap:14px; align-items:start; }
-    .d-subpanel { border:1px solid var(--line); border-radius:8px; padding:14px; background:#fbfcfe; min-height:160px; }
+    .d-grid { display:grid; grid-template-columns:1fr; gap:14px; align-items:start; }
+    .d-subpanel { border:1px solid var(--line); border-radius:8px; padding:18px; background:#fbfcfe; min-height:160px; }
+    .d-subpanel[hidden] { display:none; }
     .d-subhead { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
-    .d-subtitle { font-weight:900; font-size:14px; }
+    .d-subtitle { font-weight:950; font-size:18px; color:var(--ink); }
+    .d-submeta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:12px; font-weight:800; }
+    .d-code-pill { display:inline-flex; align-items:center; height:24px; padding:0 9px; border-radius:999px; background:#101828; color:#fff; font-size:12px; font-weight:950; }
+    .d-intraday-table-wrap { margin-top:12px; max-height:520px; overflow:auto; border:1px solid #eef2f6; border-radius:8px; background:#fff; }
+    .d-option-layout { display:grid; grid-template-columns:minmax(180px, 250px) minmax(0, 1fr); gap:14px; align-items:start; }
+    .d-option-sidebar { display:grid; gap:12px; align-content:start; }
     .d-symbols, .d-modes { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
-    .d-option-controls { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+    .d-option-controls { display:grid; gap:10px; }
     .d-symbol-btn, .d-mode-btn { height:32px; border-radius:7px; font-weight:850; color:#344054; background:#fff; }
     .d-symbol-btn.active, .d-mode-btn.active { background:#101828; color:#fff; border-color:#101828; }
+    .d-symbols, .d-modes { margin-bottom:0; }
     .d-width-control { display:flex; align-items:center; gap:8px; padding:6px 9px; border:1px solid var(--line); border-radius:8px; background:#fff; color:#344054; font-size:12px; font-weight:850; }
     .d-width-control input { width:74px; height:28px; border:1px solid #dbe3ee; border-radius:6px; padding:0 8px; font-weight:850; color:var(--ink); }
     .d-preview-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; }
@@ -848,7 +855,7 @@ INDEX_HTML = r"""<!doctype html>
       .market-meta { gap:6px; }
       .market-pill { font-size:11px; }
       .d-panel { margin-top:12px; }
-      .d-grid, .d-preview-grid, .d-help-grid { grid-template-columns:1fr; }
+      .d-grid, .d-option-layout, .d-preview-grid, .d-help-grid { grid-template-columns:1fr; }
       .d-subpanel { padding:12px; }
       .d-option-scroll { max-height:520px; }
     }
@@ -977,7 +984,8 @@ INDEX_HTML = r"""<!doctype html>
             <button class="holding-tab" data-holding="A">A</button>
             <button class="holding-tab" data-holding="C">C</button>
             <button class="holding-tab" data-holding="B">B</button>
-            <button class="holding-tab" data-holding="D">D</button>
+            <button class="holding-tab" data-holding="D-D">D-D</button>
+            <button class="holding-tab" data-holding="D-Q">D-Q</button>
           </div>
         </div>
         <div class="holding-right-tools">
@@ -1004,25 +1012,34 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div class="lower-page">
             <div class="d-grid">
-              <div class="d-subpanel">
+              <div class="d-subpanel" id="dIntradayPanel">
                 <div class="d-subhead">
-                  <span class="d-subtitle">日内股票</span>
+                  <div>
+                    <div class="d-subtitle">日内股票</div>
+                    <div class="d-submeta"><span class="d-code-pill">D-D</span><span>盘中候选、确认状态和后续可交易清单</span></div>
+                  </div>
                   <span class="small-muted" id="dIntradayCount">--</span>
                 </div>
                 <div class="d-note">第一版先只展示候选和确认状态；后续筛选脚本会把可交易股票写入这里或导出 CSV。</div>
-                <div class="scroll" style="margin-top:10px; max-height:220px;"><table id="dIntradayTable"></table></div>
+                <div class="d-intraday-table-wrap"><table id="dIntradayTable"></table></div>
               </div>
-              <div class="d-subpanel">
+              <div class="d-subpanel" id="dOptionPanel">
                 <div class="d-subhead">
-                  <span class="d-subtitle">期权手动开仓</span>
-                  <span class="small-muted" id="dOptionMeta">选择标的和类型</span>
+                  <div>
+                    <div class="d-subtitle">期权手动开仓</div>
+                    <div class="d-submeta"><span class="d-code-pill">D-Q</span><span id="dOptionMeta">选择标的和类型</span></div>
+                  </div>
                 </div>
-                <div class="d-symbols" id="dOptionSymbols"></div>
-                <div class="d-option-controls">
-                  <div class="d-modes" id="dOptionModes"></div>
-                  <label class="d-width-control">宽度 <input id="dOptionWidth" type="number" min="1" step="1" value="10" onchange="changeDOptionWidth(this.value)" /></label>
+                <div class="d-option-layout">
+                  <div class="d-option-sidebar">
+                    <div class="d-symbols" id="dOptionSymbols"></div>
+                    <div class="d-option-controls">
+                      <div class="d-modes" id="dOptionModes"></div>
+                      <label class="d-width-control">宽度 <input id="dOptionWidth" type="number" min="1" step="1" value="10" onchange="changeDOptionWidth(this.value)" /></label>
+                    </div>
+                  </div>
+                  <div class="d-preview-grid" id="dOptionPreview"></div>
                 </div>
-                <div class="d-preview-grid" id="dOptionPreview"></div>
               </div>
             </div>
           </div>
@@ -1054,6 +1071,7 @@ INDEX_HTML = r"""<!doctype html>
     let currentPeriod = 'week';
     let currentHolding = 'ALL';
     let lowerView = 'holdings';
+    let dSection = 'options';
     let currentCategory = '';
     let botPage = 0;
     let latestHoldings = [];
@@ -1360,7 +1378,8 @@ INDEX_HTML = r"""<!doctype html>
         : `<tbody><tr><td class="small-muted" style="padding:14px;text-align:center;">暂无 D 日内股票候选</td></tr></tbody>`;
       document.getElementById('dOptionSymbols').innerHTML = underlyings.map(r => `<button class="d-symbol-btn ${r.symbol === dOptionSymbol ? 'active' : ''}" onclick="selectDOptionSymbol('${r.symbol}')">${r.symbol}</button>`).join('');
       document.getElementById('dOptionModes').innerHTML = modes.map(r => `<button class="d-mode-btn ${r.mode === dOptionMode ? 'active' : ''}" title="${r.desc || ''}" onclick="selectDOptionMode('${r.mode}')">${r.label}</button>`).join('');
-      if (dOptionSymbol) loadDOptionPreview({center: options.centerOptionPreview || !hadOptionSymbol});
+      renderDSection();
+      if (lowerView === 'd' && dSection === 'options' && dOptionSymbol) loadDOptionPreview({center: options.centerOptionPreview || !hadOptionSymbol});
     }
     function renderDOptionPreview(payload) {
       document.getElementById('dOptionMeta').textContent = `${payload.symbol} ${money(payload.price)} · ${payload.price_source || ''}`;
@@ -1522,28 +1541,41 @@ INDEX_HTML = r"""<!doctype html>
       if (payload.ok) renderDTactical(payload, options);
     }
     function renderHoldings() {
-      const rows = currentHolding === 'ALL'
+      const holdingGroup = currentHolding === 'D-D' || currentHolding === 'D-Q' ? 'D' : currentHolding;
+      const rows = holdingGroup === 'ALL'
         ? latestHoldings
-        : latestHoldings.filter(r => String(r.strategy_group || '').toUpperCase() === currentHolding);
+        : latestHoldings.filter(r => String(r.strategy_group || '').toUpperCase() === holdingGroup);
       document.querySelectorAll('.holding-tab').forEach(b => b.classList.toggle('active', b.dataset.holding === currentHolding));
       const blanks = Array.from({length: Math.max(0, 10 - rows.length)}, () => `<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>`).join('');
       document.getElementById('holdings').innerHTML = `<thead><tr>${['代码','策略组','状态','数量','均价','现价','市值','浮盈亏','浮盈亏%','已实现','持仓天数','更新时间'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
         rows.map(r => `<tr><td><b>${r.symbol}</b></td><td>${r.strategy_group}</td><td><span class="status ${r.status}">${r.status}</span></td><td>${Number(r.qty||0).toFixed(4)}</td><td>${money(r.avg_entry_price)}</td><td>${money(r.current_price)}</td><td>${money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${money(r.realized_pnl)}</td><td>${r.holding_days || 0}</td><td>${r.last_update_time || ''}</td></tr>`).join('') +
         blanks + `</tbody>`;
     }
+    function isDSectionHolding(value=currentHolding) {
+      return value === 'D-D' || value === 'D-Q';
+    }
+    function renderDSection() {
+      const intraday = dSection === 'intraday';
+      const intradayPanel = document.getElementById('dIntradayPanel');
+      const optionPanel = document.getElementById('dOptionPanel');
+      if (intradayPanel) intradayPanel.hidden = !intraday;
+      if (optionPanel) optionPanel.hidden = intraday;
+    }
     function renderLowerView() {
       const holdingsMode = lowerView === 'holdings';
       const marketMode = lowerView === 'market';
       const dMode = lowerView === 'd';
-      document.getElementById('lowerPanelTitle').textContent = dMode ? 'D 战术仓' : (marketMode ? '行情分析' : '持仓');
-      document.getElementById('viewToggleBtn').textContent = marketMode ? (currentHolding === 'D' ? '看D' : '看持仓') : '看行情';
+      document.getElementById('lowerPanelTitle').textContent = dMode ? (dSection === 'intraday' ? 'D-D 日内交易' : 'D-Q 期权交易') : (marketMode ? '行情分析' : '持仓');
+      document.getElementById('viewToggleBtn').textContent = marketMode ? (isDSectionHolding() ? '看D' : '看持仓') : '看行情';
       document.querySelector('.holdings-panel').classList.toggle('market-view', marketMode);
+      document.querySelector('.holdings-panel').classList.toggle('d-view', dMode);
       const track = document.getElementById('lowerTrack');
       track.classList.toggle('market', marketMode);
       track.classList.toggle('d', dMode);
       document.getElementById('dotHoldings').classList.toggle('active', holdingsMode);
       document.getElementById('dotMarket').classList.toggle('active', marketMode);
       document.getElementById('dotD').classList.toggle('active', dMode);
+      renderDSection();
     }
     function setLowerView(view) {
       lowerView = view === 'market' ? 'market' : view === 'd' ? 'd' : 'holdings';
@@ -1552,7 +1584,7 @@ INDEX_HTML = r"""<!doctype html>
       if (lowerView === 'd') loadDTactical();
     }
     function toggleLowerView() {
-      if (lowerView === 'market') setLowerView(currentHolding === 'D' ? 'd' : 'holdings');
+      if (lowerView === 'market') setLowerView(isDSectionHolding() ? 'd' : 'holdings');
       else setLowerView('market');
     }
     function renderMarketCategories(payload) {
@@ -1742,8 +1774,10 @@ INDEX_HTML = r"""<!doctype html>
     document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => loadCurve(b.dataset.period)));
     document.querySelectorAll('.holding-tab').forEach(b => b.addEventListener('click', () => {
       currentHolding = b.dataset.holding;
+      if (currentHolding === 'D-D') dSection = 'intraday';
+      if (currentHolding === 'D-Q') dSection = 'options';
       renderHoldings();
-      setLowerView(currentHolding === 'D' ? 'd' : 'holdings');
+      setLowerView(isDSectionHolding() ? 'd' : 'holdings');
     }));
     document.addEventListener('click', (e) => {
       const pop = document.getElementById('phasePopover');
