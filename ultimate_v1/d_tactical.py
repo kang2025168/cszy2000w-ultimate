@@ -251,7 +251,7 @@ def _option_rows_around_price(strategy_c, symbol: str, mode: str, expiry: date, 
 
 
 def submit_option_combo(payload: dict) -> dict:
-    """按页面选中的 D 期权组合提交 1 组 MLEG 限价开仓单。"""
+    """按页面选中的 D 期权组合提交指定张数的 MLEG 限价开仓单。"""
     from app import strategy_c
 
     symbol = str(payload.get("symbol") or "").strip().upper()
@@ -260,6 +260,7 @@ def submit_option_combo(payload: dict) -> dict:
     row = payload.get("row") or {}
     buy = row.get("buy") or {}
     sell = row.get("sell") or {}
+    qty = max(1, min(int(float(payload.get("qty") or 1)), 99))
     if not symbol or mode not in {m["mode"] for m in OPTION_MODES}:
         raise RuntimeError("invalid symbol or mode")
 
@@ -297,9 +298,9 @@ def submit_option_combo(payload: dict) -> dict:
         entry_price=abs(float(row.get("spread_mid") or limit_price)),
         alpaca_limit_price=round(limit_price, 2),
         max_loss_per_spread=float(row.get("max_loss_per_spread") or 0),
-        qty=1,
+        qty=qty,
         buying_power=0.0,
-        reason="D manual selected combo qty=1",
+        reason=f"D manual selected combo qty={qty}",
     )
     order = strategy_c.submit_open_spread_order(plan, pricing)
     return {
@@ -308,7 +309,7 @@ def submit_option_combo(payload: dict) -> dict:
         "mode": mode,
         "expiry": expiry.isoformat(),
         "limit_price": pricing.alpaca_limit_price,
-        "qty": 1,
+        "qty": qty,
         "order_id": str(getattr(order, "id", "") or ""),
         "status": str(getattr(order, "status", "") or ""),
     }

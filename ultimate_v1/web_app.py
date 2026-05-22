@@ -724,6 +724,9 @@ INDEX_HTML = r"""<!doctype html>
     .d-preview-card { border:1px solid #dbe3ee; border-radius:8px; background:#fff; padding:12px; display:grid; gap:10px; }
     .d-preview-top { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
     .d-preview-title { font-weight:900; }
+    .d-preview-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
+    .d-qty-control { height:32px; display:flex; align-items:center; gap:6px; padding:0 8px; border:1px solid #dbe3ee; border-radius:8px; background:#fff; color:#344054; font-size:12px; font-weight:900; }
+    .d-qty-control input { width:54px; height:24px; border:0; outline:0; color:var(--ink); font-weight:900; font-size:14px; background:transparent; }
     .d-option-scroll { max-height:640px; overflow-y:auto; display:grid; gap:0; padding-right:4px; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; scrollbar-gutter:stable; }
     .d-current-marker { position:relative; display:flex; align-items:center; justify-content:center; min-height:34px; margin:4px 0; color:#475467; font-size:12px; font-weight:900; }
     .d-current-marker:before { content:""; position:absolute; left:0; right:0; top:50%; border-top:2px solid #f04438; }
@@ -1060,6 +1063,7 @@ INDEX_HTML = r"""<!doctype html>
     let dOptionSymbol = '';
     let dOptionMode = 'BULL_CALL';
     let dOptionWidth = 10;
+    let dOptionQty = 1;
     let selectedDCombo = null;
     let dOptionScrollMode = 'preserve';
     async function api(path) {
@@ -1378,7 +1382,7 @@ INDEX_HTML = r"""<!doctype html>
         const priceLine = p.error
           ? `<div class="d-error">${p.error}</div>`
           : modeHelpHtml(payload.mode);
-        return `<div class="d-preview-card"><div class="d-preview-top"><div><div class="d-preview-title">${idx === 0 ? '下周五' : '下下周五'} ${p.expiry}</div><div class="small-muted">${p.mode} · width ${Number(payload.width || p.width || 0).toFixed(2)}</div></div><button class="d-confirm-btn" onclick="confirmDOptionBuy()" ${selectedDCombo ? '' : 'disabled'}>确认买入</button></div>${priceLine}${legs}</div>`;
+        return `<div class="d-preview-card"><div class="d-preview-top"><div><div class="d-preview-title">${idx === 0 ? '下周五' : '下下周五'} ${p.expiry}</div><div class="small-muted">${p.mode} · width ${Number(payload.width || p.width || 0).toFixed(2)}</div></div><div class="d-preview-actions"><label class="d-qty-control">× <input type="number" min="1" max="99" step="1" value="${dOptionQty}" onchange="changeDOptionQty(this.value)" oninput="changeDOptionQty(this.value)"></label><button class="d-confirm-btn" onclick="confirmDOptionBuy()" ${selectedDCombo ? '' : 'disabled'}>确认买入</button></div></div>${priceLine}${legs}</div>`;
       }).join('') || `<div class="d-note">暂无预览</div>`;
       if (dOptionScrollMode === 'center') {
         dOptionScrollMode = 'preserve';
@@ -1458,14 +1462,23 @@ INDEX_HTML = r"""<!doctype html>
       renderDOptionPreview(window.latestDOptionPreview || {symbol:dOptionSymbol, mode:dOptionMode, price:0, previews:[]});
       setTimeout(() => restoreDOptionScrolls(scrollPositions), 0);
     }
+    function changeDOptionQty(value) {
+      const qty = Math.max(1, Math.min(99, Math.floor(Number(value || 1) || 1)));
+      dOptionQty = qty;
+      document.querySelectorAll('.d-qty-control input').forEach(input => {
+        if (Number(input.value || 0) !== qty) input.value = qty;
+      });
+    }
     async function confirmDOptionBuy() {
       if (!selectedDCombo) { alert('请先选择一组期权组合'); return; }
       const r = selectedDCombo.row;
-      const msg = `确认买入 1 组 ${selectedDCombo.symbol} ${selectedDCombo.mode} ${selectedDCombo.expiry}？\n限价 ${Number(r.alpaca_limit_price || 0).toFixed(2)}\n最大亏损 ${money(r.max_loss_per_spread)}`;
+      const qty = Math.max(1, Math.min(99, Math.floor(Number(dOptionQty || 1) || 1)));
+      selectedDCombo.qty = qty;
+      const msg = `确认买入 ${qty} 组 ${selectedDCombo.symbol} ${selectedDCombo.mode} ${selectedDCombo.expiry}？\n限价 ${Number(r.alpaca_limit_price || 0).toFixed(2)}\n单组最大亏损 ${money(r.max_loss_per_spread)}\n总最大亏损 ${money(Number(r.max_loss_per_spread || 0) * qty)}`;
       if (!confirm(msg)) return;
       const result = await postJson('/api/d_option_buy', selectedDCombo);
       if (!result.ok) { alert(result.error || '期权买入失败'); return; }
-      alert(`期权买入已提交\n订单 ${result.order_id || '--'}\n状态 ${result.status || '--'}`);
+      alert(`期权买入已提交\n张数 ${result.qty || qty}\n订单 ${result.order_id || '--'}\n状态 ${result.status || '--'}`);
     }
     async function loadDOptionPreview(options={}) {
       const el = document.getElementById('dOptionPreview');
