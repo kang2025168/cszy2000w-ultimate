@@ -61,6 +61,42 @@ def get_daily_closes(symbol: str, days: int = 60, feed: str | None = None) -> li
     return closes
 
 
+def get_latest_stock_price(symbol: str, feed: str | None = None) -> float:
+    """读取 Alpaca 最新股票成交价；没有成交价时用 bid/ask 中间价。"""
+    from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeRequest
+
+    symbol = (symbol or "").strip().upper()
+    if not symbol:
+        return 0.0
+    client = stock_data_client()
+    feed_name = feed or env_str("ALPACA_DATA_FEED", "iex")
+
+    try:
+        trade_resp = client.get_stock_latest_trade(
+            StockLatestTradeRequest(symbol_or_symbols=[symbol], feed=feed_name)
+        )
+        trade = trade_resp.get(symbol) if isinstance(trade_resp, dict) else getattr(trade_resp, symbol, None)
+        price = float(getattr(trade, "price", 0) or 0)
+        if price > 0:
+            return price
+    except Exception:
+        pass
+
+    try:
+        quote_resp = client.get_stock_latest_quote(
+            StockLatestQuoteRequest(symbol_or_symbols=[symbol], feed=feed_name)
+        )
+        quote = quote_resp.get(symbol) if isinstance(quote_resp, dict) else getattr(quote_resp, symbol, None)
+        bid = float(getattr(quote, "bid_price", 0) or 0)
+        ask = float(getattr(quote, "ask_price", 0) or 0)
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2.0
+    except Exception:
+        pass
+
+    return 0.0
+
+
 def get_account_snapshot() -> AccountSnapshot | None:
     """读取账户资金快照；失败时返回 None，调用方必须禁止新开仓。"""
     try:

@@ -19,6 +19,7 @@ from .bot_supervisor import managed_bot_names, process_status, set_bot_runtime, 
 from .capital_manager import get_capital_allocation, get_strategy_used_capital
 from .config import env_str, settings
 from .db import db_conn, fetch_all
+from .d_tactical import d_tactical_payload, option_preview, submit_option_combo
 from .exposure_manager import latest_exposure_state, latest_rebalance_actions, refresh_exposure_plan
 from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import CAPITAL_MODE_LABELS, get_risk_state
@@ -690,9 +691,10 @@ INDEX_HTML = r"""<!doctype html>
     .holding-tabs, .sync-positions-btn { transition:opacity .18s ease, filter .18s ease; }
     .holdings-panel.market-view .holding-tabs, .holdings-panel.market-view .sync-positions-btn { opacity:.18; pointer-events:none; filter:grayscale(.2); }
     .lower-slider { overflow:hidden; touch-action:pan-y; }
-    .lower-track { display:flex; width:200%; transition:transform .32s cubic-bezier(.22,.61,.36,1); }
-    .lower-track.market { transform:translateX(-50%); }
-    .lower-page { width:50%; flex:0 0 50%; padding:0 2px; }
+    .lower-track { display:flex; width:300%; transition:transform .32s cubic-bezier(.22,.61,.36,1); }
+    .lower-track.market { transform:translateX(-33.3333%); }
+    .lower-track.d { transform:translateX(-66.6667%); }
+    .lower-page { width:33.3333%; flex:0 0 33.3333%; padding:0 2px; }
     .market-toolbar { display:grid; grid-template-columns:minmax(260px,1fr) auto; gap:10px; align-items:center; margin-bottom:10px; }
     .market-select { width:100%; height:38px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:0 10px; font-weight:750; color:var(--ink); }
     .market-meta { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
@@ -700,6 +702,46 @@ INDEX_HTML = r"""<!doctype html>
     .market-refresh-btn { height:38px; border:0; border-radius:8px; background:#e0f2fe; color:#075985; font-weight:850; padding:0 14px; }
     .market-refresh-btn:hover { background:#bae6fd; }
     .market-refresh-btn.loading { opacity:.65; pointer-events:none; }
+    .d-panel { margin-top:16px; }
+    .d-grid { display:grid; grid-template-columns:minmax(320px,.9fr) minmax(520px,1.1fr); gap:14px; align-items:start; }
+    .d-subpanel { border:1px solid var(--line); border-radius:8px; padding:14px; background:#fbfcfe; min-height:160px; }
+    .d-subhead { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
+    .d-subtitle { font-weight:900; font-size:14px; }
+    .d-symbols, .d-modes { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+    .d-option-controls { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+    .d-symbol-btn, .d-mode-btn { height:32px; border-radius:7px; font-weight:850; color:#344054; background:#fff; }
+    .d-symbol-btn.active, .d-mode-btn.active { background:#101828; color:#fff; border-color:#101828; }
+    .d-width-control { display:flex; align-items:center; gap:8px; padding:6px 9px; border:1px solid var(--line); border-radius:8px; background:#fff; color:#344054; font-size:12px; font-weight:850; }
+    .d-width-control input { width:74px; height:28px; border:1px solid #dbe3ee; border-radius:6px; padding:0 8px; font-weight:850; color:var(--ink); }
+    .d-preview-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; }
+    .d-preview-grid.refreshing .d-preview-card { animation:dRefreshPulse .75s ease-in-out 1; }
+    .d-preview-grid.refreshing { pointer-events:none; }
+    @keyframes dRefreshPulse {
+      0% { opacity:1; transform:translateY(0); filter:brightness(1); }
+      42% { opacity:.62; transform:translateY(1px); filter:brightness(.98); }
+      100% { opacity:1; transform:translateY(0); filter:brightness(1); }
+    }
+    .d-preview-card { border:1px solid #dbe3ee; border-radius:8px; background:#fff; padding:12px; display:grid; gap:10px; }
+    .d-preview-top { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+    .d-preview-title { font-weight:900; }
+    .d-leg { display:flex; align-items:center; justify-content:space-between; gap:8px; border-top:1px solid #eef2f6; padding-top:7px; font-size:12px; color:#344054; }
+    .d-option-row { border:1px solid transparent; border-top-color:#eef2f6; border-radius:8px; padding:9px 10px; display:grid; gap:7px; font-size:12px; color:#344054; cursor:pointer; transition:background .12s ease, border-color .12s ease, box-shadow .12s ease; }
+    .d-option-row:hover { background:#f8fafc; border-color:#dbe3ee; }
+    .d-option-row.selected { background:#eff6ff; border-color:#2563eb; box-shadow:inset 0 0 0 1px rgba(37,99,235,.15); }
+    .d-option-head { display:flex; justify-content:space-between; align-items:center; gap:10px; font-weight:900; }
+    .d-option-price { color:var(--green); font-weight:900; white-space:nowrap; }
+    .d-leg-line { display:grid; grid-template-columns:86px minmax(180px,1fr); gap:10px; align-items:start; }
+    .d-leg-line .d-option-code { font-weight:850; color:var(--ink); overflow-wrap:anywhere; line-height:1.35; }
+    .d-leg-quote { color:var(--muted); line-height:1.45; }
+    .d-error { color:var(--red); font-size:12px; line-height:1.45; }
+    .d-note { color:var(--muted); font-size:12px; line-height:1.5; }
+    .d-confirm-btn { height:32px; border:0; border-radius:7px; background:#e0f2fe; color:#075985; font-weight:850; }
+    .d-confirm-btn:disabled { opacity:.45; cursor:not-allowed; }
+    .d-mode-help { border:1px solid #dbeafe; border-radius:8px; background:#f8fbff; padding:12px; display:grid; gap:10px; color:#344054; }
+    .d-help-title { display:flex; align-items:center; justify-content:space-between; gap:10px; font-weight:950; color:var(--ink); }
+    .d-help-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; }
+    .d-help-item { border-top:1px solid #e8eef7; padding-top:8px; line-height:1.5; font-size:12px; }
+    .d-help-item b { display:block; color:#101828; margin-bottom:3px; font-size:12px; }
     .empty-state { min-height:260px; display:flex; align-items:center; justify-content:center; color:var(--muted); font-weight:750; }
     .modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,.36); display:none; align-items:center; justify-content:center; z-index:20; }
     .modal-backdrop.show { display:flex; }
@@ -798,6 +840,9 @@ INDEX_HTML = r"""<!doctype html>
       .market-toolbar { grid-template-columns:1fr; }
       .market-meta { gap:6px; }
       .market-pill { font-size:11px; }
+      .d-panel { margin-top:12px; }
+      .d-grid, .d-preview-grid, .d-help-grid { grid-template-columns:1fr; }
+      .d-subpanel { padding:12px; }
     }
   </style>
 </head>
@@ -931,6 +976,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="page-dots">
             <button class="page-dot active" id="dotHoldings" onclick="setLowerView('holdings')" title="持仓"></button>
             <button class="page-dot" id="dotMarket" onclick="setLowerView('market')" title="行情分析"></button>
+            <button class="page-dot" id="dotD" onclick="setLowerView('d')" title="D 战术仓"></button>
           </div>
           <button class="view-toggle-btn" id="viewToggleBtn" onclick="toggleLowerView()">看行情</button>
         </div>
@@ -947,6 +993,30 @@ INDEX_HTML = r"""<!doctype html>
               <button class="market-refresh-btn" id="marketRefreshBtn" onclick="refreshMarketCategories()">刷新分类</button>
             </div>
             <div class="scroll"><table id="marketTable"></table></div>
+          </div>
+          <div class="lower-page">
+            <div class="d-grid">
+              <div class="d-subpanel">
+                <div class="d-subhead">
+                  <span class="d-subtitle">日内股票</span>
+                  <span class="small-muted" id="dIntradayCount">--</span>
+                </div>
+                <div class="d-note">第一版先只展示候选和确认状态；后续筛选脚本会把可交易股票写入这里或导出 CSV。</div>
+                <div class="scroll" style="margin-top:10px; max-height:220px;"><table id="dIntradayTable"></table></div>
+              </div>
+              <div class="d-subpanel">
+                <div class="d-subhead">
+                  <span class="d-subtitle">期权手动开仓</span>
+                  <span class="small-muted" id="dOptionMeta">选择标的和类型</span>
+                </div>
+                <div class="d-symbols" id="dOptionSymbols"></div>
+                <div class="d-option-controls">
+                  <div class="d-modes" id="dOptionModes"></div>
+                  <label class="d-width-control">宽度 <input id="dOptionWidth" type="number" min="1" step="1" value="10" onchange="changeDOptionWidth(this.value)" /></label>
+                </div>
+                <div class="d-preview-grid" id="dOptionPreview"></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -982,6 +1052,10 @@ INDEX_HTML = r"""<!doctype html>
     let latestMarketMeta = [];
     let latestBotHeartbeats = [];
     let latestBotControls = [];
+    let dOptionSymbol = '';
+    let dOptionMode = 'BULL_CALL';
+    let dOptionWidth = 10;
+    let selectedDCombo = null;
     async function api(path) {
       const r = await fetch(path);
       if (r.status === 401) { location.reload(); return {ok:false, error:'unauthorized'}; }
@@ -1264,6 +1338,133 @@ INDEX_HTML = r"""<!doctype html>
       renderTodayPnl(curve);
       renderTradeRecords(trades);
     }
+    function renderDTactical(payload) {
+      const underlyings = payload.option_underlyings || [];
+      const modes = payload.option_modes || [];
+      const candidates = payload.intraday_candidates || [];
+      if (!dOptionSymbol && underlyings.length) dOptionSymbol = underlyings[0].symbol;
+      document.getElementById('dIntradayCount').textContent = `${candidates.length} 条`;
+      document.getElementById('dIntradayTable').innerHTML = candidates.length
+        ? `<thead><tr><th>日期</th><th>代码</th><th>分数</th><th>确认</th><th>原因</th></tr></thead><tbody>${candidates.map(r => `<tr><td>${r.snapshot_date || ''}</td><td><b>${r.symbol}</b></td><td>${Number(r.score || 0).toFixed(1)}</td><td>${Number(r.confirmed || 0) ? '是' : '否'}</td><td>${r.reason || ''}</td></tr>`).join('')}</tbody>`
+        : `<tbody><tr><td class="small-muted" style="padding:14px;text-align:center;">暂无 D 日内股票候选</td></tr></tbody>`;
+      document.getElementById('dOptionSymbols').innerHTML = underlyings.map(r => `<button class="d-symbol-btn ${r.symbol === dOptionSymbol ? 'active' : ''}" onclick="selectDOptionSymbol('${r.symbol}')">${r.symbol}</button>`).join('');
+      document.getElementById('dOptionModes').innerHTML = modes.map(r => `<button class="d-mode-btn ${r.mode === dOptionMode ? 'active' : ''}" title="${r.desc || ''}" onclick="selectDOptionMode('${r.mode}')">${r.label}</button>`).join('');
+      if (dOptionSymbol) loadDOptionPreview();
+    }
+    function renderDOptionPreview(payload) {
+      document.getElementById('dOptionMeta').textContent = `${payload.symbol} ${money(payload.price)} · ${payload.price_source || ''}`;
+      const rows = payload.previews || [];
+      document.getElementById('dOptionPreview').innerHTML = rows.map((p, idx) => {
+        const legLine = leg => `<div class="d-leg-line"><span>${leg.label} ${Number(leg.strike).toFixed(2)}</span><span><span class="d-option-code">${leg.option_symbol || ''}</span><br><span class="d-leg-quote">mid ${money(leg.mid)} · bid ${money(leg.bid)} / ask ${money(leg.ask)}</span></span></div>`;
+        const optionRows = (p.option_rows || []).map((o, rowIdx) => {
+          const key = `${payload.symbol}|${payload.mode}|${p.expiry}|${rowIdx}`;
+          const selected = selectedDCombo && selectedDCombo.key === key ? ' selected' : '';
+          const packed = encodeURIComponent(JSON.stringify({key, symbol:payload.symbol, mode:payload.mode, expiry:p.expiry, row:o}));
+          return `<div class="d-option-row${selected}" onclick="selectDCombo('${packed}')"><div class="d-option-head"><span>${o.side === 'below' ? '下方' : '上方'} ${Number(o.strike).toFixed(2)} · 距现价 ${Number(o.distance).toFixed(2)} · 宽 ${Number(o.width || p.width || 0).toFixed(2)}</span><span class="d-option-price">${o.price_label} ${money(o.spread_mid)}</span></div><div class="d-note">买入限价 ${Number(o.alpaca_limit_price || 0).toFixed(2)} · 单组最大亏损 ${money(o.max_loss_per_spread)}</div>${legLine(o.buy)}${legLine(o.sell)}</div>`;
+        }).join('');
+        const legs = optionRows || (p.legs || []).map(l => `<div class="d-leg"><span>${l.side} ${l.cp} ${Number(l.strike).toFixed(2)}</span><span>${l.option_symbol || ''}</span></div>`).join('');
+        const priceLine = p.error
+          ? `<div class="d-error">${p.error}</div>`
+          : modeHelpHtml(payload.mode);
+        return `<div class="d-preview-card"><div class="d-preview-top"><div><div class="d-preview-title">${idx === 0 ? '下周五' : '下下周五'} ${p.expiry}</div><div class="small-muted">${p.mode} · width ${Number(payload.width || p.width || 0).toFixed(2)}</div></div><button class="d-confirm-btn" onclick="confirmDOptionBuy()" ${selectedDCombo ? '' : 'disabled'}>确认买入</button></div>${priceLine}${legs}</div>`;
+      }).join('') || `<div class="d-note">暂无预览</div>`;
+    }
+    function modeHelpHtml(mode) {
+      const map = {
+        BULL_CALL: {
+          title:'看涨进攻：买低行权价 Call，卖高行权价 Call',
+          earn:'标的上涨时赚钱。价格越接近或突破卖出的高行权价，组合价值越高。',
+          cost:'这是借方价差，开仓要付出净成本。买入限价就是你愿意为整组价差支付的最高净价。',
+          maxProfit:'最大收益约为行权价宽度 - 净成本。比如宽度 $1、成本 $0.35，最大收益约 $65/组。',
+          maxLoss:'最大亏损就是净成本 x100。只要到期两条腿都归零，损失就是这笔成本。',
+          trigger:'适合你判断短期继续上涨时点选。后续机器人可按盈利比例止盈，跌到止损比例自动平仓。'
+        },
+        BEAR_PUT: {
+          title:'看跌进攻：买高行权价 Put，卖低行权价 Put',
+          earn:'标的下跌时赚钱。价格越接近或跌破卖出的低行权价，组合价值越高。',
+          cost:'这是借方价差，开仓要付出净成本。买入限价就是整组 Put 价差的最高支付价格。',
+          maxProfit:'最大收益约为行权价宽度 - 净成本。跌幅足够大时收益接近上限。',
+          maxLoss:'最大亏损就是净成本 x100。判断错方向、到期价差归零时损失这笔成本。',
+          trigger:'适合你判断短期继续下跌时点选。后续机器人按盈利目标或止损比例处理。'
+        },
+        BULL_PUT: {
+          title:'看涨收租：买低行权价 Put，卖高行权价 Put',
+          earn:'标的不跌破卖出的高行权价时赚钱。横盘、微涨、小跌都可能盈利。',
+          cost:'这是信用价差，开仓是收取权利金。买入限价为负数，代表向市场收钱。',
+          maxProfit:'最大收益就是收到的权利金 x100。只要到期价格高于卖出 Put，通常可保留大部分权利金。',
+          maxLoss:'最大亏损约为行权价宽度 - 收到权利金，再乘以100。跌破保护腿时接近最大亏损。',
+          trigger:'适合你判断不会明显下跌时点选。后续机器人可在权利金回吐到目标时止盈，亏损扩大时止损。'
+        },
+        BEAR_CALL: {
+          title:'看跌收租：买高行权价 Call，卖低行权价 Call',
+          earn:'标的不突破卖出的低行权价时赚钱。横盘、微跌、小涨都可能盈利。',
+          cost:'这是信用价差，开仓是收取权利金。买入限价为负数，代表向市场收钱。',
+          maxProfit:'最大收益就是收到的权利金 x100。到期价格低于卖出 Call 时通常收益最好。',
+          maxLoss:'最大亏损约为行权价宽度 - 收到权利金，再乘以100。向上突破保护腿时接近最大亏损。',
+          trigger:'适合你判断不会明显上涨时点选。后续机器人按收租止盈、亏损扩大止损。'
+        }
+      };
+      const h = map[mode] || map.BULL_CALL;
+      return `<div class="d-mode-help"><div class="d-help-title"><span>${h.title}</span><span class="small-muted">先点选组合，再确认买入</span></div><div class="d-help-grid">${[
+        ['怎么赚钱', h.earn],
+        ['成本/收款', h.cost],
+        ['最大收益', h.maxProfit],
+        ['最大亏损', h.maxLoss],
+        ['什么时候触发', h.trigger],
+        ['当前列表怎么看', '每一块是一组可买价差。绿色金额是预估成本或预估收款；下面两行分别是买入保护腿和卖出腿的实时 bid/ask/mid。']
+      ].map(([k,v]) => `<div class="d-help-item"><b>${k}</b>${v}</div>`).join('')}</div></div>`;
+    }
+    function selectDCombo(packed) {
+      selectedDCombo = JSON.parse(decodeURIComponent(packed));
+      document.querySelectorAll('.d-option-row').forEach(el => el.classList.remove('selected'));
+      renderDOptionPreview(window.latestDOptionPreview || {symbol:dOptionSymbol, mode:dOptionMode, price:0, previews:[]});
+    }
+    async function confirmDOptionBuy() {
+      if (!selectedDCombo) { alert('请先选择一组期权组合'); return; }
+      const r = selectedDCombo.row;
+      const msg = `确认买入 1 组 ${selectedDCombo.symbol} ${selectedDCombo.mode} ${selectedDCombo.expiry}？\n限价 ${Number(r.alpaca_limit_price || 0).toFixed(2)}\n最大亏损 ${money(r.max_loss_per_spread)}`;
+      if (!confirm(msg)) return;
+      const result = await postJson('/api/d_option_buy', selectedDCombo);
+      if (!result.ok) { alert(result.error || '期权买入失败'); return; }
+      alert(`期权买入已提交\n订单 ${result.order_id || '--'}\n状态 ${result.status || '--'}`);
+    }
+    async function loadDOptionPreview() {
+      const el = document.getElementById('dOptionPreview');
+      const hasContent = el.children.length > 0;
+      if (hasContent) el.classList.add('refreshing');
+      else el.innerHTML = `<div class="d-note">正在读取期权链...</div>`;
+      try {
+        const payload = await api(`/api/d_option_preview?symbol=${encodeURIComponent(dOptionSymbol)}&mode=${encodeURIComponent(dOptionMode)}&width=${encodeURIComponent(dOptionWidth)}`);
+        if (!payload.ok) throw new Error(payload.error || 'preview failed');
+        window.latestDOptionPreview = payload;
+        renderDOptionPreview(payload);
+      } catch (e) {
+        if (!hasContent) el.innerHTML = `<div class="d-error">${e.message || e}</div>`;
+        else document.getElementById('dOptionMeta').textContent = `刷新失败：${e.message || e}`;
+      } finally {
+        el.classList.remove('refreshing');
+      }
+    }
+    function selectDOptionSymbol(symbol) {
+      dOptionSymbol = symbol;
+      selectedDCombo = null;
+      loadDTactical();
+    }
+    function selectDOptionMode(mode) {
+      dOptionMode = mode;
+      selectedDCombo = null;
+      loadDTactical();
+    }
+    function changeDOptionWidth(value) {
+      const n = Number(value || 10);
+      dOptionWidth = Math.max(1, n || 10);
+      selectedDCombo = null;
+      loadDOptionPreview();
+    }
+    async function loadDTactical() {
+      const payload = await api('/api/d_tactical');
+      if (payload.ok) renderDTactical(payload);
+    }
     function renderHoldings() {
       const rows = currentHolding === 'ALL'
         ? latestHoldings
@@ -1276,20 +1477,27 @@ INDEX_HTML = r"""<!doctype html>
     }
     function renderLowerView() {
       const holdingsMode = lowerView === 'holdings';
-      document.getElementById('lowerPanelTitle').textContent = holdingsMode ? '持仓' : '行情分析';
-      document.getElementById('viewToggleBtn').textContent = holdingsMode ? '看行情' : '看持仓';
-      document.querySelector('.holdings-panel').classList.toggle('market-view', !holdingsMode);
-      document.getElementById('lowerTrack').classList.toggle('market', !holdingsMode);
+      const marketMode = lowerView === 'market';
+      const dMode = lowerView === 'd';
+      document.getElementById('lowerPanelTitle').textContent = dMode ? 'D 战术仓' : (marketMode ? '行情分析' : '持仓');
+      document.getElementById('viewToggleBtn').textContent = marketMode ? (currentHolding === 'D' ? '看D' : '看持仓') : '看行情';
+      document.querySelector('.holdings-panel').classList.toggle('market-view', marketMode);
+      const track = document.getElementById('lowerTrack');
+      track.classList.toggle('market', marketMode);
+      track.classList.toggle('d', dMode);
       document.getElementById('dotHoldings').classList.toggle('active', holdingsMode);
-      document.getElementById('dotMarket').classList.toggle('active', !holdingsMode);
+      document.getElementById('dotMarket').classList.toggle('active', marketMode);
+      document.getElementById('dotD').classList.toggle('active', dMode);
     }
     function setLowerView(view) {
-      lowerView = view === 'market' ? 'market' : 'holdings';
+      lowerView = view === 'market' ? 'market' : view === 'd' ? 'd' : 'holdings';
       renderLowerView();
       if (lowerView === 'market') loadMarketCategories(currentCategory);
+      if (lowerView === 'd') loadDTactical();
     }
     function toggleLowerView() {
-      setLowerView(lowerView === 'holdings' ? 'market' : 'holdings');
+      if (lowerView === 'market') setLowerView(currentHolding === 'D' ? 'd' : 'holdings');
+      else setLowerView('market');
     }
     function renderMarketCategories(payload) {
       latestMarketMeta = payload.meta || [];
@@ -1409,7 +1617,7 @@ INDEX_HTML = r"""<!doctype html>
       const refreshBtn = document.querySelector('.refresh-btn');
       if (refreshBtn) refreshBtn.classList.add('loading');
       try {
-      const [cap, risk, holdings, state, phase] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase')]);
+      const [cap, risk, holdings, state, phase, dTactical] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase'), api('/api/d_tactical')]);
       if (cap.ok) {
         window.latestCapitalPayload = cap;
         document.getElementById('modeValue').textContent = cap.mode_label || cap.mode;
@@ -1465,6 +1673,7 @@ INDEX_HTML = r"""<!doctype html>
       latestBotControls = state.bot_controls || [];
       renderBots(latestBotHeartbeats, latestBotControls);
       renderPhase(phase);
+      if (dTactical.ok) renderDTactical(dTactical);
       latestHoldings = holdings.rows || [];
       renderHoldings();
       renderLowerView();
@@ -1475,7 +1684,11 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
     document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => loadCurve(b.dataset.period)));
-    document.querySelectorAll('.holding-tab').forEach(b => b.addEventListener('click', () => { currentHolding = b.dataset.holding; renderHoldings(); }));
+    document.querySelectorAll('.holding-tab').forEach(b => b.addEventListener('click', () => {
+      currentHolding = b.dataset.holding;
+      renderHoldings();
+      setLowerView(currentHolding === 'D' ? 'd' : 'holdings');
+    }));
     document.addEventListener('click', (e) => {
       const pop = document.getElementById('phasePopover');
       const chip = document.getElementById('phaseChip');
@@ -1716,6 +1929,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_risk_payload())
             elif path == "/api/holdings":
                 self._send_json(_holdings_payload())
+            elif path == "/api/d_tactical":
+                self._send_json(d_tactical_payload())
+            elif path == "/api/d_option_preview":
+                qs = parse_qs(parsed.query)
+                symbol = qs.get("symbol", [""])[0]
+                mode = qs.get("mode", ["BULL_CALL"])[0]
+                width_raw = qs.get("width", ["10"])[0]
+                try:
+                    width = float(width_raw)
+                except Exception:
+                    width = 10.0
+                self._send_json(option_preview(symbol, mode, width))
             elif path == "/api/state":
                 self._send_json(_state_payload())
             elif path == "/api/exposure":
@@ -1762,6 +1987,8 @@ class Handler(BaseHTTPRequestHandler):
                 result["ok"] = True
                 result["message"] = f"清仓限价卖单{action}完成：成功={result.get('ok_count', 0)} 失败={result.get('error_count', 0)} 总数={result.get('count', 0)}"
                 self._send_json(result)
+            elif path == "/api/d_option_buy":
+                self._send_json(submit_option_combo(payload))
             elif path == "/api/bot_control":
                 bot_name = str(payload.get("bot_name") or "")
                 enabled_raw = payload.get("enabled")
