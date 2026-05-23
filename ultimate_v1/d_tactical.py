@@ -13,6 +13,8 @@ from .db import db_conn, fetch_all
 D_OPTION_UNDERLYINGS_TABLE = "d_option_underlyings"
 D_INTRADAY_CANDIDATES_TABLE = "d_intraday_candidates"
 D_OPTION_PREVIEW_SIDE_LIMIT = int(os.getenv("D_OPTION_PREVIEW_SIDE_LIMIT", "24"))
+Q_OPTION_REASON_PREFIX = "Q manual option buy"
+LEGACY_D_OPTION_REASON_PREFIX = "D manual option buy"
 
 OPTION_MODES = [
     {"mode": "BULL_CALL", "label": "看涨进攻", "desc": "Bull Call 借方价差"},
@@ -251,7 +253,7 @@ def _option_rows_around_price(strategy_c, symbol: str, mode: str, expiry: date, 
 
 
 def submit_option_combo(payload: dict) -> dict:
-    """按页面选中的 D 期权组合提交指定张数的 MLEG 限价开仓单。"""
+    """按页面选中的 Q 期权组合提交指定张数的 MLEG 限价开仓单，并写入组合记录。"""
     from app import strategy_c
 
     symbol = str(payload.get("symbol") or "").strip().upper()
@@ -288,8 +290,8 @@ def submit_option_combo(payload: dict) -> dict:
         width=abs(float(buy_leg.strike) - float(sell_leg.strike)),
         legs=[buy_leg, sell_leg],
         signal_score=0.0,
-        signal_reason=f"D manual option buy price_source={price_source}",
-        status="PLANNED",
+        signal_reason=f"{Q_OPTION_REASON_PREFIX} price_source={price_source}",
+        status="SUBMITTED",
     )
     limit_price = float(row.get("alpaca_limit_price") or 0)
     if limit_price == 0:
@@ -300,19 +302,223 @@ def submit_option_combo(payload: dict) -> dict:
         max_loss_per_spread=float(row.get("max_loss_per_spread") or 0),
         qty=qty,
         buying_power=0.0,
-        reason=f"D manual selected combo qty={qty}",
+        reason=f"Q manual selected combo qty={qty}",
     )
-    order = strategy_c.submit_open_spread_order(plan, pricing)
+    # Q 仓位必须落库，后续 q_sell_bot 才能只管理 Q 期权组合。
+    for leg in plan.legs:
+        leg.qty = int(qty)
+    plan.max_loss = float(pricing.max_loss_per_spread) * int(qty)
+    spread_id = strategy_c.record_spread_plan(plan, allow_duplicate=True)
+    if not spread_id:
+        raise RuntimeError("Q option spread was not recorded; abort submit to keep q_sell_bot tracking")
+    conn = strategy_c._connect()
+    try:
+        strategy_c._update_spread_existing_fields(
+            conn,
+            int(spread_id),
+            status="SUBMITTED",
+            entry_price=float(pricing.entry_price),
+            current_value=float(pricing.entry_price),
+            qty=int(qty),
+            max_loss=float(pricing.max_loss_per_spread) * int(qty),
+        )
+        try:
+            order = strategy_c.submit_open_spread_order(plan, pricing)
+        except Exception as exc:
+            strategy_c._update_spread_existing_fields(conn, int(spread_id), status="FAILED", close_reason=str(exc)[:500])
+            raise
+        order_id = str(getattr(order, "id", "") or getattr(order, "order_id", "") or "")
+        order_status = str(getattr(order, "status", "") or "")
+        strategy_c._update_spread_existing_fields(conn, int(spread_id), order_id=order_id, status="SUBMITTED")
+    finally:
+        conn.close()
     return {
         "ok": True,
+        "spread_id": int(spread_id),
         "symbol": symbol,
         "mode": mode,
         "expiry": expiry.isoformat(),
         "limit_price": pricing.alpaca_limit_price,
         "qty": qty,
-        "order_id": str(getattr(order, "id", "") or ""),
-        "status": str(getattr(order, "status", "") or ""),
+        "order_id": order_id,
+        "status": order_status,
     }
+
+
+def _q_reason_filter(strategy_c, conn) -> tuple[str, list[str]]:
+    """只筛 Q 页面手动开出的组合；兼容改名前的 D manual 记录。"""
+    cols = strategy_c._table_columns(conn, strategy_c.SPREADS_TABLE)
+    if "signal_reason" not in cols:
+        return "1=0", []
+    return "(`signal_reason` LIKE %s OR `signal_reason` LIKE %s)", [
+        f"{Q_OPTION_REASON_PREFIX}%",
+        f"{LEGACY_D_OPTION_REASON_PREFIX}%",
+    ]
+
+
+def _load_q_spreads(conn, strategy_c, statuses: tuple[str, ...]) -> list[dict]:
+    where, params = _q_reason_filter(strategy_c, conn)
+    placeholders = ", ".join(["%s"] * len(statuses))
+    sql = f"""
+    SELECT *
+    FROM `{strategy_c.SPREADS_TABLE}`
+    WHERE {where}
+      AND status IN ({placeholders})
+    ORDER BY id ASC;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, tuple(params + list(statuses)))
+        return cur.fetchall() or []
+
+
+def _order_status_text(order) -> str:
+    status = getattr(order, "status", "") or ""
+    return str(getattr(status, "value", status) or "").lower()
+
+
+def _sync_q_submitted_spreads(conn, strategy_c) -> int:
+    """同步 Q 开仓订单状态：只有已成交的组合才进入 OPEN，避免卖出未成交组合。"""
+    rows = _load_q_spreads(conn, strategy_c, ("SUBMITTED",))
+    if not rows:
+        return 0
+    client = strategy_c._get_trading_client()
+    synced = 0
+    for spread in rows:
+        spread_id = int(spread.get("id") or 0)
+        order_id = str(spread.get("order_id") or "").strip()
+        if not spread_id or not order_id:
+            continue
+        try:
+            order = client.get_order_by_id(order_id)
+            status = _order_status_text(order)
+            filled_avg = float(getattr(order, "filled_avg_price", 0) or 0)
+            if status == "filled":
+                update = {"status": "OPEN"}
+                if filled_avg > 0:
+                    update["entry_price"] = abs(filled_avg)
+                    update["current_value"] = abs(filled_avg)
+                strategy_c._update_spread_existing_fields(conn, spread_id, **update)
+                synced += 1
+            elif status in {"canceled", "expired", "rejected"}:
+                strategy_c._update_spread_existing_fields(
+                    conn,
+                    spread_id,
+                    status=status.upper(),
+                    close_reason=f"open order {status}",
+                )
+                synced += 1
+        except Exception as exc:
+            print(f"[Q SELL BOT] sync spread_id={spread_id} order_id={order_id} failed: {exc}", flush=True)
+    return synced
+
+
+def _quote_q_current_value(strategy_c, spread: dict, legs: list[dict]) -> float | None:
+    """用当前期权 bid/ask 估算平仓价值，缺报价时回退到表里的 current_value。"""
+    symbols = [str(leg.get("option_symbol") or "").strip() for leg in legs if leg.get("option_symbol")]
+    if not symbols:
+        return None
+    try:
+        quotes = strategy_c._get_option_quotes(symbols)
+        net_close_cash = 0.0
+        for leg in legs:
+            symbol = str(leg.get("option_symbol") or "").strip()
+            quote = quotes.get(symbol)
+            if not quote:
+                return None
+            side = str(leg.get("side") or "").upper()
+            bid = float(getattr(quote, "bid", 0) or 0)
+            ask = float(getattr(quote, "ask", 0) or 0)
+            if side == "BUY":
+                if bid <= 0:
+                    return None
+                net_close_cash += bid
+            elif side == "SELL":
+                if ask <= 0:
+                    return None
+                net_close_cash -= ask
+        mode = str(spread.get("mode") or "").upper()
+        if mode in strategy_c.DEBIT_MODES:
+            return round(max(net_close_cash, 0.0), 2)
+        if mode in strategy_c.CREDIT_MODES:
+            return round(max(-net_close_cash, 0.0), 2)
+    except Exception as exc:
+        print(f"[Q SELL BOT] quote spread_id={spread.get('id')} failed: {exc}", flush=True)
+    return None
+
+
+def q_sell_once() -> int:
+    """Q 机器人执行一次：只扫描 Q 手动期权组合，只做平仓/卖出动作。"""
+    from app import strategy_c
+
+    conn = strategy_c._connect()
+    closed = 0
+    try:
+        synced = _sync_q_submitted_spreads(conn, strategy_c)
+        if synced:
+            print(f"[Q SELL BOT] synced submitted spreads={synced}", flush=True)
+
+        spreads = _load_q_spreads(conn, strategy_c, ("OPEN",))
+        if not spreads:
+            print("[Q SELL BOT] no OPEN Q option spreads", flush=True)
+            return 0
+
+        for spread in spreads:
+            spread_id = int(spread.get("id") or 0)
+            legs = strategy_c.load_spread_legs(conn, spread_id)
+            if not legs:
+                print(f"[Q SELL BOT] spread_id={spread_id} skip: no legs", flush=True)
+                continue
+
+            current_value = _quote_q_current_value(strategy_c, spread, legs)
+            if current_value is not None:
+                strategy_c._update_spread_existing_fields(conn, spread_id, current_value=float(current_value))
+            else:
+                current_value = strategy_c.get_spread_current_value(spread, legs)
+            if current_value is None:
+                print(f"[Q SELL BOT] spread_id={spread_id} skip: missing current value", flush=True)
+                continue
+
+            should_close, reason, metric = strategy_c.should_close_spread(spread, current_value, legs)
+            print(
+                f"[Q SELL BOT] spread_id={spread_id} {spread.get('underlying')} "
+                f"mode={spread.get('mode')} current={current_value:.2f} {reason}",
+                flush=True,
+            )
+            if not should_close:
+                continue
+
+            block_same_day, block_reason = strategy_c._block_same_day_close(spread, reason)
+            if block_same_day:
+                print(f"[Q SELL BOT] spread_id={spread_id} skip close: {block_reason}", flush=True)
+                continue
+
+            close_legs = strategy_c.build_close_legs(legs)
+            strategy_c.print_close_plan(spread, close_legs, reason, metric, current_value)
+            if strategy_c.C_ENABLE_REAL_ORDER == 1:
+                try:
+                    order = strategy_c.submit_close_spread_order(spread, legs, current_value)
+                    order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
+                    strategy_c._update_spread_existing_fields(
+                        conn,
+                        spread_id,
+                        status="CLOSE_SUBMITTED",
+                        close_order_id=str(order_id or ""),
+                        exit_price=float(current_value),
+                        close_reason=str(reason)[:500],
+                        profit=float(metric.get("profit") or 0.0),
+                        profit_pct=float(metric.get("profit_pct") or 0.0),
+                    )
+                    closed += 1
+                except Exception as exc:
+                    print(f"[Q SELL BOT] close submit failed spread_id={spread_id}: {exc}", flush=True)
+                    strategy_c._update_spread_existing_fields(conn, spread_id, close_reason=f"Q_CLOSE_FAIL {str(exc)[:450]}")
+            elif strategy_c.C_RECORD_PLAN == 1:
+                strategy_c.mark_spread_close_planned(conn, spread_id, reason, current_value, metric)
+                closed += 1
+
+        return closed
+    finally:
+        conn.close()
 
 
 def _plan_to_dict(plan: Any, pricing: Any | None, error: str = "") -> dict:

@@ -51,6 +51,7 @@ BOT_SPECS: dict[str, BotSpec] = {
     ),
     "d_buy_bot": BotSpec("app.bots.d_buy_bot", ("--loop", "--interval", "30")),
     "d_sell_bot": BotSpec("app.bots.d_sell_bot", ("--loop", "--interval", "30")),
+    "q_sell_bot": BotSpec("app.bots.q_sell_bot", ("--loop", "--interval", "30")),
 }
 
 _PROCESSES: dict[str, subprocess.Popen] = {}

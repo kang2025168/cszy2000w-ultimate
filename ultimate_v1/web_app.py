@@ -1156,8 +1156,8 @@ INDEX_HTML = r"""<!doctype html>
             <button class="holding-tab" data-holding="A">A</button>
             <button class="holding-tab" data-holding="C">C</button>
             <button class="holding-tab" data-holding="B">B</button>
-            <button class="holding-tab" data-holding="D-D">D-D</button>
-            <button class="holding-tab" data-holding="D-Q">D-Q</button>
+            <button class="holding-tab" data-holding="D">D</button>
+            <button class="holding-tab" data-holding="Q">Q</button>
             <button class="holding-tab" data-holding="TRADES">交易</button>
           </div>
         </div>
@@ -1190,7 +1190,7 @@ INDEX_HTML = r"""<!doctype html>
                 <div class="d-subhead">
                   <div>
                     <div class="d-subtitle">日内股票</div>
-                    <div class="d-submeta"><span class="d-code-pill">D-D</span><span>盘中候选、确认状态和后续可交易清单</span></div>
+                    <div class="d-submeta"><span class="d-code-pill">D</span><span>盘中候选、确认状态和后续可交易清单</span></div>
                   </div>
                   <span class="small-muted" id="dIntradayCount">--</span>
                 </div>
@@ -1201,7 +1201,7 @@ INDEX_HTML = r"""<!doctype html>
                 <div class="d-subhead">
                   <div>
                     <div class="d-subtitle">期权手动开仓</div>
-                    <div class="d-submeta"><span class="d-code-pill">D-Q</span><span id="dOptionMeta">选择标的和类型</span></div>
+                    <div class="d-submeta"><span class="d-code-pill">Q</span><span id="dOptionMeta">选择标的和类型</span></div>
                   </div>
                 </div>
                 <div class="d-option-layout">
@@ -1360,7 +1360,8 @@ INDEX_HTML = r"""<!doctype html>
     function renderBots(bots, controls) {
       const botPages = [
         ['rebalance_bot','b_buy_bot','b_sell_bot','d_buy_bot','d_sell_bot'],
-        ['dashboard_bot','risk_bot','ac_bot','f_buy_bot','f_sell_bot']
+        ['dashboard_bot','risk_bot','ac_bot','q_sell_bot'],
+        ['f_buy_bot','f_sell_bot']
       ];
       botPage = Math.max(0, Math.min(botPage, botPages.length - 1));
       const known = botPages[botPage];
@@ -1772,7 +1773,7 @@ INDEX_HTML = r"""<!doctype html>
       if (payload.ok) renderDTactical(payload, options);
     }
     function renderHoldings() {
-      const holdingGroup = currentHolding === 'D-D' || currentHolding === 'D-Q' ? 'D' : currentHolding;
+      const holdingGroup = currentHolding === 'Q' ? 'D' : currentHolding;
       const rows = holdingGroup === 'ALL'
         ? latestHoldings
         : latestHoldings.filter(r => String(r.strategy_group || '').toUpperCase() === holdingGroup);
@@ -1783,7 +1784,7 @@ INDEX_HTML = r"""<!doctype html>
         blanks + `</tbody>`;
     }
     function isDSectionHolding(value=currentHolding) {
-      return value === 'D-D' || value === 'D-Q';
+      return value === 'D' || value === 'Q';
     }
     function isTradesHolding(value=currentHolding) {
       return value === 'TRADES';
@@ -1800,7 +1801,7 @@ INDEX_HTML = r"""<!doctype html>
       const marketMode = lowerView === 'market';
       const dMode = lowerView === 'd';
       const tradesMode = lowerView === 'trades';
-      document.getElementById('lowerPanelTitle').textContent = tradesMode ? '今日交易记录' : dMode ? (dSection === 'intraday' ? 'D-D 日内交易' : 'D-Q 期权交易') : (marketMode ? '行情分析' : '持仓');
+      document.getElementById('lowerPanelTitle').textContent = tradesMode ? '今日交易记录' : dMode ? (dSection === 'intraday' ? 'D 日内交易' : 'Q 期权交易') : (marketMode ? '行情分析' : '持仓');
       document.getElementById('viewToggleBtn').textContent = marketMode ? (isDSectionHolding() ? '看D' : isTradesHolding() ? '看交易' : '看持仓') : '看行情';
       document.querySelector('.holdings-panel').classList.toggle('market-view', marketMode);
       document.querySelector('.holdings-panel').classList.toggle('d-view', dMode);
@@ -2017,8 +2018,8 @@ INDEX_HTML = r"""<!doctype html>
     document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => loadCurve(b.dataset.period)));
     document.querySelectorAll('.holding-tab').forEach(b => b.addEventListener('click', () => {
       currentHolding = b.dataset.holding;
-      if (currentHolding === 'D-D') dSection = 'intraday';
-      if (currentHolding === 'D-Q') dSection = 'options';
+      if (currentHolding === 'D') dSection = 'intraday';
+      if (currentHolding === 'Q') dSection = 'options';
       renderHoldings();
       setLowerView(isTradesHolding() ? 'trades' : isDSectionHolding() ? 'd' : 'holdings');
     }));

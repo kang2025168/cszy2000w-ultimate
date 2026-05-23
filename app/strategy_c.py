@@ -1333,10 +1333,10 @@ def submit_close_spread_order(spread: dict, open_legs: list[dict], current_value
     return _get_trading_client().submit_order(order_data=req)
 
 
-def record_spread_plan(plan: SpreadPlan) -> Optional[int]:
+def record_spread_plan(plan: SpreadPlan, allow_duplicate: bool = False) -> Optional[int]:
     conn = _connect()
     try:
-        if _has_active_plan(conn, plan.underlying):
+        if not allow_duplicate and _has_active_plan(conn, plan.underlying):
             print(f"[C] skip record: active plan already exists for {plan.underlying}", flush=True)
             return None
 
