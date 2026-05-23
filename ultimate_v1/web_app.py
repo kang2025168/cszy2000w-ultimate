@@ -710,8 +710,8 @@ INDEX_HTML = r"""<!doctype html>
     .bot-page-dot { width:7px; height:7px; border-radius:999px; background:#d0d5dd; cursor:pointer; }
     .bot-page-dot.active { width:18px; background:#101828; }
     .bot-page-label { min-width:42px; color:var(--muted); font-size:11px; font-weight:800; text-align:right; }
-    .chart-panel, .trade-records-panel { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
-    .chart-panel .mobile-collapse-body, .trade-records-panel .mobile-collapse-body { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
+    .chart-panel { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
+    .chart-panel .mobile-collapse-body { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
     .chart-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
     .chart-title { display:flex; align-items:baseline; gap:14px; }
     .today-pnl { font-size:15px; font-weight:850; color:var(--green); }
@@ -722,7 +722,7 @@ INDEX_HTML = r"""<!doctype html>
     .trade-records-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .trade-records-title { font-size:13px; font-weight:850; color:var(--ink); }
     .trade-records-count { color:var(--muted); font-size:11px; font-weight:800; }
-    .trade-records-scroll { height:230px; overflow:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; border:1px solid #eef2f6; border-radius:8px; }
+    .trade-records-scroll { height:520px; overflow:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; border:1px solid #eef2f6; border-radius:8px; }
     .trade-records table { width:100%; min-width:940px; table-layout:auto; }
     .trade-records th, .trade-records td { padding:8px 10px; font-size:11px; }
     .trade-records th, .trade-records td { white-space:nowrap; }
@@ -761,10 +761,11 @@ INDEX_HTML = r"""<!doctype html>
     .holding-tabs, .sync-positions-btn { transition:opacity .18s ease, filter .18s ease; }
     .holdings-panel.market-view .holding-tabs, .holdings-panel.market-view .sync-positions-btn { opacity:.18; pointer-events:none; filter:grayscale(.2); }
     .lower-slider { overflow:hidden; touch-action:pan-y; }
-    .lower-track { display:flex; width:300%; transition:transform .32s cubic-bezier(.22,.61,.36,1); }
-    .lower-track.market { transform:translateX(-33.3333%); }
-    .lower-track.d { transform:translateX(-66.6667%); }
-    .lower-page { width:33.3333%; flex:0 0 33.3333%; padding:0 2px; }
+    .lower-track { display:flex; width:400%; transition:transform .32s cubic-bezier(.22,.61,.36,1); }
+    .lower-track.market { transform:translateX(-25%); }
+    .lower-track.d { transform:translateX(-50%); }
+    .lower-track.trades { transform:translateX(-75%); }
+    .lower-page { width:25%; flex:0 0 25%; padding:0 2px; }
     .market-toolbar { display:grid; grid-template-columns:minmax(260px,1fr) auto; gap:10px; align-items:center; margin-bottom:10px; }
     .market-select { width:100%; height:38px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:0 10px; font-weight:750; color:var(--ink); }
     .market-meta { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
@@ -853,8 +854,7 @@ INDEX_HTML = r"""<!doctype html>
       .donut-panel { order:4; }
       .annual-panel { order:5; }
       .bot-panel { order:6; }
-      .trade-records-panel { order:7; }
-      .left-titlebar, .chart-panel, .trade-records-panel, .holdings-panel, .capital-hero, .donut-panel, .annual-panel, .bot-panel { width:100%; }
+      .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .donut-panel, .annual-panel, .bot-panel { width:100%; }
       .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:center; }
       .brand-lockup { gap:8px; flex:1 1 auto; }
       .brand-logo { width:38px; height:38px; border-radius:8px; }
@@ -912,7 +912,7 @@ INDEX_HTML = r"""<!doctype html>
       .bot-grid { padding-top:10px; gap:8px; }
       .bot-row { grid-template-columns:minmax(120px,1fr) 18px 42px; }
       .bot-pager { padding-top:8px; }
-      .chart-panel, .trade-records-panel { min-height:0; }
+      .chart-panel { min-height:0; }
       .chart-head { align-items:flex-start; flex-direction:column; gap:9px; }
       .chart-title { width:100%; justify-content:space-between; gap:8px; }
       .chart-title h2 { display:none; }
@@ -920,7 +920,6 @@ INDEX_HTML = r"""<!doctype html>
       .tabs { width:100%; justify-content:flex-end; }
       #equityChart { height:238px; flex-basis:238px; }
       .chart-panel.mobile-open .mobile-collapse-body { display:flex; flex-direction:column; }
-      .trade-records-panel.mobile-open .mobile-collapse-body { display:flex; flex-direction:column; }
       .trade-records-scroll { height:260px; overflow:auto; }
       .trade-records table { min-width:980px; }
       .trade-records th, .trade-records td { padding:8px 7px; font-size:11px; }
@@ -1061,20 +1060,6 @@ INDEX_HTML = r"""<!doctype html>
             <canvas id="equityChart" width="760" height="260"></canvas>
           </div>
         </div>
-        <div class="panel trade-records-panel mobile-collapsible" id="tradeRecordsPanel">
-          <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('tradeRecordsPanel')"><span>今日交易记录</span><span></span></button>
-          <div class="mobile-collapse-body">
-            <div class="trade-records">
-              <div class="trade-records-head">
-                <span class="trade-records-title">今日交易记录</span>
-                <span class="trade-records-count" id="tradeRecordsCount">--</span>
-              </div>
-              <div class="trade-records-scroll">
-                <table id="tradeRecords"></table>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
     </section>
     <section class="panel holdings-panel">
@@ -1089,6 +1074,7 @@ INDEX_HTML = r"""<!doctype html>
             <button class="holding-tab" data-holding="B">B</button>
             <button class="holding-tab" data-holding="D-D">D-D</button>
             <button class="holding-tab" data-holding="D-Q">D-Q</button>
+            <button class="holding-tab" data-holding="TRADES">交易</button>
           </div>
         </div>
         <div class="holding-right-tools">
@@ -1096,6 +1082,7 @@ INDEX_HTML = r"""<!doctype html>
             <button class="page-dot active" id="dotHoldings" onclick="setLowerView('holdings')" title="持仓"></button>
             <button class="page-dot" id="dotMarket" onclick="setLowerView('market')" title="行情分析"></button>
             <button class="page-dot" id="dotD" onclick="setLowerView('d')" title="D 战术仓"></button>
+            <button class="page-dot" id="dotTrades" onclick="setLowerView('trades')" title="交易记录"></button>
           </div>
           <button class="view-toggle-btn" id="viewToggleBtn" onclick="toggleLowerView()">看行情</button>
         </div>
@@ -1143,6 +1130,17 @@ INDEX_HTML = r"""<!doctype html>
                   </div>
                   <div class="d-preview-grid" id="dOptionPreview"></div>
                 </div>
+              </div>
+            </div>
+          </div>
+          <div class="lower-page">
+            <div class="trade-records">
+              <div class="trade-records-head">
+                <span class="trade-records-title">今日交易记录</span>
+                <span class="trade-records-count" id="tradeRecordsCount">--</span>
+              </div>
+              <div class="trade-records-scroll">
+                <table id="tradeRecords"></table>
               </div>
             </div>
           </div>
@@ -1487,6 +1485,9 @@ INDEX_HTML = r"""<!doctype html>
           return `<tr><td>${timeText}</td><td><span class="side-pill ${sideClass}">${sideLabel}</span></td><td>${r.strategy_group || '--'}</td><td><b>${r.symbol || '--'}</b></td><td>${Number(r.qty || 0).toFixed(2)}</td><td>${priceText}</td><td>${r.status || '--'}</td><td>${r.note || ''}</td></tr>`;
         }).join('') + `</tbody>`;
     }
+    async function loadTradeRecords() {
+      renderTradeRecords(await api('/api/trade_records'));
+    }
     async function loadCurve(period=currentPeriod) {
       currentPeriod = period;
       document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.period === period));
@@ -1686,6 +1687,9 @@ INDEX_HTML = r"""<!doctype html>
     function isDSectionHolding(value=currentHolding) {
       return value === 'D-D' || value === 'D-Q';
     }
+    function isTradesHolding(value=currentHolding) {
+      return value === 'TRADES';
+    }
     function renderDSection() {
       const intraday = dSection === 'intraday';
       const intradayPanel = document.getElementById('dIntradayPanel');
@@ -1697,23 +1701,31 @@ INDEX_HTML = r"""<!doctype html>
       const holdingsMode = lowerView === 'holdings';
       const marketMode = lowerView === 'market';
       const dMode = lowerView === 'd';
-      document.getElementById('lowerPanelTitle').textContent = dMode ? (dSection === 'intraday' ? 'D-D 日内交易' : 'D-Q 期权交易') : (marketMode ? '行情分析' : '持仓');
-      document.getElementById('viewToggleBtn').textContent = marketMode ? (isDSectionHolding() ? '看D' : '看持仓') : '看行情';
+      const tradesMode = lowerView === 'trades';
+      document.getElementById('lowerPanelTitle').textContent = tradesMode ? '今日交易记录' : dMode ? (dSection === 'intraday' ? 'D-D 日内交易' : 'D-Q 期权交易') : (marketMode ? '行情分析' : '持仓');
+      document.getElementById('viewToggleBtn').textContent = marketMode ? (isDSectionHolding() ? '看D' : isTradesHolding() ? '看交易' : '看持仓') : '看行情';
       document.querySelector('.holdings-panel').classList.toggle('market-view', marketMode);
       document.querySelector('.holdings-panel').classList.toggle('d-view', dMode);
+      document.querySelector('.holdings-panel').classList.toggle('trades-view', tradesMode);
       const track = document.getElementById('lowerTrack');
       track.classList.toggle('market', marketMode);
       track.classList.toggle('d', dMode);
+      track.classList.toggle('trades', tradesMode);
       document.getElementById('dotHoldings').classList.toggle('active', holdingsMode);
       document.getElementById('dotMarket').classList.toggle('active', marketMode);
       document.getElementById('dotD').classList.toggle('active', dMode);
+      document.getElementById('dotTrades').classList.toggle('active', tradesMode);
       renderDSection();
     }
     function setLowerView(view) {
-      lowerView = view === 'market' ? 'market' : view === 'd' ? 'd' : 'holdings';
+      lowerView = view === 'market' ? 'market' : view === 'd' ? 'd' : view === 'trades' ? 'trades' : 'holdings';
+      if (lowerView === 'trades') currentHolding = 'TRADES';
+      if (lowerView === 'holdings' && isTradesHolding()) currentHolding = 'ALL';
+      renderHoldings();
       renderLowerView();
       if (lowerView === 'market') loadMarketCategories(currentCategory);
       if (lowerView === 'd') loadDTactical();
+      if (lowerView === 'trades') loadTradeRecords();
     }
     function toggleLowerView() {
       if (lowerView === 'market') setLowerView(isDSectionHolding() ? 'd' : 'holdings');
@@ -1910,7 +1922,7 @@ INDEX_HTML = r"""<!doctype html>
       if (currentHolding === 'D-D') dSection = 'intraday';
       if (currentHolding === 'D-Q') dSection = 'options';
       renderHoldings();
-      setLowerView(isDSectionHolding() ? 'd' : 'holdings');
+      setLowerView(isTradesHolding() ? 'trades' : isDSectionHolding() ? 'd' : 'holdings');
     }));
     document.addEventListener('click', (e) => {
       const pop = document.getElementById('phasePopover');
@@ -1929,7 +1941,7 @@ INDEX_HTML = r"""<!doctype html>
       const dx = endX - lowerTouchX;
       lowerTouchX = null;
       if (Math.abs(dx) < 48) return;
-      if (dx < 0) setLowerView('market');
+      if (dx < 0) setLowerView(lowerView === 'market' ? 'd' : lowerView === 'd' ? 'trades' : 'market');
       else setLowerView('holdings');
     }, {passive:true});
     function openClearModal() {
