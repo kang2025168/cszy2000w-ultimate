@@ -1,7 +1,7 @@
 
 # =====================================================
 # Backward-compatible helper
-# - strategy_a.py expects: from app.common.config import load_settings
+# - legacy strategy modules may expect: from app.common.config import load_settings
 # =====================================================
 def load_settings():
     """

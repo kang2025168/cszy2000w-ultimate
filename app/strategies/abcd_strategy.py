@@ -55,23 +55,21 @@ def mark_strategy_group(symbol: str, strategy_group: str, *, capital_pool: str |
 
 
 def strategy_A_buy(symbol: str) -> StrategyResult:
-    """A 类买入占位：现在只做检查和日志，不真实下单。"""
+    """A class now delegates to the AC T state machine."""
     symbol = symbol.upper()
-    if symbol not in A_SYMBOLS:
-        return StrategyResult(False, "A", symbol, "buy", "not_a_allowed_symbol")
-    notional = default_notional("A")
-    allow, reason = can_open_position("A", notional)
-    if not allow:
-        return StrategyResult(False, "A", symbol, "buy", reason)
-    print(f"[A TODO] {symbol} 通过资金/风控检查，后续接入指数底仓买入逻辑 notional={notional:.2f}", flush=True)
-    return StrategyResult(True, "A", symbol, "buy", "placeholder_passed")
+    from app.strategy_ac_t import run_strategy_ac_t_once
+
+    result = run_strategy_ac_t_once(symbol=symbol)
+    return StrategyResult(True, "A", symbol, "buy", str(result))
 
 
 def strategy_A_sell(symbol: str) -> StrategyResult:
-    """A 类卖出占位：长期仓默认不自动卖出。"""
+    """A class now delegates to the AC T state machine."""
     symbol = symbol.upper()
-    print(f"[A TODO] {symbol} 长期底仓不自动卖出，后续只接人工/再平衡降低风险逻辑", flush=True)
-    return StrategyResult(True, "A", symbol, "sell", "placeholder_no_auto_sell")
+    from app.strategy_ac_t import run_strategy_ac_t_once
+
+    result = run_strategy_ac_t_once(symbol=symbol)
+    return StrategyResult(True, "A", symbol, "sell", str(result))
 
 
 def _b_buy_plan() -> dict:
@@ -125,23 +123,21 @@ def strategy_B_sell(symbol: str) -> StrategyResult:
 
 
 def strategy_C_buy(symbol: str) -> StrategyResult:
-    """C 类买入占位：现在只做检查和日志，不真实下单。"""
+    """C class now delegates to the AC T state machine."""
     symbol = symbol.upper()
-    if symbol not in C_SYMBOLS:
-        return StrategyResult(False, "C", symbol, "buy", "not_a_quality_symbol")
-    notional = default_notional("C")
-    allow, reason = can_open_position("C", notional)
-    if not allow:
-        return StrategyResult(False, "C", symbol, "buy", reason)
-    print(f"[C TODO] {symbol} 通过资金/风控检查，后续接入长期优质股买入逻辑 notional={notional:.2f}", flush=True)
-    return StrategyResult(True, "C", symbol, "buy", "placeholder_passed")
+    from app.strategy_ac_t import run_strategy_ac_t_once
+
+    result = run_strategy_ac_t_once(symbol=symbol)
+    return StrategyResult(True, "C", symbol, "buy", str(result))
 
 
 def strategy_C_sell(symbol: str) -> StrategyResult:
-    """C 类卖出占位：默认只输出建议，不自动卖长期优质股。"""
+    """C class now delegates to the AC T state machine."""
     symbol = symbol.upper()
-    print(f"[C TODO] {symbol} 长期优质股不自动卖出，后续接入基本面恶化/人工再平衡逻辑", flush=True)
-    return StrategyResult(True, "C", symbol, "sell", "placeholder_no_auto_sell")
+    from app.strategy_ac_t import run_strategy_ac_t_once
+
+    result = run_strategy_ac_t_once(symbol=symbol)
+    return StrategyResult(True, "C", symbol, "sell", str(result))
 
 
 def strategy_D_buy(symbol: str) -> StrategyResult:
@@ -198,4 +194,3 @@ def run_strategy(strategy_group: str, action: str, symbol: str | None = None):
     if action == "sell":
         return SELL_HANDLERS[group](symbol)
     raise ValueError(f"不支持的动作: {action}")
-

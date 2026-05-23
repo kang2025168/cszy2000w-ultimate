@@ -25,8 +25,14 @@ case "$cmd" in
     exec python -u app/getdata_alpaca.py
     ;;
   strategy_a)
-    echo "$(ts) old strategy_a main entry has been removed. Use independent bots." >&2
-    exit 2
+    echo "$(ts) strategy_a has been removed. Starting AC T strategy instead." >&2
+    shift
+    exec python -u -m app.strategy_ac_t "$@"
+    ;;
+  strategy_ac_t)
+    echo "$(ts) ===== START AC T strategy ====="
+    shift
+    exec python -u -m app.strategy_ac_t "$@"
     ;;
   b_buy_bot)
     echo "$(ts) ===== START independent B buy bot ====="
@@ -119,7 +125,7 @@ case "$cmd" in
     exit 0
     ;;
   *)
-    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_a|b_buy_bot|b_sell_bot|f_buy_bot|f_sell_bot|ops_volume|price_categories_once|price_categories_loop|unlock_can_sell|ultimate_startup|ultimate_web|ultimate_sync_positions|ultimate_flatten_d|ultimate_rebalance|ultimate_strategy|ultimate_dashboard_bot|ultimate_risk_bot|ultimate_rebalance_bot|ultimate_ac_bot|ultimate_d_buy_bot|ultimate_d_sell_bot|healthcheck}" >&2
+    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_ac_t|strategy_a|b_buy_bot|b_sell_bot|f_buy_bot|f_sell_bot|ops_volume|price_categories_once|price_categories_loop|unlock_can_sell|ultimate_startup|ultimate_web|ultimate_sync_positions|ultimate_flatten_d|ultimate_rebalance|ultimate_strategy|ultimate_dashboard_bot|ultimate_risk_bot|ultimate_rebalance_bot|ultimate_ac_bot|ultimate_d_buy_bot|ultimate_d_sell_bot|healthcheck}" >&2
     exit 2
     ;;
 esac

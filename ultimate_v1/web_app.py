@@ -104,7 +104,59 @@ def _allocation_payload() -> dict:
         "pool_risk_percents": allocation.pool_risk_percents,
         "used": used,
         "available": available,
+        "annual_goals": _annual_goals_payload(allocation),
     }
+
+
+def _setting_float(key: str, default: float) -> float:
+    raw = get_app_setting(key, env_str(key, str(default)))
+    try:
+        return float(raw or default)
+    except Exception:
+        return default
+
+
+def _annual_goals_payload(allocation) -> list[dict]:
+    """年度任务完成进度。金额类任务可通过 app_settings 或同名环境变量覆盖。"""
+    retirement_target = _setting_float("ANNUAL_RETIREMENT_TARGET", 7500.0)
+    retirement_current = _setting_float("ANNUAL_RETIREMENT_CURRENT", 0.0)
+
+    cash_target = _setting_float("ANNUAL_CASH_MIN_TARGET", 12500.0)
+    cash_current = _setting_float("ANNUAL_CASH_CURRENT", float(allocation.cash or 0.0))
+
+    return_target = _setting_float("ANNUAL_STOCK_RETURN_TARGET", 0.30)
+    start_equity = _setting_float("ANNUAL_STOCK_START_EQUITY", 0.0)
+    equity = float(allocation.equity or 0.0)
+    return_current = ((equity - start_equity) / start_equity) if start_equity > 0 else 0.0
+
+    return [
+        {
+            "key": "retirement",
+            "name": "退休金满额计划",
+            "desc": f"目标存满 ${retirement_target:,.0f}",
+            "current": retirement_current,
+            "target": retirement_target,
+            "unit": "money",
+        },
+        {
+            "key": "cash_guard",
+            "name": "现金安全垫",
+            "desc": f"最低保留 ${cash_target:,.0f}",
+            "current": cash_current,
+            "target": cash_target,
+            "unit": "money",
+        },
+        {
+            "key": "stock_growth",
+            "name": "股票账户跃迁",
+            "desc": "年度回报目标 30%",
+            "current": return_current,
+            "target": return_target,
+            "unit": "percent",
+            "start_equity": start_equity,
+            "equity": equity,
+        },
+    ]
 
 
 def _parse_margin_usage_setting() -> float:
@@ -616,6 +668,23 @@ INDEX_HTML = r"""<!doctype html>
     .bar { height:9px; border-radius:999px; overflow:hidden; background:#e9edf3; margin-top:11px; }
     .fill { height:100%; width:0%; background:var(--blue); }
     .right-top { display:grid; grid-template-columns:1.05fr .95fr; gap:16px; min-height:286px; }
+    .annual-panel { min-height:154px; }
+    .annual-panel .mobile-collapse-body { display:block; }
+    .annual-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+    .annual-kicker { color:var(--muted); font-size:12px; font-weight:800; }
+    .annual-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; }
+    .annual-goal { border:1px solid #e3e8ef; border-radius:8px; padding:12px; background:#fbfcfe; min-height:94px; display:grid; gap:9px; align-content:start; }
+    .annual-goal-top { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+    .annual-name { font-size:13px; font-weight:950; color:var(--ink); line-height:1.25; }
+    .annual-desc { margin-top:3px; color:var(--muted); font-size:11px; font-weight:750; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .annual-pct { color:var(--muted); font-size:12px; font-weight:950; white-space:nowrap; }
+    .annual-bar { height:8px; border-radius:999px; background:#e9edf3; overflow:hidden; }
+    .annual-fill { height:100%; width:0%; border-radius:999px; background:var(--blue); }
+    .annual-goal.retirement .annual-fill { background:var(--violet); }
+    .annual-goal.cash_guard .annual-fill { background:var(--green); }
+    .annual-goal.stock_growth .annual-fill { background:var(--gold); }
+    .annual-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--muted); font-size:11px; font-weight:800; }
+    .annual-foot span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .donut-panel, .bot-panel { min-height:286px; display:flex; flex-direction:column; }
     .bot-panel .mobile-collapse-body { flex:1; min-height:0; display:flex; flex-direction:column; }
     .donut-wrap { flex:1; display:flex; align-items:center; justify-content:center; gap:18px; min-height:160px; }
@@ -782,9 +851,10 @@ INDEX_HTML = r"""<!doctype html>
       .holdings-panel { order:2; }
       .capital-hero { order:3; }
       .donut-panel { order:4; }
-      .bot-panel { order:5; }
-      .trade-records-panel { order:6; }
-      .left-titlebar, .chart-panel, .trade-records-panel, .holdings-panel, .capital-hero, .donut-panel, .bot-panel { width:100%; }
+      .annual-panel { order:5; }
+      .bot-panel { order:6; }
+      .trade-records-panel { order:7; }
+      .left-titlebar, .chart-panel, .trade-records-panel, .holdings-panel, .capital-hero, .donut-panel, .annual-panel, .bot-panel { width:100%; }
       .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:center; }
       .brand-lockup { gap:8px; flex:1 1 auto; }
       .brand-logo { width:38px; height:38px; border-radius:8px; }
@@ -827,6 +897,12 @@ INDEX_HTML = r"""<!doctype html>
       .pool-card { min-height:112px; padding:12px; }
       .pool-value { font-size:25px; }
       .pool-amounts { font-size:11px; gap:6px; }
+      .annual-panel { min-height:auto; }
+      .annual-panel .mobile-collapse-body { display:none; }
+      .annual-panel.mobile-open .mobile-collapse-body { display:block; }
+      .annual-head { margin-bottom:10px; }
+      .annual-grid { grid-template-columns:1fr; gap:9px; }
+      .annual-goal { min-height:84px; padding:11px; }
       .donut-panel, .bot-panel { min-height:auto; }
       .donut-wrap { min-height:188px; justify-content:center; gap:14px; }
       #capitalDonut { width:150px; height:150px; }
@@ -940,6 +1016,16 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </div>
       <div class="right-stack">
+        <div class="panel annual-panel mobile-collapsible mobile-open" id="annualPanel">
+          <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('annualPanel')"><span>年度任务完成进度</span><span></span></button>
+          <div class="mobile-collapse-body">
+            <div class="annual-head">
+              <h2>年度任务完成进度</h2>
+              <span class="annual-kicker">2026 Goals</span>
+            </div>
+            <div class="annual-grid" id="annualGoals"></div>
+          </div>
+        </div>
         <div class="right-top">
           <div class="panel donut-panel mobile-collapsible" id="donutPanel">
             <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('donutPanel')"><span>资金比例</span><span></span></button>
@@ -1119,6 +1205,33 @@ INDEX_HTML = r"""<!doctype html>
       return String(Math.round(n));
     }
     function metric(label, value) { return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`; }
+    function goalValue(goal, value) {
+      return goal.unit === 'percent' ? `${(Number(value || 0) * 100).toFixed(1)}%` : money(value);
+    }
+    function renderAnnualGoals(goals) {
+      const box = document.getElementById('annualGoals');
+      if (!box) return;
+      const rows = goals || [];
+      box.innerHTML = rows.length ? rows.map(goal => {
+        const target = Number(goal.target || 0);
+        const current = Number(goal.current || 0);
+        const rawPct = target > 0 ? current / target * 100 : 0;
+        const donePct = Math.max(0, Math.min(100, rawPct));
+        const pctText = `${Math.max(0, rawPct).toFixed(0)}%`;
+        const currentLabel = goalValue(goal, current);
+        const targetLabel = goalValue(goal, target);
+        const extra = goal.key === 'stock_growth' && !Number(goal.start_equity || 0) ? '设置年初本金后计算' : `${currentLabel} / ${targetLabel}`;
+        return `
+          <div class="annual-goal ${goal.key || ''}">
+            <div class="annual-goal-top">
+              <div><div class="annual-name">${goal.name || '--'}</div><div class="annual-desc">${goal.desc || ''}</div></div>
+              <span class="annual-pct">${pctText}</span>
+            </div>
+            <div class="annual-bar"><div class="annual-fill" style="width:${donePct}%"></div></div>
+            <div class="annual-foot"><span>${extra}</span><span>${rawPct >= 100 ? '已达成' : '推进中'}</span></div>
+          </div>`;
+      }).join('') : '<div class="small-muted">暂无年度任务数据</div>';
+    }
     function poolCard(g, cap) {
       const riskTarget = Number(cap.targets[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
       const displayTarget = riskTarget > 0 ? riskTarget : baseTarget;
@@ -1732,6 +1845,7 @@ INDEX_HTML = r"""<!doctype html>
         document.getElementById('metrics').innerHTML = [
           metric('Equity', money(cap.equity)), metric('Buying Power', money(cap.buying_power)), metric('Portfolio', money(cap.portfolio_value)), metric('Cash', money(cap.cash))
         ].join('');
+        renderAnnualGoals(cap.annual_goals || []);
         document.getElementById('pools').innerHTML = ['A','B','C','D'].map(g => poolCard(g, cap)).join('');
         const usedTotal = Number(cap.used_total || 0);
         const usableTotal = Number(cap.usable_total || 0);

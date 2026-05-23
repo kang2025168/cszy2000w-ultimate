@@ -1,23 +1,19 @@
 from __future__ import annotations
 
-"""A/C 低频机器人。
-
-负责 A/C 低频买卖入口。scan 模式当前只打心跳；
-手动 buy/sell 时需要指定 --group A/C 和 --symbol。
-"""
+"""A/C core-position intraday T bot."""
 
 import argparse
 import time
 
 from ultimate_v1.schema import ensure_schema
 from ultimate_v1.state_store import heartbeat, is_bot_enabled
-from app.strategies.abcd_strategy import strategy_A_buy, strategy_A_sell, strategy_C_buy, strategy_C_sell
+from app.strategy_ac_t import run_strategy_ac_t_once
 
 BOT_NAME = "ac_bot"
 
 
 def run_once(action: str = "scan", symbol: str | None = None, group: str | None = None):
-    """低频执行入口；scan 先只打心跳，buy/sell 可手动指定。"""
+    """Run one AC T-strategy pass. buy/sell are kept as aliases for one symbol pass."""
     ensure_schema()
     if not is_bot_enabled(BOT_NAME):
         heartbeat(BOT_NAME, "paused", "机器人开关关闭")
@@ -25,20 +21,17 @@ def run_once(action: str = "scan", symbol: str | None = None, group: str | None 
         return None
     heartbeat(BOT_NAME, "running", f"action={action}")
     if action == "scan":
-        print("[AC BOT] 低频扫描占位：后续接 A/C 候选列表和再平衡建议", flush=True)
-        return None
-    if not symbol or not group:
-        raise ValueError("A/C 买卖需要指定 --group 和 --symbol")
-    group = group.upper()
-    if group == "A":
-        return strategy_A_buy(symbol) if action == "buy" else strategy_A_sell(symbol)
-    if group == "C":
-        return strategy_C_buy(symbol) if action == "buy" else strategy_C_sell(symbol)
-    raise ValueError("ac_bot 只支持 A 或 C")
+        return run_strategy_ac_t_once(symbol=symbol)
+    if action in {"buy", "sell"}:
+        if not symbol:
+            raise ValueError("A/C manual pass needs --symbol")
+        print(f"[AC BOT] action={action} is handled by AC_T state machine for {symbol}", flush=True)
+        return run_strategy_ac_t_once(symbol=symbol)
+    raise ValueError("ac_bot only supports scan/buy/sell")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="A/C 低频机器人")
+    parser = argparse.ArgumentParser(description="A/C intraday T bot")
     parser.add_argument("action", nargs="?", default="scan", choices=["scan", "buy", "sell"])
     parser.add_argument("--group", choices=["A", "C"])
     parser.add_argument("--symbol")
