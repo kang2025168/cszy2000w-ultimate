@@ -129,6 +129,11 @@ def _annual_goals_payload(allocation) -> list[dict]:
     equity = float(allocation.equity or 0.0)
     return_current = ((equity - start_equity) / start_equity) if start_equity > 0 else 0.0
 
+    weekly_fitness_target = _setting_float("WEEKLY_FITNESS_TARGET", 4.0)
+    weekly_fitness_current = _setting_float("WEEKLY_FITNESS_CURRENT", 0.0)
+    weekly_words_target = _setting_float("WEEKLY_WORDS_TARGET", 50.0)
+    weekly_words_current = _setting_float("WEEKLY_WORDS_CURRENT", 0.0)
+
     return [
         {
             "key": "retirement",
@@ -155,6 +160,24 @@ def _annual_goals_payload(allocation) -> list[dict]:
             "unit": "percent",
             "start_equity": start_equity,
             "equity": equity,
+        },
+        {
+            "key": "fitness",
+            "name": "体能基石计划",
+            "desc": "每周 3 次健身房 + 1 次 10 公里",
+            "current": weekly_fitness_current,
+            "target": weekly_fitness_target,
+            "unit": "count",
+            "suffix": "次",
+        },
+        {
+            "key": "vocabulary",
+            "name": "词汇复利计划",
+            "desc": "每周记 50 个单词",
+            "current": weekly_words_current,
+            "target": weekly_words_target,
+            "unit": "count",
+            "suffix": "个",
         },
     ]
 
@@ -668,12 +691,15 @@ INDEX_HTML = r"""<!doctype html>
     .bar { height:9px; border-radius:999px; overflow:hidden; background:#e9edf3; margin-top:11px; }
     .fill { height:100%; width:0%; background:var(--blue); }
     .right-top { display:grid; grid-template-columns:1.05fr .95fr; gap:16px; min-height:286px; }
-    .annual-panel { min-height:154px; }
+    .annual-panel { min-height:270px; }
     .annual-panel .mobile-collapse-body { display:block; }
     .annual-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
     .annual-kicker { color:var(--muted); font-size:12px; font-weight:800; }
-    .annual-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; }
+    .annual-grid { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:10px; }
     .annual-goal { border:1px solid #e3e8ef; border-radius:8px; padding:12px; background:#fbfcfe; min-height:94px; display:grid; gap:9px; align-content:start; }
+    .annual-goal { grid-column:span 2; }
+    .annual-goal.fitness { grid-column:span 3; }
+    .annual-goal.vocabulary { grid-column:span 3; }
     .annual-goal-top { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
     .annual-name { font-size:13px; font-weight:950; color:var(--ink); line-height:1.25; }
     .annual-desc { margin-top:3px; color:var(--muted); font-size:11px; font-weight:750; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -683,6 +709,8 @@ INDEX_HTML = r"""<!doctype html>
     .annual-goal.retirement .annual-fill { background:var(--violet); }
     .annual-goal.cash_guard .annual-fill { background:var(--green); }
     .annual-goal.stock_growth .annual-fill { background:var(--gold); }
+    .annual-goal.fitness .annual-fill { background:var(--blue); }
+    .annual-goal.vocabulary .annual-fill { background:var(--cyan); }
     .annual-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--muted); font-size:11px; font-weight:800; }
     .annual-foot span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .donut-panel, .bot-panel { min-height:286px; display:flex; flex-direction:column; }
@@ -1204,7 +1232,9 @@ INDEX_HTML = r"""<!doctype html>
     }
     function metric(label, value) { return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`; }
     function goalValue(goal, value) {
-      return goal.unit === 'percent' ? `${(Number(value || 0) * 100).toFixed(1)}%` : money(value);
+      if (goal.unit === 'percent') return `${(Number(value || 0) * 100).toFixed(1)}%`;
+      if (goal.unit === 'count') return `${Number(value || 0).toFixed(0)}${goal.suffix || ''}`;
+      return money(value);
     }
     function renderAnnualGoals(goals) {
       const box = document.getElementById('annualGoals');
