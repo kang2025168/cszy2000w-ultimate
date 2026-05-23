@@ -146,6 +146,9 @@ def _annual_goals_payload(allocation) -> list[dict]:
     return_target = _setting_float("ANNUAL_STOCK_RETURN_TARGET", 0.30)
     start_equity = _setting_float("ANNUAL_STOCK_START_EQUITY", 0.0)
     equity = float(allocation.equity or 0.0)
+    if start_equity <= 0 and equity > 0:
+        start_equity = equity
+        set_app_setting("ANNUAL_STOCK_START_EQUITY", f"{start_equity:.2f}")
     return_current = ((equity - start_equity) / start_equity) if start_equity > 0 else 0.0
 
     weekly_fitness_target = _setting_float("WEEKLY_FITNESS_TARGET", 4.0)
@@ -161,6 +164,8 @@ def _annual_goals_payload(allocation) -> list[dict]:
             "current": retirement_current,
             "target": retirement_target,
             "unit": "money",
+            "step": 500,
+            "action_label": "+500",
         },
         {
             "key": "cash_guard",
@@ -169,6 +174,8 @@ def _annual_goals_payload(allocation) -> list[dict]:
             "current": cash_current,
             "target": cash_target,
             "unit": "money",
+            "step": 500,
+            "action_label": "+500",
         },
         {
             "key": "stock_growth",
@@ -210,6 +217,8 @@ def _advance_annual_goal(goal_key: str) -> dict:
     _ensure_weekly_goal_reset()
 
     specs = {
+        "retirement": ("ANNUAL_RETIREMENT_CURRENT", "ANNUAL_RETIREMENT_TARGET", 500.0),
+        "cash_guard": ("ANNUAL_CASH_CURRENT", "ANNUAL_CASH_MIN_TARGET", 500.0),
         "fitness": ("WEEKLY_FITNESS_CURRENT", "WEEKLY_FITNESS_TARGET", 1.0),
         "vocabulary": ("WEEKLY_WORDS_CURRENT", "WEEKLY_WORDS_TARGET", 10.0),
     }
@@ -1295,7 +1304,7 @@ INDEX_HTML = r"""<!doctype html>
         const pctText = `${Math.max(0, rawPct).toFixed(0)}%`;
         const currentLabel = goalValue(goal, current);
         const targetLabel = goalValue(goal, target);
-        const extra = goal.key === 'stock_growth' && !Number(goal.start_equity || 0) ? '设置年初本金后计算' : `${currentLabel} / ${targetLabel}`;
+        const extra = `${currentLabel} / ${targetLabel}`;
         return `
           <div class="annual-goal ${goal.key || ''}">
             <div class="annual-goal-top">
@@ -1309,6 +1318,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     async function advanceAnnualGoal(goalKey) {
       const messages = {
+        retirement: '确认退休账户已新增 $500？',
+        cash_guard: '确认现金安全垫已新增 $500？',
         fitness: '确认完成一次健身/10公里任务？',
         vocabulary: '确认已经记了 10 个单词？'
       };
