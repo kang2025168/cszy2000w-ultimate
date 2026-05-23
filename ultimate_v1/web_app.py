@@ -141,7 +141,7 @@ def _annual_goals_payload(allocation) -> list[dict]:
     retirement_current = _setting_float("ANNUAL_RETIREMENT_CURRENT", 0.0)
 
     cash_target = _setting_float("ANNUAL_CASH_MIN_TARGET", 12500.0)
-    cash_current = _setting_float("ANNUAL_CASH_CURRENT", float(allocation.cash or 0.0))
+    cash_current = _setting_float("ANNUAL_CASH_CURRENT", 0.0)
 
     return_target = _setting_float("ANNUAL_STOCK_RETURN_TARGET", 0.30)
     start_equity = _setting_float("ANNUAL_STOCK_START_EQUITY", 0.0)
