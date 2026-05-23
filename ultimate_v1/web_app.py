@@ -116,8 +116,27 @@ def _setting_float(key: str, default: float) -> float:
         return default
 
 
+def _weekly_goal_key() -> str:
+    """按洛杉矶时间生成每周任务 key，新的一周自动重置。"""
+    now = datetime.now(LA_TZ) if LA_TZ else datetime.now()
+    year, week, _weekday = now.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def _ensure_weekly_goal_reset() -> None:
+    current_key = _weekly_goal_key()
+    stored_key = get_app_setting("WEEKLY_GOALS_WEEK_KEY", "")
+    if stored_key == current_key:
+        return
+    set_app_setting("WEEKLY_FITNESS_CURRENT", "0")
+    set_app_setting("WEEKLY_WORDS_CURRENT", "0")
+    set_app_setting("WEEKLY_GOALS_WEEK_KEY", current_key)
+
+
 def _annual_goals_payload(allocation) -> list[dict]:
     """年度任务完成进度。金额类任务可通过 app_settings 或同名环境变量覆盖。"""
+    _ensure_weekly_goal_reset()
+
     retirement_target = _setting_float("ANNUAL_RETIREMENT_TARGET", 7500.0)
     retirement_current = _setting_float("ANNUAL_RETIREMENT_CURRENT", 0.0)
 
@@ -169,6 +188,8 @@ def _annual_goals_payload(allocation) -> list[dict]:
             "target": weekly_fitness_target,
             "unit": "count",
             "suffix": "次",
+            "step": 1,
+            "action_label": "+",
         },
         {
             "key": "vocabulary",
@@ -178,8 +199,30 @@ def _annual_goals_payload(allocation) -> list[dict]:
             "target": weekly_words_target,
             "unit": "count",
             "suffix": "个",
+            "step": 10,
+            "action_label": "+10",
         },
     ]
+
+
+def _advance_annual_goal(goal_key: str) -> dict:
+    """推进可手动打卡的年度任务。"""
+    _ensure_weekly_goal_reset()
+
+    specs = {
+        "fitness": ("WEEKLY_FITNESS_CURRENT", "WEEKLY_FITNESS_TARGET", 1.0),
+        "vocabulary": ("WEEKLY_WORDS_CURRENT", "WEEKLY_WORDS_TARGET", 10.0),
+    }
+    if goal_key not in specs:
+        return {"ok": False, "error": "不支持的年度任务"}
+    current_key, target_key, step = specs[goal_key]
+    current = _setting_float(current_key, 0.0)
+    target = _setting_float(target_key, 0.0)
+    next_value = current + step
+    if target > 0:
+        next_value = min(next_value, target)
+    set_app_setting(current_key, str(int(next_value) if float(next_value).is_integer() else next_value))
+    return {"ok": True, "goal": goal_key, "current": next_value, "target": target}
 
 
 def _parse_margin_usage_setting() -> float:
@@ -704,6 +747,10 @@ INDEX_HTML = r"""<!doctype html>
     .annual-name { font-size:13px; font-weight:950; color:var(--ink); line-height:1.25; }
     .annual-desc { margin-top:3px; color:var(--muted); font-size:11px; font-weight:750; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .annual-pct { color:var(--muted); font-size:12px; font-weight:950; white-space:nowrap; }
+    .annual-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+    .annual-step-btn { width:42px; height:28px; border:1px solid #bfdbfe; border-radius:7px; background:#eff6ff; color:#075985; font-size:13px; font-weight:950; padding:0; }
+    .annual-step-btn:hover { background:#dbeafe; }
+    .annual-step-btn:active { transform:scale(.96); }
     .annual-bar { height:8px; border-radius:999px; background:#e9edf3; overflow:hidden; }
     .annual-fill { height:100%; width:0%; border-radius:999px; background:var(--blue); }
     .annual-goal.retirement .annual-fill { background:var(--violet); }
@@ -1253,12 +1300,22 @@ INDEX_HTML = r"""<!doctype html>
           <div class="annual-goal ${goal.key || ''}">
             <div class="annual-goal-top">
               <div><div class="annual-name">${goal.name || '--'}</div><div class="annual-desc">${goal.desc || ''}</div></div>
-              <span class="annual-pct">${pctText}</span>
+              <div class="annual-actions">${goal.step ? `<button class="annual-step-btn" onclick="advanceAnnualGoal('${goal.key}')">${goal.action_label || '+'}</button>` : ''}<span class="annual-pct">${pctText}</span></div>
             </div>
             <div class="annual-bar"><div class="annual-fill" style="width:${donePct}%"></div></div>
             <div class="annual-foot"><span>${extra}</span><span>${rawPct >= 100 ? '已达成' : '推进中'}</span></div>
           </div>`;
       }).join('') : '<div class="small-muted">暂无年度任务数据</div>';
+    }
+    async function advanceAnnualGoal(goalKey) {
+      const messages = {
+        fitness: '确认完成一次健身/10公里任务？',
+        vocabulary: '确认已经记了 10 个单词？'
+      };
+      if (!confirm(messages[goalKey] || '确认推进这个任务？')) return;
+      const result = await postJson('/api/annual_goal_step', {goal: goalKey});
+      if (!result.ok) { alert(result.error || '年度任务更新失败'); return; }
+      await loadAll();
     }
     function poolCard(g, cap) {
       const riskTarget = Number(cap.targets[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
@@ -2254,6 +2311,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(result)
             elif path == "/api/d_option_buy":
                 self._send_json(submit_option_combo(payload))
+            elif path == "/api/annual_goal_step":
+                goal = str(payload.get("goal") or "").strip()
+                self._send_json(_advance_annual_goal(goal))
             elif path == "/api/bot_control":
                 bot_name = str(payload.get("bot_name") or "")
                 enabled_raw = payload.get("enabled")
