@@ -118,7 +118,7 @@ def _setting_float(key: str, default: float) -> float:
 
 def _weekly_goal_key() -> str:
     """按洛杉矶时间生成每周任务 key，新的一周自动重置。"""
-    now = datetime.now(LA_TZ) if LA_TZ else datetime.now()
+    now = _now_market_tz()
     year, week, _weekday = now.isocalendar()
     return f"{year}-W{week:02d}"
 
