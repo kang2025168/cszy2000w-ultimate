@@ -124,6 +124,7 @@ def ensure_position_holdings_table() -> None:
                   stock_type VARCHAR(8),
                   status VARCHAR(16) DEFAULT 'open',
                   qty DECIMAL(18,6) DEFAULT 0,
+                  initial_entry_price DECIMAL(18,6),
                   avg_entry_price DECIMAL(18,6),
                   current_price DECIMAL(18,6),
                   market_value DECIMAL(18,2),
@@ -156,6 +157,17 @@ def ensure_position_holdings_table() -> None:
             if symbol_len is not None and symbol_len < 64:
                 cur.execute("ALTER TABLE position_holdings MODIFY COLUMN symbol VARCHAR(64) NOT NULL")
                 print("[SCHEMA] upgraded position_holdings.symbol to VARCHAR(64)", flush=True)
+            if not _column_exists(conn, "position_holdings", "initial_entry_price"):
+                cur.execute("ALTER TABLE position_holdings ADD COLUMN initial_entry_price DECIMAL(18,6) NULL AFTER qty")
+                cur.execute(
+                    """
+                    UPDATE position_holdings
+                    SET initial_entry_price=avg_entry_price
+                    WHERE initial_entry_price IS NULL
+                      AND avg_entry_price IS NOT NULL
+                    """
+                )
+                print("[SCHEMA] added position_holdings.initial_entry_price", flush=True)
 
 
 def ensure_control_state_tables() -> None:

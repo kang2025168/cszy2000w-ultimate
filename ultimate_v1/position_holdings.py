@@ -54,6 +54,7 @@ def upsert_buy_holding(
                         current_price=%s, stop_loss_price=%s, take_profit_price=%s,
                         b_stage=%s, capital_pool=%s, margin_used=%s,
                         last_order_id=%s, last_order_side='buy',
+                        initial_entry_price=COALESCE(initial_entry_price, %s),
                         last_update_time=NOW()
                     WHERE id=%s
                     """,
@@ -69,6 +70,7 @@ def upsert_buy_holding(
                         capital_pool or group,
                         margin_used,
                         last_order_id,
+                        avg_entry_price,
                         row["id"],
                     ),
                 )
@@ -77,12 +79,12 @@ def upsert_buy_holding(
                     """
                     INSERT INTO position_holdings (
                         symbol, strategy_group, stock_type, status, qty,
-                        avg_entry_price, current_price, market_value, cost_basis,
+                        initial_entry_price, avg_entry_price, current_price, market_value, cost_basis,
                         entry_time, stop_loss_price, take_profit_price, b_stage,
                         capital_pool, margin_used, last_order_id, last_order_side,
                         last_update_time
                     ) VALUES (
-                        %s,%s,%s,'open',%s,%s,%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s,'buy',NOW()
+                        %s,%s,%s,'open',%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s,'buy',NOW()
                     )
                     """,
                     (
@@ -90,6 +92,7 @@ def upsert_buy_holding(
                         group,
                         stock_type or group,
                         qty,
+                        avg_entry_price,
                         avg_entry_price,
                         price,
                         market_value,
@@ -202,22 +205,23 @@ def sync_open_holding_from_position(pos, strategy_group: str = "B") -> None:
                         cost_basis=%s, unrealized_pnl=%s, unrealized_pnl_pct=%s,
                         holding_days=IF(entry_time IS NULL, 0, DATEDIFF(NOW(), entry_time)),
                         strategy_group=%s, stock_type=%s, capital_pool=%s,
+                        initial_entry_price=COALESCE(initial_entry_price, %s),
                         last_update_time=NOW()
                     WHERE id=%s
                     """,
-                    (qty, avg, current, market_value, qty * avg, unrealized, unrealized_pct, keep_group, keep_type, keep_pool, row["id"]),
+                    (qty, avg, current, market_value, qty * avg, unrealized, unrealized_pct, keep_group, keep_type, keep_pool, avg, row["id"]),
                 )
             else:
                 group = (strategy_group or "B").upper()
                 cur.execute(
                     """
                     INSERT INTO position_holdings (
-                        symbol, strategy_group, stock_type, status, qty, avg_entry_price,
+                        symbol, strategy_group, stock_type, status, qty, initial_entry_price, avg_entry_price,
                         current_price, market_value, cost_basis, unrealized_pnl,
                         unrealized_pnl_pct, entry_time, capital_pool, last_update_time, notes
-                    ) VALUES (%s,%s,%s,'open',%s,%s,%s,%s,%s,%s,%s,NOW(),%s,NOW(),%s)
+                    ) VALUES (%s,%s,%s,'open',%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,NOW(),%s)
                     """,
-                    (symbol, group, group, qty, avg, current, market_value, qty * avg, unrealized, unrealized_pct, group, "auto-created from Alpaca sync default=B"),
+                    (symbol, group, group, qty, avg, avg, current, market_value, qty * avg, unrealized, unrealized_pct, group, "auto-created from Alpaca sync default=B"),
                 )
 
 
