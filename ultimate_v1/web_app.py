@@ -93,6 +93,31 @@ def _allocation_payload() -> dict:
     usable_total = sum(allocation.target_for(g) for g in ("A", "B", "C", "D"))
     base_total = sum(allocation.base_targets.get(g, 0.0) for g in ("A", "B", "C", "D"))
     used_total = sum(used.get(g, 0.0) for g in ("A", "B", "C", "D"))
+    x_target = _setting_float("X_CASH_POOL_TARGET", _setting_float("ANNUAL_CASH_MIN_TARGET", 12500.0))
+    x_current = _setting_float("X_CASH_POOL_CURRENT", _setting_float("ANNUAL_CASH_CURRENT", 0.0))
+    z_target_default = max(float(allocation.equity or 0.0) * _setting_float("Z_BOND_POOL_TARGET_PCT", 0.15), 0.0)
+    z_target = _setting_float("Z_BOND_POOL_TARGET", z_target_default)
+    z_current = _setting_float("Z_BOND_POOL_CURRENT", 0.0)
+    defensive_pools = {
+        "X": {
+            "label": "现金底仓",
+            "current": x_current,
+            "target": x_target,
+            "available": max(0.0, x_target - x_current),
+            "base_percent": 0.0,
+            "risk_percent": 1.0,
+            "note": "最低现金安全垫",
+        },
+        "Z": {
+            "label": "国债底仓",
+            "current": z_current,
+            "target": z_target,
+            "available": max(0.0, z_target - z_current),
+            "base_percent": z_target / allocation.equity if allocation.equity > 0 else 0.0,
+            "risk_percent": 1.0,
+            "note": "短债/货币类慢现金",
+        },
+    }
     return {
         "ok": True,
         "mode": allocation.mode,
@@ -119,6 +144,7 @@ def _allocation_payload() -> dict:
         "pool_risk_percents": allocation.pool_risk_percents,
         "used": used,
         "available": available,
+        "defensive_pools": defensive_pools,
         "annual_goals": _annual_goals_payload(allocation),
     }
 
@@ -942,8 +968,10 @@ INDEX_HTML = r"""<!doctype html>
     .exposure-fill { height:100%; width:0%; background:linear-gradient(90deg, #15936a, #d97706); }
     .pool-grid { margin-top:26px; display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; }
     .pool-card { border:1px solid var(--line); border-radius:8px; padding:14px; min-height:126px; }
+    .pool-card.defensive-pool { background:#fbfcfe; }
     .pool-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
     .pool-name { font-size:13px; color:var(--muted); font-weight:700; }
+    .pool-label { color:var(--ink); font-weight:850; }
     .pool-value { font-size:25px; font-weight:850; margin-top:8px; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .pool-amounts { margin-top:2px; display:flex; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; }
     .pool-amounts span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -1459,7 +1487,7 @@ INDEX_HTML = r"""<!doctype html>
     };
     const pct = v => `${(Number(v || 0) * 100).toFixed(2)}%`;
     const cls = v => Number(v || 0) < 0 ? 'neg' : Number(v || 0) > 0 ? 'pos' : '';
-    const colors = {A:'#2563eb', B:'#d97706', C:'#15936a', D:'#7c3aed', CASH:'#d0d5dd'};
+    const colors = {A:'#2563eb', B:'#d97706', C:'#15936a', D:'#7c3aed', X:'#0f766e', Z:'#475569', CASH:'#d0d5dd'};
     let currentPeriod = 'week';
     let currentHolding = 'ALL';
     let lowerView = 'holdings';
@@ -1544,6 +1572,16 @@ INDEX_HTML = r"""<!doctype html>
       await loadAll();
     }
     function poolCard(g, cap) {
+      const defensive = cap.defensive_pools?.[g];
+      if (defensive) {
+        const target = Number(defensive.target || 0);
+        const used = Number(defensive.current || 0);
+        const av = Number(defensive.available || 0);
+        const w = target > 0 ? Math.min(100, used / target * 100) : 0;
+        const basePct = Number(defensive.base_percent || 0) * 100;
+        const sub = g === 'X' ? '底仓现金 · 不参与交易' : `目标 ${basePct.toFixed(1)}% · 不参与交易`;
+        return `<div class="pool-card defensive-pool"><div class="pool-head"><div><div class="pool-name">${g} 资金池 <span class="pool-label">${defensive.label}</span></div><div class="small-muted">${sub}</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>底仓目标 ${money(target)}</span><span>缺口 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
+      }
       const riskTarget = Number(cap.targets[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
       const displayTarget = riskTarget > 0 ? riskTarget : baseTarget;
       const used = Number(cap.used[g] || 0), av = Number(cap.available[g] || 0);
@@ -1555,9 +1593,11 @@ INDEX_HTML = r"""<!doctype html>
     function drawDonut(cap) {
       const canvas = document.getElementById('capitalDonut'), ctx = canvas.getContext('2d');
       const usedEntries = ['A','B','C','D'].map(g => [g, Math.abs(Number(cap.used?.[g] || 0))]).filter(x => x[1] > 0);
+      const defensiveEntries = ['X','Z'].map(g => [g, Math.abs(Number(cap.defensive_pools?.[g]?.current || 0))]).filter(x => x[1] > 0);
       const usedTotal = usedEntries.reduce((s, x) => s + x[1], 0);
-      const cash = Math.max(0, Number(cap.equity || 0) - usedTotal);
-      const entries = cash > 0 ? [...usedEntries, ['现金', cash, 'CASH']] : usedEntries;
+      const defensiveTotal = defensiveEntries.reduce((s, x) => s + x[1], 0);
+      const cash = Math.max(0, Number(cap.equity || 0) - usedTotal - defensiveTotal);
+      const entries = cash > 0 ? [...usedEntries, ...defensiveEntries, ['未分配', cash, 'CASH']] : [...usedEntries, ...defensiveEntries];
       const total = entries.reduce((s, x) => s + x[1], 0) || 1;
       ctx.clearRect(0,0,canvas.width,canvas.height);
       let start = -Math.PI / 2;
@@ -2176,7 +2216,7 @@ INDEX_HTML = r"""<!doctype html>
           metric('Equity', money(cap.equity)), metric('Buying Power', money(cap.buying_power)), metric('Portfolio', money(cap.portfolio_value)), metric('Cash', money(cap.cash))
         ].join('');
         renderAnnualGoals(cap.annual_goals || []);
-        document.getElementById('pools').innerHTML = ['A','B','C','D'].map(g => poolCard(g, cap)).join('');
+        document.getElementById('pools').innerHTML = ['A','B','C','D','X','Z'].map(g => poolCard(g, cap)).join('');
         const usedTotal = Number(cap.used_total || 0);
         const usableTotal = Number(cap.usable_total || 0);
         const baseTotal = Number(cap.base_total || 0);
