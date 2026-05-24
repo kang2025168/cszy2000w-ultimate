@@ -514,19 +514,31 @@ def _holdings_payload() -> dict:
     """读取持仓展示表，供前端表格渲染。"""
     rows = fetch_all(
         """
-        SELECT symbol,
-               CASE
-                   WHEN strategy_group IN ('A','B','C','D','F') THEN strategy_group
-                   WHEN stock_type IN ('A','B','C','D','F') THEN stock_type
-                   ELSE strategy_group
-               END AS strategy_group,
-               stock_type, status, qty, avg_entry_price,
+        SELECT symbol, normalized_group AS strategy_group, stock_type, status, qty, avg_entry_price,
                current_price, market_value, cost_basis, unrealized_pnl,
                unrealized_pnl_pct, realized_pnl, entry_time, exit_time,
                holding_days, stop_loss_price, take_profit_price, b_stage,
                capital_pool, margin_used, last_order_side, last_update_time
-        FROM position_holdings
-        ORDER BY FIELD(status, 'open', 'needs_review', 'closed'), strategy_group, symbol, id DESC
+        FROM (
+            SELECT h.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY UPPER(symbol), normalized_group
+                       ORDER BY FIELD(status, 'open', 'needs_review', 'closed'),
+                                ABS(COALESCE(qty, 0)) DESC,
+                                id DESC
+                   ) AS rn
+            FROM (
+                SELECT position_holdings.*,
+                       CASE
+                           WHEN strategy_group IN ('A','B','C','D','F') THEN strategy_group
+                           WHEN stock_type IN ('A','B','C','D','F') THEN stock_type
+                           ELSE strategy_group
+                       END AS normalized_group
+                FROM position_holdings
+            ) h
+        ) ranked
+        WHERE rn=1
+        ORDER BY FIELD(status, 'open', 'needs_review', 'closed'), strategy_group, symbol
         LIMIT 500
         """
     )
