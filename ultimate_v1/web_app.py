@@ -329,7 +329,7 @@ def _event_date(value) -> date | None:
 def _major_events_payload() -> dict:
     """从本地 CSV 读取未来 10 个重大事件。"""
     today = date.today()
-    csv_path = Path(env_str("MAJOR_EVENTS_CSV", "data/major_events.csv"))
+    csv_path = Path(env_str("MAJOR_EVENTS_CSV", "ultimate_v1/strategies/major_events.csv"))
     if not csv_path.is_absolute():
         csv_path = Path.cwd() / csv_path
     events: list[dict] = []
