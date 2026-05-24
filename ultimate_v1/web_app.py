@@ -6,6 +6,7 @@ import json
 import hashlib
 import hmac
 import contextlib
+import csv
 import importlib.util
 import io
 import socket
@@ -316,6 +317,45 @@ def _risk_payload() -> dict:
         "account_metrics_source": state.account_metrics_source,
         "vix_source": state.vix_source,
     }
+
+
+def _event_date(value) -> date | None:
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except Exception:
+        return None
+
+
+def _major_events_payload() -> dict:
+    """从本地 CSV 读取未来 10 个重大事件。"""
+    today = date.today()
+    csv_path = Path(env_str("MAJOR_EVENTS_CSV", "data/major_events.csv"))
+    if not csv_path.is_absolute():
+        csv_path = Path.cwd() / csv_path
+    events: list[dict] = []
+    if not csv_path.exists():
+        return {
+            "ok": True,
+            "rows": [],
+            "message": f"请在 {csv_path.relative_to(Path.cwd()) if csv_path.is_relative_to(Path.cwd()) else csv_path} 里维护重大事件",
+            "path": str(csv_path),
+        }
+
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            event_day = _event_date(row.get("date"))
+            if not event_day or event_day < today:
+                continue
+            events.append({
+                "date": event_day.isoformat(),
+                "type": str(row.get("type") or "事件").strip(),
+                "title": str(row.get("title") or "").strip(),
+                "symbol": str(row.get("symbol") or "").strip().upper(),
+                "impact": str(row.get("impact") or "").strip(),
+                "source": str(row.get("source") or "manual").strip(),
+            })
+    events.sort(key=lambda e: (e.get("date") or "9999-12-31", {"宏观": 0, "IPO": 1, "财报": 2, "个股": 3}.get(e.get("type"), 9), e.get("symbol") or ""))
+    return {"ok": True, "rows": events[:10], "path": str(csv_path)}
 
 
 def _ensure_stock_quote_cache() -> None:
@@ -914,21 +954,22 @@ INDEX_HTML = r"""<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>CSZY Ultimate V1</title>
   <style>
-    :root { color-scheme: light; --bg:#f4f6f8; --panel:#ffffff; --ink:#17202a; --muted:#667085; --line:#d7dde5; --green:#15936a; --red:#c62828; --amber:#b76e00; --blue:#2563eb; --cyan:#0891b2; --violet:#7c3aed; --gold:#d97706; }
+    :root { color-scheme: light; --bg:#f4f7fb; --panel:#ffffff; --panel-soft:#f8fbff; --ink:#17202a; --muted:#667085; --line:#d7e0ea; --line-soft:#e8eef6; --green:#15936a; --red:#c62828; --amber:#b76e00; --blue:#2563eb; --cyan:#0891b2; --violet:#7c3aed; --gold:#d97706; --shadow:0 16px 42px rgba(15,23,42,.07); --shadow-soft:0 10px 26px rgba(15,23,42,.045); }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:linear-gradient(180deg, #edf4fb 0%, #f8fafc 36%, var(--bg) 100%); color:var(--ink); }
     header { display:none; }
     h1 { font-size:26px; margin:0; letter-spacing:0; line-height:1; }
     h2 { font-size:15px; margin:0; }
-    button { border:1px solid var(--line); background:#fff; color:var(--ink); height:34px; padding:0 12px; border-radius:6px; cursor:pointer; }
-    main { padding:18px 24px 34px; max-width:1680px; margin:0 auto; }
-    .left-titlebar { height:52px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:0 8px 0 18px; }
+    button { border:1px solid var(--line); background:#fff; color:var(--ink); height:34px; padding:0 12px; border-radius:6px; cursor:pointer; transition:transform .12s ease, border-color .12s ease, box-shadow .12s ease, background .12s ease; }
+    button:hover { border-color:#bfd0e4; box-shadow:0 6px 16px rgba(15,23,42,.05); }
+    main { padding:20px 24px 36px; max-width:1680px; margin:0 auto; }
+    .left-titlebar { min-height:58px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:8px 10px 10px 18px; border:1px solid rgba(215,224,234,.85); border-radius:8px; background:rgba(255,255,255,.72); box-shadow:0 12px 34px rgba(15,23,42,.055); backdrop-filter:blur(10px); }
     .brand-lockup { display:flex; align-items:center; gap:12px; min-width:0; }
-    .brand-logo { width:42px; height:42px; border-radius:9px; object-fit:contain; background:#fff; box-shadow:0 8px 20px rgba(15,23,42,.08); }
+    .brand-logo { width:42px; height:42px; border-radius:8px; object-fit:contain; background:#fff; box-shadow:0 10px 24px rgba(15,23,42,.10); border:1px solid #edf2f7; }
     .brand-copy { min-width:0; display:flex; flex-direction:column; gap:7px; }
     .dashboard-motto { color:var(--muted); font-size:13px; font-weight:750; letter-spacing:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .title-actions { display:flex; align-items:center; gap:10px; flex:0 0 auto; }
-    .phase-chip { min-width:144px; height:38px; border:1px solid var(--line); border-radius:999px; background:#fff; display:flex; align-items:center; justify-content:center; gap:7px; padding:0 13px; font-size:12px; font-weight:850; color:var(--ink); box-shadow:0 8px 20px rgba(15,23,42,.05); }
+    .phase-chip { min-width:144px; height:38px; border:1px solid var(--line); border-radius:999px; background:linear-gradient(180deg,#fff,#f8fbff); display:flex; align-items:center; justify-content:center; gap:7px; padding:0 13px; font-size:12px; font-weight:850; color:var(--ink); box-shadow:0 8px 20px rgba(15,23,42,.06); }
     .phase-chip .phase-dot { width:9px; height:9px; border-radius:50%; background:var(--muted); box-shadow:0 0 0 4px rgba(102,112,133,.1); }
     .phase-chip.ok .phase-dot { background:var(--green); box-shadow:0 0 0 4px rgba(21,147,106,.12); }
     .phase-chip.blue .phase-dot { background:var(--blue); box-shadow:0 0 0 4px rgba(37,99,235,.12); }
@@ -948,33 +989,39 @@ INDEX_HTML = r"""<!doctype html>
     .refresh-btn:hover { background:#1d4ed8; }
     .refresh-btn:active { transform:scale(.96); }
     .refresh-btn.loading { opacity:.72; pointer-events:none; }
-    .dash { display:grid; grid-template-columns:minmax(560px, 1.08fr) minmax(520px, .92fr); gap:16px; align-items:stretch; }
-    .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; box-shadow:0 12px 30px rgba(15,23,42,.04); }
+    .dash { display:grid; grid-template-columns:minmax(560px, 1.08fr) minmax(520px, .92fr); gap:18px; align-items:stretch; }
+    .panel { background:linear-gradient(180deg, #fff 0%, #fbfdff 100%); border:1px solid var(--line); border-radius:8px; padding:16px; box-shadow:var(--shadow-soft); }
     .mobile-collapse-toggle { display:none; }
-    .left-stack, .right-stack { display:flex; flex-direction:column; gap:16px; min-width:0; }
+    .left-stack, .right-stack { display:flex; flex-direction:column; gap:18px; min-width:0; }
     .capital-hero { flex:1; }
-    .hero-top { display:grid; grid-template-columns:.92fr 1.08fr; gap:12px; }
-    .mode-card { background:#101828; color:#fff; border-radius:8px; padding:16px 14px; min-height:132px; display:flex; flex-direction:column; justify-content:space-between; overflow:hidden; }
-    .mode-card .label { color:#b8c1d1; font-size:13px; }
-    .mode-card .value { font-size:32px; line-height:1; font-weight:800; margin-top:10px; }
-    .metric-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; }
-    .metric { border:1px solid var(--line); border-radius:8px; padding:15px 16px; min-height:76px; }
+    .hero-top { display:grid; grid-template-columns:minmax(340px,1fr) minmax(300px,.78fr); gap:12px; align-items:start; }
+    .hero-donut { border:1px solid #c8daf0; border-radius:8px; min-height:164px; padding:14px; overflow:hidden; background:linear-gradient(135deg,#f5f9ff 0%,#eef6ff 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.76), 0 12px 24px rgba(37,99,235,.055); }
+    .hero-donut-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:4px; }
+    .mode-pill { display:inline-flex; align-items:center; justify-content:center; min-width:48px; height:26px; padding:0 10px; border-radius:999px; background:#101828; color:#fff; font-size:12px; font-weight:900; }
+    .hero-carousel-viewport { overflow:hidden; width:100%; }
+    .hero-carousel-track { width:200%; display:flex; transition:transform .28s ease; }
+    .hero-carousel-track.bots { transform:translateX(-50%); }
+    .hero-carousel-page { width:50%; flex:0 0 50%; min-width:0; display:flex; flex-direction:column; }
+    .hero-carousel-page .donut-wrap { min-height:112px; }
+    .hero-metrics-column { display:grid; gap:12px; align-self:start; min-width:0; }
+    .metric-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; align-self:start; }
+    .metric { border:1px solid var(--line); border-radius:8px; padding:13px 14px; min-height:84px; background:linear-gradient(180deg,#fff,#f9fbfe); box-shadow:0 8px 20px rgba(15,23,42,.035); }
     .metric-label, .pool-meta, .small-muted { color:var(--muted); font-size:12px; }
     .metric-value { font-size:20px; font-weight:850; margin-top:6px; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .risk-strip { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:14px; display:grid; gap:12px; background:linear-gradient(180deg, #fff, #fbfcfe); }
-    .risk-topbar { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+    .risk-strip { margin-top:14px; border:1px solid #d5e6f8; border-radius:8px; padding:14px; display:grid; gap:12px; background:linear-gradient(135deg, #fff 0%, #f4fbff 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.72); }
+    .risk-topbar { display:flex; align-items:center; justify-content:space-between; gap:14px; }
     .risk-main { min-width:0; display:grid; gap:10px; }
-    .risk-head { display:flex; align-items:center; gap:14px; flex-wrap:wrap; min-width:0; }
+    .risk-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; min-width:0; }
     .risk-head h2 { white-space:nowrap; }
-    .risk-body { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(260px,.9fr); gap:12px; align-items:stretch; }
-    .risk-line { display:flex; gap:8px; flex-wrap:wrap; align-content:flex-start; color:var(--muted); font-size:12px; }
-    .risk-chip { border-radius:999px; padding:5px 9px; background:#eef2f6; color:#475467; font-weight:750; white-space:nowrap; }
+    .risk-body { min-width:0; }
+    .risk-line { display:flex; gap:10px; flex-wrap:wrap; align-content:flex-start; color:var(--muted); font-size:12px; }
+    .risk-chip { min-height:30px; display:inline-flex; align-items:center; border-radius:999px; padding:6px 12px; background:#eef2f6; color:#475467; font-weight:850; white-space:nowrap; border:1px solid rgba(255,255,255,.72); box-shadow:0 5px 12px rgba(15,23,42,.04); }
     .risk-chip.ok { background:#e7f6ef; color:#08734f; }
     .risk-chip.warn { background:#fff3d6; color:#9a5b00; }
     .risk-chip.danger { background:#fee2e2; color:#b42318; }
     .risk-chip.info { background:#e0f2fe; color:#075985; }
     .market-risk-inline { display:flex; gap:8px; flex-wrap:wrap; align-items:center; min-width:0; }
-    .market-risk-inline .risk-chip { padding:6px 11px; font-size:13px; }
+    .market-risk-inline .risk-chip { padding:7px 13px; font-size:13px; }
     .market-risk-inline.fresh .risk-chip { animation:freshPulse .85s ease-out 1; }
     @keyframes freshPulse {
       0% { transform:scale(1); box-shadow:0 0 0 0 rgba(21,147,106,.24); filter:brightness(1); }
@@ -985,21 +1032,22 @@ INDEX_HTML = r"""<!doctype html>
     .risk-badge { font-size:13px; font-weight:700; padding:5px 9px; border-radius:999px; background:#e7f6ef; color:var(--green); white-space:nowrap; }
     .risk-badge.warn { background:#fff3d6; color:#9a5b00; }
     .risk-badge.danger { background:#fee2e2; color:#b42318; }
-    .risk-control-select { height:34px; border:1px solid var(--line); border-radius:7px; padding:0 10px; background:#fff; color:var(--ink); font-weight:800; }
+    .risk-control-select { height:34px; border:1px solid var(--line); border-radius:7px; padding:0 10px; background:#fff; color:var(--ink); font-weight:800; box-shadow:0 5px 14px rgba(15,23,42,.035); }
     .clear-btn { height:30px; padding:0 14px; border:0; border-radius:7px; background:#fee2e2; color:#b42318; font-weight:850; }
     .clear-btn:hover { background:#fecaca; }
-    .rebalance-advice { min-height:64px; display:grid; grid-template-columns:auto 1fr; grid-template-areas:"icon title" "icon detail"; align-items:center; column-gap:10px; row-gap:4px; padding:10px 12px; border:1px solid #dbeafe; border-radius:8px; background:#f0f9ff; color:var(--muted); font-size:12px; font-weight:750; }
+    .rebalance-advice { min-height:74px; display:grid; grid-template-columns:auto 1fr; grid-template-areas:"icon title" "icon detail"; align-items:center; column-gap:10px; row-gap:4px; padding:11px 12px; border:1px solid #cfe4fb; border-radius:8px; background:linear-gradient(135deg,#eff8ff,#f7fbff); color:var(--muted); font-size:12px; font-weight:750; box-shadow:0 8px 18px rgba(8,145,178,.045); }
     .rebalance-icon { grid-area:icon; width:34px; height:34px; border-radius:8px; display:grid; place-items:center; background:#fff; color:#075985; font-weight:950; box-shadow:inset 0 0 0 1px #bfdbfe; }
     .rebalance-title { grid-area:title; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--ink); font-weight:900; }
     .rebalance-detail { grid-area:detail; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-    .exposure-card { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:#fbfcfe; }
+    .exposure-card { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:linear-gradient(180deg,#fff,#f8fbff); box-shadow:0 8px 20px rgba(15,23,42,.035); }
     .exposure-head { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; font-weight:800; }
     .exposure-value { color:var(--muted); font-size:12px; font-weight:700; }
     .exposure-bar { height:12px; border-radius:999px; overflow:hidden; background:#e9edf3; margin-top:10px; }
     .exposure-fill { height:100%; width:0%; background:linear-gradient(90deg, #15936a, #d97706); }
     .pool-grid { margin-top:26px; display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; }
-    .pool-card { border:1px solid var(--line); border-radius:8px; padding:14px; min-height:126px; }
-    .pool-card.defensive-pool { background:#fbfcfe; }
+    .pool-card { border:1px solid var(--line); border-radius:8px; padding:14px; min-height:126px; background:linear-gradient(180deg,#fff,#fafcff); box-shadow:0 10px 22px rgba(15,23,42,.04); position:relative; overflow:hidden; }
+    .pool-card:before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:#d7e0ea; }
+    .pool-card.defensive-pool { background:linear-gradient(180deg,#f9fbff,#f4f8fd); }
     .pool-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
     .pool-name { font-size:13px; color:var(--muted); font-weight:700; }
     .pool-label { color:var(--ink); font-weight:850; }
@@ -1008,13 +1056,12 @@ INDEX_HTML = r"""<!doctype html>
     .pool-amounts span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .bar { height:9px; border-radius:999px; overflow:hidden; background:#e9edf3; margin-top:11px; }
     .fill { height:100%; width:0%; background:var(--blue); }
-    .right-top { display:grid; grid-template-columns:1.05fr .95fr; gap:16px; min-height:286px; }
     .annual-panel { min-height:270px; }
     .annual-panel .mobile-collapse-body { display:block; }
     .annual-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
     .annual-kicker { color:var(--muted); font-size:12px; font-weight:800; }
     .annual-grid { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:10px; }
-    .annual-goal { border:1px solid #e3e8ef; border-radius:8px; padding:12px; background:#fbfcfe; min-height:94px; display:grid; gap:9px; align-content:start; }
+    .annual-goal { border:1px solid #e0e8f2; border-radius:8px; padding:12px; background:linear-gradient(180deg,#fff,#f9fbff); min-height:94px; display:grid; gap:9px; align-content:start; box-shadow:0 8px 18px rgba(15,23,42,.035); }
     .annual-goal { grid-column:span 2; }
     .annual-goal.fitness { grid-column:span 3; }
     .annual-goal.vocabulary { grid-column:span 3; }
@@ -1023,7 +1070,7 @@ INDEX_HTML = r"""<!doctype html>
     .annual-desc { margin-top:3px; color:var(--muted); font-size:11px; font-weight:750; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .annual-pct { color:var(--muted); font-size:12px; font-weight:950; white-space:nowrap; }
     .annual-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
-    .annual-step-btn { width:42px; height:28px; border:1px solid #bfdbfe; border-radius:7px; background:#eff6ff; color:#075985; font-size:13px; font-weight:950; padding:0; }
+    .annual-step-btn { width:42px; height:28px; border:1px solid #bfdbfe; border-radius:7px; background:linear-gradient(180deg,#f8fbff,#eaf4ff); color:#075985; font-size:13px; font-weight:950; padding:0; }
     .annual-step-btn:hover { background:#dbeafe; }
     .annual-step-btn:active { transform:scale(.96); }
     .annual-bar { height:8px; border-radius:999px; background:#e9edf3; overflow:hidden; }
@@ -1035,8 +1082,24 @@ INDEX_HTML = r"""<!doctype html>
     .annual-goal.vocabulary .annual-fill { background:var(--cyan); }
     .annual-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--muted); font-size:11px; font-weight:800; }
     .annual-foot span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .donut-panel, .bot-panel { min-height:286px; display:flex; flex-direction:column; }
-    .bot-panel .mobile-collapse-body { flex:1; min-height:0; display:flex; flex-direction:column; }
+    .events-panel { min-height:164px; background:linear-gradient(180deg,#fff 0%,#fbfcff 100%); }
+    .events-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
+    .events-kicker { color:var(--muted); font-size:12px; font-weight:800; }
+    .event-list { display:grid; gap:7px; }
+    .event-row { display:grid; grid-template-columns:64px 42px minmax(0,1fr) 30px; align-items:center; gap:8px; min-height:30px; color:var(--ink); font-size:12px; font-weight:750; padding:2px 4px; border-radius:7px; }
+    .event-row:hover { background:#f5f8fc; }
+    .event-date { color:var(--muted); font-weight:850; }
+    .event-type { display:inline-flex; align-items:center; justify-content:center; height:22px; border-radius:999px; background:#eef2f6; color:#475467; font-size:11px; font-weight:900; }
+    .event-type.macro { background:#fee2e2; color:#b42318; }
+    .event-type.ipo { background:#fff3d6; color:#9a5b00; }
+    .event-type.earnings { background:#e7f6ef; color:#08734f; }
+    .event-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .event-impact { color:var(--muted); text-align:right; font-size:11px; font-weight:850; }
+    .event-empty { color:var(--muted); font-size:12px; font-weight:750; padding:8px 0; }
+    .carousel-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .carousel-actions { display:flex; align-items:center; gap:7px; }
+    .carousel-tab { height:28px; min-width:36px; padding:0 10px; border:1px solid #cfd9e6; border-radius:7px; background:#fff; color:var(--muted); font-weight:850; }
+    .carousel-tab.active { background:#101828; color:#fff; border-color:#101828; box-shadow:0 8px 18px rgba(16,24,40,.18); }
     .donut-wrap { flex:1; display:flex; align-items:center; justify-content:center; gap:18px; min-height:160px; }
     canvas { max-width:100%; }
     #capitalDonut { width:176px; height:176px; }
@@ -1045,7 +1108,7 @@ INDEX_HTML = r"""<!doctype html>
     .legend-amount { display:none; }
     .swatch { width:9px; height:9px; border-radius:2px; }
     .bot-grid { flex:1; min-height:174px; display:flex; flex-direction:column; gap:9px; padding:12px 2px 4px; }
-    .bot-row { display:grid; grid-template-columns:minmax(90px,1fr) 18px 42px; align-items:center; gap:10px; min-height:24px; font-size:12px; color:var(--ink); }
+    .bot-row { display:grid; grid-template-columns:minmax(90px,1fr) 18px 42px; align-items:center; gap:10px; min-height:28px; font-size:12px; color:var(--ink); padding:2px 6px; border-radius:7px; background:rgba(255,255,255,.62); }
     .bot-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .bot-dot { width:14px; height:14px; flex:0 0 auto; border-radius:50%; box-shadow:0 0 0 4px rgba(21,147,106,.10), inset 0 0 0 1px rgba(255,255,255,.8); background:var(--green); }
     .bot-dot.bad { background:var(--red); box-shadow:0 0 0 4px rgba(198,40,40,.10), inset 0 0 0 1px rgba(255,255,255,.8); }
@@ -1082,8 +1145,9 @@ INDEX_HTML = r"""<!doctype html>
     #equityChart { width:100%; height:260px; flex:0 0 260px; min-height:0; }
     .section-head { display:flex; align-items:center; justify-content:space-between; margin:18px 0 10px; }
     table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
-    th, td { border-bottom:1px solid var(--line); padding:10px 9px; text-align:left; font-size:13px; white-space:nowrap; }
-    th { background:#eef2f6; color:#344054; font-size:12px; }
+    th, td { border-bottom:1px solid var(--line-soft); padding:10px 9px; text-align:left; font-size:13px; white-space:nowrap; }
+    th { background:linear-gradient(180deg,#eef4fa,#e8eef5); color:#344054; font-size:12px; }
+    tbody tr:hover td { background:#f8fbff; }
     tr:last-child td { border-bottom:0; }
     .status { display:inline-block; min-width:64px; text-align:center; padding:3px 8px; border-radius:999px; background:#eef2f6; }
     .open { color:var(--green); background:#e7f6ef; }
@@ -1092,14 +1156,15 @@ INDEX_HTML = r"""<!doctype html>
     .neg { color:var(--red); }
     .pos { color:var(--green); }
     .scroll { overflow:auto; border-radius:8px; }
-    .holdings-panel { margin-top:16px; min-height:430px; overflow:hidden; }
+    .holdings-panel { margin-top:18px; min-height:430px; overflow:hidden; box-shadow:var(--shadow); }
     .holding-head { gap:16px; margin:6px 0 14px; min-height:42px; }
     .holding-left-tools { display:flex; align-items:center; gap:12px; min-width:0; flex:1 1 auto; }
+    .holding-left-tools h2 { flex:0 0 6em; width:6em; margin:0; white-space:nowrap; }
     .holding-right-tools { margin-left:auto; display:flex; align-items:center; gap:10px; flex:0 0 auto; }
-    .holding-tabs { display:flex; gap:6px; flex-wrap:wrap; background:#eef2f6; padding:5px; border-radius:8px; }
+    .holding-tabs { display:flex; gap:6px; flex-wrap:wrap; background:linear-gradient(180deg,#eef3f8,#e7edf4); padding:5px; border-radius:8px; border:1px solid #e2e8f0; }
     .holding-tab { height:30px; min-width:58px; border-radius:7px; font-weight:750; color:var(--muted); border:0; background:transparent; }
     .holding-tab.active { background:#101828; color:#fff; border-color:#101828; }
-    .sync-positions-btn { height:34px; border:0; border-radius:8px; padding:0 14px; background:#e0f2fe; color:#075985; font-weight:850; transition:transform .12s ease, background .12s ease, opacity .12s ease; flex:0 0 auto; }
+    .sync-positions-btn { height:34px; border:1px solid #bfdbfe; border-radius:8px; padding:0 14px; background:linear-gradient(180deg,#eff8ff,#dff1ff); color:#075985; font-weight:850; transition:transform .12s ease, background .12s ease, opacity .12s ease; flex:0 0 auto; }
     .sync-positions-btn:hover { background:#bae6fd; }
     .sync-positions-btn:active { transform:scale(.97); }
     .sync-positions-btn.loading { opacity:.65; pointer-events:none; }
@@ -1117,7 +1182,7 @@ INDEX_HTML = r"""<!doctype html>
     .lower-track.trades { transform:translateX(-75%); }
     .lower-page { width:25%; flex:0 0 25%; padding:0 2px; }
     .market-toolbar { display:grid; grid-template-columns:minmax(260px,1fr) auto; gap:10px; align-items:center; margin-bottom:10px; }
-    .market-select { width:100%; height:38px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:0 10px; font-weight:750; color:var(--ink); }
+    .market-select { width:100%; height:38px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:0 10px; font-weight:750; color:var(--ink); box-shadow:0 6px 14px rgba(15,23,42,.035); }
     .market-meta { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
     .market-pill { border-radius:999px; background:#eef2f6; color:var(--muted); padding:5px 9px; font-size:12px; font-weight:750; }
     .market-refresh-btn { height:38px; border:0; border-radius:8px; background:#e0f2fe; color:#075985; font-weight:850; padding:0 14px; }
@@ -1125,7 +1190,7 @@ INDEX_HTML = r"""<!doctype html>
     .market-refresh-btn.loading { opacity:.65; pointer-events:none; }
     .d-panel { margin-top:16px; }
     .d-grid { display:grid; grid-template-columns:1fr; gap:14px; align-items:start; }
-    .d-subpanel { border:1px solid var(--line); border-radius:8px; padding:18px; background:#fbfcfe; min-height:160px; }
+    .d-subpanel { border:1px solid var(--line); border-radius:8px; padding:18px; background:linear-gradient(180deg,#fff,#f9fbff); min-height:160px; box-shadow:0 8px 20px rgba(15,23,42,.035); }
     .d-subpanel[hidden] { display:none; }
     .d-subhead { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
     .d-subtitle { font-weight:950; font-size:18px; color:var(--ink); }
@@ -1149,7 +1214,7 @@ INDEX_HTML = r"""<!doctype html>
       42% { opacity:.62; transform:translateY(1px); filter:brightness(.98); }
       100% { opacity:1; transform:translateY(0); filter:brightness(1); }
     }
-    .d-preview-card { border:1px solid #dbe3ee; border-radius:8px; background:#fff; padding:12px; display:grid; gap:10px; }
+    .d-preview-card { border:1px solid #dbe3ee; border-radius:8px; background:linear-gradient(180deg,#fff,#fbfdff); padding:12px; display:grid; gap:10px; box-shadow:0 8px 18px rgba(15,23,42,.035); }
     .d-preview-top { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
     .d-preview-title { font-weight:900; }
     .d-preview-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
@@ -1196,15 +1261,14 @@ INDEX_HTML = r"""<!doctype html>
       main { padding:10px 10px 28px; max-width:none; display:flex; flex-direction:column; gap:12px; }
       h1 { font-size:23px; line-height:1.05; max-width:128px; }
       h2 { font-size:15px; }
-      .dash, .left-stack, .right-stack, .right-top { display:contents; }
+      .dash, .left-stack, .right-stack { display:contents; }
       .left-titlebar { order:0; }
       .chart-panel { order:1; }
       .holdings-panel { order:2; }
       .capital-hero { order:3; }
-      .donut-panel { order:4; }
-      .annual-panel { order:5; }
-      .bot-panel { order:6; }
-      .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .donut-panel, .annual-panel, .bot-panel { width:100%; }
+      .annual-panel { order:4; }
+      .events-panel { order:5; }
+      .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .annual-panel, .events-panel { width:100%; }
       .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:center; }
       .brand-lockup { gap:8px; flex:1 1 auto; }
       .brand-logo { width:38px; height:38px; border-radius:8px; }
@@ -1225,17 +1289,16 @@ INDEX_HTML = r"""<!doctype html>
       .mobile-collapsible.mobile-open .mobile-collapse-body { display:block; }
       .mobile-collapsible.mobile-open .mobile-collapse-toggle span:last-child::before { content:"收起"; }
       .mobile-collapsible:not(.mobile-open) .mobile-collapse-toggle span:last-child::before { content:"展开"; }
-      .hero-top, .pool-grid, .right-top { grid-template-columns:1fr; gap:10px; }
-      .mode-card { min-height:112px; padding:14px; }
-      .mode-card .label { font-size:12px; }
-      .mode-card .value { font-size:30px; }
+      .hero-top, .pool-grid { grid-template-columns:1fr; gap:10px; }
+      .hero-donut { min-height:auto; padding:13px; }
+      .hero-metrics-column { gap:10px; }
       .metric-grid { grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; }
       .metric { min-height:70px; padding:12px; }
       .metric-label, .pool-meta, .small-muted { font-size:11px; }
       .metric-value { font-size:17px; margin-top:7px; }
       .risk-strip { padding:12px; }
       .risk-topbar, .risk-head { align-items:flex-start; }
-      .risk-topbar, .risk-body { grid-template-columns:1fr; display:grid; gap:10px; }
+      .risk-topbar { display:grid; grid-template-columns:1fr; gap:10px; }
       .risk-line { gap:10px; line-height:1.5; }
       .risk-actions { width:100%; justify-content:flex-end; }
       .rebalance-advice { min-height:0; }
@@ -1250,10 +1313,12 @@ INDEX_HTML = r"""<!doctype html>
       .annual-panel { min-height:auto; }
       .annual-panel .mobile-collapse-body { display:none; }
       .annual-panel.mobile-open .mobile-collapse-body { display:block; }
+      .events-panel { min-height:auto; }
+      .events-panel .mobile-collapse-body { display:none; }
+      .events-panel.mobile-open .mobile-collapse-body { display:block; }
       .annual-head { margin-bottom:10px; }
       .annual-grid { grid-template-columns:1fr; gap:9px; }
       .annual-goal { min-height:84px; padding:11px; }
-      .donut-panel, .bot-panel { min-height:auto; }
       .donut-wrap { min-height:188px; justify-content:center; gap:14px; }
       #capitalDonut { width:150px; height:150px; }
       .legend { min-width:132px; gap:7px; }
@@ -1276,7 +1341,7 @@ INDEX_HTML = r"""<!doctype html>
       .holdings-panel { min-height:520px; margin-top:12px; }
       .holding-head { flex-direction:column; align-items:stretch; gap:10px; margin:0 0 12px; }
       .holding-left-tools { flex-wrap:wrap; gap:8px; align-items:center; }
-      .holding-left-tools h2 { min-width:40px; }
+      .holding-left-tools h2 { flex-basis:6em; width:6em; min-width:6em; }
       .sync-positions-btn { order:2; height:32px; padding:0 11px; }
       .holding-tabs { order:3; width:100%; flex-wrap:nowrap; overflow-x:auto; justify-content:flex-start; padding:4px; }
       .holding-tab { min-width:52px; height:32px; }
@@ -1316,14 +1381,34 @@ INDEX_HTML = r"""<!doctype html>
           <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('capitalPanel')"><span>账户资金</span><span></span></button>
           <div class="mobile-collapse-body">
             <div class="hero-top">
-              <div class="mode-card">
-                <div>
-                  <div class="label">资金模式</div>
-                  <div class="value" id="modeValue">--</div>
+              <div class="hero-donut">
+                <div class="hero-donut-head">
+                  <h2 id="toolsPanelTitle">资金比例</h2>
+                  <div class="carousel-actions">
+                    <span class="mode-pill" id="modeValue">--</span>
+                    <button class="carousel-tab active" id="toolTabDonut" onclick="setToolsPage('donut')">资金</button>
+                    <button class="carousel-tab" id="toolTabBots" onclick="setToolsPage('bots')">机器人</button>
+                  </div>
                 </div>
-                <div class="small-muted" id="modeHint">等待账户数据</div>
+                <div class="hero-carousel-viewport">
+                  <div class="hero-carousel-track" id="toolsTrack">
+                    <div class="hero-carousel-page">
+                      <div class="donut-wrap">
+                        <canvas id="capitalDonut" width="220" height="220"></canvas>
+                        <div class="legend" id="donutLegend"></div>
+                      </div>
+                    </div>
+                    <div class="hero-carousel-page">
+                      <div class="bot-grid" id="botLights"></div>
+                      <div class="bot-pager" id="botPager"></div>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div class="metric-grid" id="metrics"></div>
+              <div class="hero-metrics-column">
+                <div class="metric-grid" id="metrics"></div>
+                <div class="rebalance-advice" id="rebalanceAdvice"></div>
+              </div>
             </div>
             <div class="risk-strip">
               <div class="risk-topbar">
@@ -1350,7 +1435,6 @@ INDEX_HTML = r"""<!doctype html>
               </div>
               <div class="risk-body">
                 <div class="risk-line" id="risk"></div>
-                <div class="rebalance-advice" id="rebalanceAdvice"></div>
               </div>
             </div>
             <div class="exposure-card">
@@ -1375,24 +1459,14 @@ INDEX_HTML = r"""<!doctype html>
             <div class="annual-grid" id="annualGoals"></div>
           </div>
         </div>
-        <div class="right-top">
-          <div class="panel donut-panel mobile-collapsible" id="donutPanel">
-            <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('donutPanel')"><span>资金比例</span><span></span></button>
-            <div class="mobile-collapse-body">
-              <h2>资金比例</h2>
-              <div class="donut-wrap">
-                <canvas id="capitalDonut" width="220" height="220"></canvas>
-                <div class="legend" id="donutLegend"></div>
-              </div>
+        <div class="panel events-panel mobile-collapsible mobile-open" id="eventsPanel">
+          <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('eventsPanel')"><span>重大事件提醒</span><span></span></button>
+          <div class="mobile-collapse-body">
+            <div class="events-head">
+              <h2>重大事件提醒</h2>
+              <span class="events-kicker">Next 10</span>
             </div>
-          </div>
-          <div class="panel bot-panel mobile-collapsible" id="botPanel">
-            <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('botPanel')"><span>机器人</span><span></span></button>
-            <div class="mobile-collapse-body">
-              <h2>机器人</h2>
-              <div class="bot-grid" id="botLights"></div>
-              <div class="bot-pager" id="botPager"></div>
-            </div>
+            <div class="event-list" id="majorEvents"></div>
           </div>
         </div>
         <div class="panel chart-panel mobile-collapsible mobile-open" id="chartPanel">
@@ -1525,6 +1599,7 @@ INDEX_HTML = r"""<!doctype html>
     let dSection = 'options';
     let currentCategory = '';
     let botPage = 0;
+    let toolsPage = 'donut';
     let latestHoldings = [];
     let latestMarketMeta = [];
     let latestBotHeartbeats = [];
@@ -1602,6 +1677,26 @@ INDEX_HTML = r"""<!doctype html>
       if (!result.ok) { alert(result.error || '年度任务更新失败'); return; }
       await loadAll();
     }
+    function renderMajorEvents(payload) {
+      const box = document.getElementById('majorEvents');
+      if (!box) return;
+      if (!payload || !payload.ok) {
+        box.innerHTML = `<div class="event-empty">事件日历暂不可用</div>`;
+        return;
+      }
+      const rows = payload.rows || [];
+      if (!rows.length) {
+        box.innerHTML = `<div class="event-empty">${payload.message || '未来 45 天暂无重点事件'}</div>`;
+        return;
+      }
+      const typeClass = {宏观:'macro', IPO:'ipo', 财报:'earnings'};
+      box.innerHTML = rows.map(e => {
+        const d = String(e.date || '').slice(5) || '--';
+        const type = e.type || '--';
+        const title = [e.symbol, e.title].filter(Boolean).join(' · ');
+        return `<div class="event-row" title="${title}"><span class="event-date">${d}</span><span class="event-type ${typeClass[type] || ''}">${type}</span><span class="event-title">${title || '--'}</span><span class="event-impact">${e.impact || ''}</span></div>`;
+      }).join('');
+    }
     function poolCard(g, cap) {
       const defensive = cap.defensive_pools?.[g];
       if (defensive) {
@@ -1621,8 +1716,11 @@ INDEX_HTML = r"""<!doctype html>
       const riskPct = Number(cap.total_risk_percent || 0) * Number(cap.pool_risk_percents?.[g] || 0) * 100;
       return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池</div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>月度目标 ${money(displayTarget)}</span><span>可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
-    function drawDonut(cap) {
-      const canvas = document.getElementById('capitalDonut'), ctx = canvas.getContext('2d');
+    function drawDonutOn(canvasId, legendId, cap) {
+      const canvas = document.getElementById(canvasId);
+      const legend = document.getElementById(legendId);
+      if (!canvas || !legend) return;
+      const ctx = canvas.getContext('2d');
       const usedEntries = ['A','B','C','D'].map(g => [g, Math.abs(Number(cap.used?.[g] || 0))]).filter(x => x[1] > 0);
       const defensiveEntries = ['X','Z'].map(g => [g, Math.abs(Number(cap.defensive_pools?.[g]?.current || 0))]).filter(x => x[1] > 0);
       const usedTotal = usedEntries.reduce((s, x) => s + x[1], 0);
@@ -1639,9 +1737,12 @@ INDEX_HTML = r"""<!doctype html>
       ctx.beginPath(); ctx.arc(110,110,58,0,Math.PI*2); ctx.fillStyle = '#fff'; ctx.fill();
       ctx.fillStyle = '#17202a'; ctx.font = '700 20px system-ui'; ctx.textAlign='center'; ctx.fillText(money(cap.equity || 0).replace('.00',''),110,106);
       ctx.fillStyle = '#667085'; ctx.font = '12px system-ui'; ctx.fillText('equity',110,126);
-      document.getElementById('donutLegend').innerHTML = entries.length
+      legend.innerHTML = entries.length
         ? entries.map(([g,v,colorKey]) => `<div class="legend-row"><span class="swatch" style="background:${colors[colorKey || g]}"></span><span>${g}</span><span>${((v/total)*100).toFixed(1)}%</span><span class="legend-amount">${money(v)}</span></div>`).join('')
         : `<div class="legend-row"><span class="small-muted">暂无持仓占用</span></div>`;
+    }
+    function drawDonut(cap) {
+      drawDonutOn('capitalDonut', 'donutLegend', cap);
     }
     function renderBots(bots, controls) {
       const botPages = [
@@ -1671,8 +1772,18 @@ INDEX_HTML = r"""<!doctype html>
       `;
     }
     function setBotPage(page) {
-      botPage = Math.max(0, Math.min(Number(page || 0), 1));
+      botPage = Math.max(0, Math.min(Number(page || 0), 2));
       renderBots(latestBotHeartbeats, latestBotControls);
+    }
+    function setToolsPage(page) {
+      toolsPage = page === 'bots' ? 'bots' : 'donut';
+      const track = document.getElementById('toolsTrack');
+      if (track) track.classList.toggle('bots', toolsPage === 'bots');
+      document.getElementById('toolTabDonut')?.classList.toggle('active', toolsPage === 'donut');
+      document.getElementById('toolTabBots')?.classList.toggle('active', toolsPage === 'bots');
+      const title = document.getElementById('toolsPanelTitle');
+      if (title) title.textContent = toolsPage === 'bots' ? '机器人' : '资金比例';
+      if (toolsPage === 'donut' && window.latestCapitalPayload) setTimeout(() => drawDonut(window.latestCapitalPayload), 50);
     }
     function renderPhase(phase) {
       const chip = document.getElementById('phaseChip');
@@ -1693,9 +1804,6 @@ INDEX_HTML = r"""<!doctype html>
       panel.classList.toggle('mobile-open');
       if (id === 'chartPanel' && panel.classList.contains('mobile-open')) {
         setTimeout(() => loadCurve(currentPeriod), 50);
-      }
-      if (id === 'donutPanel' && panel.classList.contains('mobile-open') && window.latestCapitalPayload) {
-        setTimeout(() => drawDonut(window.latestCapitalPayload), 50);
       }
     }
     function parseDateOnly(s) {
@@ -2238,11 +2346,10 @@ INDEX_HTML = r"""<!doctype html>
       const refreshBtn = document.querySelector('.refresh-btn');
       if (refreshBtn) refreshBtn.classList.add('loading');
       try {
-      const [cap, risk, holdings, state, phase, dTactical] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase'), api('/api/d_tactical')]);
+      const [cap, risk, holdings, state, phase, dTactical, majorEvents] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase'), api('/api/d_tactical'), api('/api/major_events')]);
       if (cap.ok) {
         window.latestCapitalPayload = cap;
         document.getElementById('modeValue').textContent = cap.mode_label || cap.mode;
-        document.getElementById('modeHint').textContent = `${cap.mode} · cash ${money(cap.cash)} / portfolio ${money(cap.portfolio_value)}`;
         document.getElementById('metrics').innerHTML = [
           metric('Equity', money(cap.equity)), metric('Buying Power', money(cap.buying_power)), metric('Portfolio', money(cap.portfolio_value)), metric('Cash', money(cap.cash))
         ].join('');
@@ -2290,6 +2397,7 @@ INDEX_HTML = r"""<!doctype html>
       void marketRisk.offsetWidth;
       marketRisk.classList.add('fresh');
       renderRebalanceAdvice(state.exposure_state, risk);
+      renderMajorEvents(majorEvents);
       window.latestBotProcesses = state.bot_processes || [];
       latestBotHeartbeats = state.bot_heartbeats || [];
       latestBotControls = state.bot_controls || [];
@@ -2553,6 +2661,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_risk_payload())
             elif path == "/api/holdings":
                 self._send_json(_holdings_payload())
+            elif path == "/api/major_events":
+                self._send_json(_major_events_payload())
             elif path == "/api/d_tactical":
                 self._send_json(d_tactical_payload())
             elif path == "/api/d_option_preview":
