@@ -45,7 +45,7 @@ def _json_default(value):
     return str(value)
 
 
-_FUNDAMENTAL_REFRESH_TS = 0.0
+_QUOTE_REFRESH_TS = 0.0
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -292,22 +292,119 @@ def _risk_payload() -> dict:
     }
 
 
-def _ensure_stock_fundamentals_cache() -> None:
-    """缓存总股本/总市值，避免每次刷新页面都打外部接口。"""
+def _ensure_stock_quote_cache() -> None:
+    """缓存本地日线缺失的观察票价格，主要补 ETF/ADR/OTC 代码。"""
     with db_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS stock_fundamentals_cache (
+                CREATE TABLE IF NOT EXISTS stock_quote_cache (
                   symbol VARCHAR(64) PRIMARY KEY,
-                  total_shares DOUBLE NULL,
-                  total_market_cap DOUBLE NULL,
+                  current_price DOUBLE NULL,
+                  prev_close DOUBLE NULL,
+                  day_change_pct DOUBLE NULL,
                   source VARCHAR(64) NULL,
                   fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+
+
+def _quote_cache(symbols: list[str]) -> dict[str, dict]:
+    _ensure_stock_quote_cache()
+    symbols = sorted({s.strip().upper() for s in symbols if s})
+    if not symbols:
+        return {}
+    placeholders = ", ".join(["%s"] * len(symbols))
+    rows = fetch_all(
+        f"""
+        SELECT symbol, current_price, prev_close, day_change_pct, source, fetched_at
+        FROM stock_quote_cache
+        WHERE symbol IN ({placeholders})
+          AND fetched_at >= DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+        """,
+        tuple(symbols),
+    )
+    return {str(r.get("symbol") or "").upper(): r for r in rows}
+
+
+def _refresh_missing_quotes(symbols: list[str]) -> None:
+    """本地日线没有价格时，少量用 yfinance 补现价/昨收。"""
+    global _QUOTE_REFRESH_TS
+    if env_str("HOLDINGS_ENABLE_YFINANCE_QUOTE", "1").strip() not in {"1", "true", "TRUE", "yes", "YES"}:
+        return
+    if time.time() - _QUOTE_REFRESH_TS < 120:
+        return
+    if not importlib.util.find_spec("yfinance"):
+        return
+
+    _QUOTE_REFRESH_TS = time.time()
+    max_refresh = int(env_str("HOLDINGS_QUOTE_REFRESH_LIMIT", "12") or "12")
+    targets = [s for s in sorted({v.strip().upper() for v in symbols if v})][:max_refresh]
+    if not targets:
+        return
+
+    try:
+        import yfinance as yf
+    except Exception:
+        return
+
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            for symbol in targets:
+                old_timeout = socket.getdefaulttimeout()
+                try:
+                    socket.setdefaulttimeout(float(env_str("HOLDINGS_QUOTE_TIMEOUT_SEC", "3") or "3"))
+                    ticker = yf.Ticker(symbol)
+                    fast_info = getattr(ticker, "fast_info", {}) or {}
+
+                    def _fast_get(key: str):
+                        try:
+                            return fast_info.get(key) if hasattr(fast_info, "get") else getattr(fast_info, key, None)
+                        except Exception:
+                            return None
+
+                    current = (
+                        _safe_float(_fast_get("last_price"))
+                        or _safe_float(_fast_get("regular_market_price"))
+                        or _safe_float(_fast_get("lastPrice"))
+                    )
+                    prev = (
+                        _safe_float(_fast_get("previous_close"))
+                        or _safe_float(_fast_get("regular_market_previous_close"))
+                        or _safe_float(_fast_get("previousClose"))
+                    )
+                    if current <= 0:
+                        hist = ticker.history(period="5d")
+                        if hist is not None and not hist.empty:
+                            closes = [float(v) for v in hist["Close"].dropna().tolist() if float(v) > 0]
+                            if closes:
+                                current = closes[-1]
+                            if len(closes) >= 2 and prev <= 0:
+                                prev = closes[-2]
+                    if current <= 0:
+                        continue
+                    change_pct = (current - prev) / prev if current > 0 and prev > 0 else None
+                    cur.execute(
+                        """
+                        INSERT INTO stock_quote_cache
+                            (symbol, current_price, prev_close, day_change_pct, source, fetched_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+                        ON DUPLICATE KEY UPDATE
+                            current_price=VALUES(current_price),
+                            prev_close=VALUES(prev_close),
+                            day_change_pct=VALUES(day_change_pct),
+                            source=VALUES(source),
+                            fetched_at=NOW(),
+                            updated_at=NOW()
+                        """,
+                        (symbol, current, prev or None, change_pct, "yfinance"),
+                    )
+                except Exception as exc:
+                    print(f"[HOLDINGS QUOTE] {symbol} quote refresh failed: {exc}", flush=True)
+                finally:
+                    socket.setdefaulttimeout(old_timeout)
 
 
 def _latest_price_meta(symbols: list[str]) -> dict[str, dict]:
@@ -344,120 +441,34 @@ def _latest_price_meta(symbols: list[str]) -> dict[str, dict]:
         latest = _safe_float(bucket.get("latest_close"))
         prev = _safe_float(bucket.get("prev_close"))
         bucket["day_change_pct"] = (latest - prev) / prev if latest > 0 and prev > 0 else None
+    missing = [symbol for symbol in symbols if _safe_float((out.get(symbol) or {}).get("latest_close")) <= 0]
+    cached = _quote_cache(missing)
+    stale_missing = [symbol for symbol in missing if symbol not in cached]
+    _refresh_missing_quotes(stale_missing)
+    if stale_missing:
+        cached = _quote_cache(missing)
+    for symbol, row in cached.items():
+        if _safe_float((out.get(symbol) or {}).get("latest_close")) > 0:
+            continue
+        current = _safe_float(row.get("current_price"))
+        prev = _safe_float(row.get("prev_close"))
+        out[symbol] = {
+            "latest_close": current,
+            "prev_close": prev,
+            "day_change_pct": row.get("day_change_pct") if row.get("day_change_pct") is not None else ((current - prev) / prev if current > 0 and prev > 0 else None),
+            "latest_date": row.get("fetched_at"),
+        }
     return out
 
 
-def _fundamentals_cache(symbols: list[str]) -> dict[str, dict]:
-    """读取已缓存的总股本/总市值。"""
-    _ensure_stock_fundamentals_cache()
-    symbols = sorted({s.strip().upper() for s in symbols if s})
-    if not symbols:
-        return {}
-    placeholders = ", ".join(["%s"] * len(symbols))
-    rows = fetch_all(
-        f"""
-        SELECT symbol, total_shares, total_market_cap, source, fetched_at
-        FROM stock_fundamentals_cache
-        WHERE symbol IN ({placeholders})
-        """,
-        tuple(symbols),
-    )
-    return {str(r.get("symbol") or "").upper(): r for r in rows}
-
-
-def _refresh_missing_fundamentals(symbols: list[str], prices: dict[str, float]) -> None:
-    """少量刷新缺失的总股本数据；失败时静默跳过，页面继续显示价格数据。"""
-    global _FUNDAMENTAL_REFRESH_TS
-    if env_str("HOLDINGS_ENABLE_YFINANCE_META", "1").strip() not in {"1", "true", "TRUE", "yes", "YES"}:
-        return
-    if time.time() - _FUNDAMENTAL_REFRESH_TS < 300:
-        return
-    if not importlib.util.find_spec("yfinance"):
-        return
-
-    _FUNDAMENTAL_REFRESH_TS = time.time()
-    max_refresh = int(env_str("HOLDINGS_FUNDAMENTAL_REFRESH_LIMIT", "8") or "8")
-    targets = [s for s in symbols if s and _safe_float(prices.get(s)) > 0][:max_refresh]
-    if not targets:
-        return
-
-    try:
-        import yfinance as yf
-    except Exception:
-        return
-
-    with db_conn() as conn:
-        with conn.cursor() as cur:
-            for symbol in targets:
-                old_timeout = socket.getdefaulttimeout()
-                try:
-                    socket.setdefaulttimeout(float(env_str("HOLDINGS_FUNDAMENTAL_TIMEOUT_SEC", "3") or "3"))
-                    ticker = yf.Ticker(symbol)
-                    fast_info = getattr(ticker, "fast_info", {}) or {}
-
-                    def _fast_get(key: str):
-                        try:
-                            return fast_info.get(key) if hasattr(fast_info, "get") else getattr(fast_info, key, None)
-                        except Exception:
-                            return None
-
-                    total_shares = _safe_float(_fast_get("shares"))
-                    market_cap = _safe_float(_fast_get("market_cap"))
-                    if total_shares <= 0:
-                        info = getattr(ticker, "info", {}) or {}
-                        total_shares = _safe_float(info.get("sharesOutstanding"))
-                        market_cap = market_cap or _safe_float(info.get("marketCap"))
-                    price = _safe_float(prices.get(symbol))
-                    if market_cap <= 0 and total_shares > 0 and price > 0:
-                        market_cap = total_shares * price
-                    if total_shares <= 0 and market_cap <= 0:
-                        continue
-                    cur.execute(
-                        """
-                        INSERT INTO stock_fundamentals_cache
-                            (symbol, total_shares, total_market_cap, source, fetched_at, updated_at)
-                        VALUES (%s, %s, %s, %s, NOW(), NOW())
-                        ON DUPLICATE KEY UPDATE
-                            total_shares=VALUES(total_shares),
-                            total_market_cap=VALUES(total_market_cap),
-                            source=VALUES(source),
-                            fetched_at=NOW(),
-                            updated_at=NOW()
-                        """,
-                        (symbol, total_shares or None, market_cap or None, "yfinance"),
-                    )
-                except Exception as exc:
-                    print(f"[HOLDINGS META] {symbol} fundamentals refresh failed: {exc}", flush=True)
-                finally:
-                    socket.setdefaulttimeout(old_timeout)
-
-
 def _enrich_holdings_rows(rows: list[dict]) -> list[dict]:
-    """给持仓/观察票补日涨跌、现价、总股本、总市值；未买入股票也能看到行情状态。"""
+    """给持仓/观察票补日涨跌和现价；未买入股票也能看到行情状态。"""
     symbols = [str(row.get("symbol") or "").strip().upper() for row in rows]
     price_meta = _latest_price_meta(symbols)
-    cached = _fundamentals_cache(symbols)
-
-    prices: dict[str, float] = {}
-    for row in rows:
-        symbol = str(row.get("symbol") or "").strip().upper()
-        latest = _safe_float((price_meta.get(symbol) or {}).get("latest_close"))
-        current = _safe_float(row.get("current_price")) or latest
-        if current > 0:
-            prices[symbol] = current
-
-    missing = [
-        s for s in sorted(set(symbols))
-        if s and (_safe_float((cached.get(s) or {}).get("total_shares")) <= 0 and _safe_float((cached.get(s) or {}).get("total_market_cap")) <= 0)
-    ]
-    _refresh_missing_fundamentals(missing, prices)
-    if missing:
-        cached = _fundamentals_cache(symbols)
 
     for row in rows:
         symbol = str(row.get("symbol") or "").strip().upper()
         meta = price_meta.get(symbol) or {}
-        fund = cached.get(symbol) or {}
         latest = _safe_float(meta.get("latest_close"))
         current = _safe_float(row.get("current_price")) or latest
         prev = _safe_float(meta.get("prev_close"))
@@ -470,13 +481,6 @@ def _enrich_holdings_rows(rows: list[dict]) -> list[dict]:
         row["price_as_of"] = meta.get("latest_date")
         if _safe_float(row.get("market_value")) <= 0 and qty > 0 and current > 0:
             row["market_value"] = qty * current
-
-        total_shares = _safe_float(fund.get("total_shares"))
-        total_market_cap = _safe_float(fund.get("total_market_cap"))
-        if total_market_cap <= 0 and total_shares > 0 and current > 0:
-            total_market_cap = total_shares * current
-        row["total_shares"] = total_shares if total_shares > 0 else None
-        row["total_market_cap"] = total_market_cap if total_market_cap > 0 else None
     return rows
 
 
@@ -1989,12 +1993,12 @@ INDEX_HTML = r"""<!doctype html>
         ? latestHoldings
         : latestHoldings.filter(r => String(r.strategy_group || '').toUpperCase() === holdingGroup);
       document.querySelectorAll('.holding-tab').forEach(b => b.classList.toggle('active', b.dataset.holding === currentHolding));
-      const colCount = 15;
+      const colCount = 13;
       const blanks = Array.from({length: Math.max(0, 10 - rows.length)}, () => `<tr>${Array.from({length: colCount}, (_, i) => `<td>${i === 0 ? '&nbsp;' : ''}</td>`).join('')}</tr>`).join('');
-      document.getElementById('holdings').innerHTML = `<thead><tr>${['代码','策略组','状态','日涨跌','现价','总股本','总市值','数量','均价','持仓市值','浮盈亏','浮盈亏%','已实现','持仓天数','更新时间'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
+      document.getElementById('holdings').innerHTML = `<thead><tr>${['代码','策略组','状态','日涨跌','现价','数量','均价','持仓市值','浮盈亏','浮盈亏%','已实现','持仓天数','更新时间'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
         rows.map(r => {
           const day = Number(r.day_change_pct || 0);
-          return `<tr><td><b>${r.symbol}</b></td><td>${r.strategy_group}</td><td><span class="status ${r.status}">${r.status}</span></td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${maybeCompact(r.total_shares)}</td><td>${maybeMoney(r.total_market_cap)}</td><td>${Number(r.qty||0).toFixed(4)}</td><td>${money(r.avg_entry_price)}</td><td>${money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${money(r.realized_pnl)}</td><td>${r.holding_days || 0}</td><td>${r.last_update_time || ''}</td></tr>`;
+          return `<tr><td><b>${r.symbol}</b></td><td>${r.strategy_group}</td><td><span class="status ${r.status}">${r.status}</span></td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${Number(r.qty||0).toFixed(4)}</td><td>${money(r.avg_entry_price)}</td><td>${money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${money(r.realized_pnl)}</td><td>${r.holding_days || 0}</td><td>${r.last_update_time || ''}</td></tr>`;
         }).join('') +
         blanks + `</tbody>`;
     }
