@@ -1006,24 +1006,24 @@ INDEX_HTML = r"""<!doctype html>
     .hero-carousel-page { width:50%; flex:0 0 50%; min-width:0; display:flex; flex-direction:column; }
     .hero-carousel-page .donut-wrap { min-height:112px; }
     .hero-metrics-column { display:grid; gap:12px; align-self:start; min-width:0; padding:10px; border:1px solid #d5e2ef; border-radius:8px; background:linear-gradient(135deg,#fffaf3 0%,#f7fbff 54%,#eef5fb 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.78); }
-    .metric-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; align-self:start; }
-    .metric { border:1px solid #cfdae7; border-radius:8px; padding:13px 14px; min-height:84px; background:linear-gradient(180deg,#fff,#f8fafc); box-shadow:0 10px 22px rgba(15,23,42,.07); }
+    .metric-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; align-self:start; }
+    .metric { border:1px solid #cfdae7; border-radius:8px; padding:10px 12px; min-height:68px; background:linear-gradient(180deg,#fff,#f8fafc); box-shadow:0 8px 18px rgba(15,23,42,.06); }
     .metric-label, .pool-meta, .small-muted { color:var(--muted); font-size:12px; }
-    .metric-value { font-size:16px; font-weight:850; margin-top:6px; line-height:1.1; white-space:nowrap; font-variant-numeric:tabular-nums; }
-    .risk-strip { margin-top:14px; border:1px solid #d5e6f8; border-radius:8px; padding:14px; display:grid; gap:12px; background:linear-gradient(135deg, #fff 0%, #f4fbff 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.72); }
+    .metric-value { font-size:15px; font-weight:850; margin-top:5px; line-height:1.1; white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .risk-strip { margin-top:14px; border:1px solid #d5e6f8; border-radius:8px; padding:12px; display:grid; gap:10px; background:linear-gradient(135deg, #fff 0%, #f4fbff 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.72); }
     .risk-topbar { display:flex; align-items:center; justify-content:space-between; gap:14px; }
     .risk-main { min-width:0; display:grid; gap:10px; }
     .risk-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; min-width:0; }
     .risk-head h2 { white-space:nowrap; }
     .risk-body { min-width:0; }
-    .risk-line { display:flex; gap:10px; flex-wrap:wrap; align-content:flex-start; color:var(--muted); font-size:12px; }
-    .risk-chip { min-height:30px; display:inline-flex; align-items:center; border-radius:999px; padding:6px 12px; background:#eef2f6; color:#475467; font-weight:850; white-space:nowrap; border:1px solid rgba(255,255,255,.72); box-shadow:0 5px 12px rgba(15,23,42,.04); }
+    .risk-line { display:flex; gap:8px; flex-wrap:wrap; align-content:flex-start; color:var(--muted); font-size:11px; }
+    .risk-chip { min-height:24px; display:inline-flex; align-items:center; border-radius:999px; padding:4px 9px; background:#eef2f6; color:#475467; font-size:11px; font-weight:850; white-space:nowrap; border:1px solid rgba(255,255,255,.72); box-shadow:0 4px 10px rgba(15,23,42,.035); }
     .risk-chip.ok { background:#e7f6ef; color:#08734f; }
     .risk-chip.warn { background:#fff3d6; color:#9a5b00; }
     .risk-chip.danger { background:#fee2e2; color:#b42318; }
     .risk-chip.info { background:#e0f2fe; color:#075985; }
-    .market-risk-inline { display:flex; gap:8px; flex-wrap:wrap; align-items:center; min-width:0; }
-    .market-risk-inline .risk-chip { padding:7px 13px; font-size:13px; }
+    .market-risk-inline { display:flex; gap:7px; flex-wrap:wrap; align-items:center; min-width:0; }
+    .market-risk-inline .risk-chip { padding:5px 10px; font-size:12px; }
     .market-risk-inline.fresh .risk-chip { animation:freshPulse .85s ease-out 1; }
     @keyframes freshPulse {
       0% { transform:scale(1); box-shadow:0 0 0 0 rgba(21,147,106,.24); filter:brightness(1); }
@@ -1295,14 +1295,14 @@ INDEX_HTML = r"""<!doctype html>
       .hero-top, .pool-grid { grid-template-columns:1fr; gap:10px; }
       .hero-donut { min-height:auto; padding:13px; }
       .hero-metrics-column { gap:10px; }
-      .metric-grid { grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; }
-      .metric { min-height:70px; padding:12px; }
+      .metric-grid { grid-template-columns:repeat(2, minmax(0,1fr)); gap:9px; }
+      .metric { min-height:64px; padding:10px; }
       .metric-label, .pool-meta, .small-muted { font-size:11px; }
-      .metric-value { font-size:16px; margin-top:7px; }
+      .metric-value { font-size:15px; margin-top:6px; }
       .risk-strip { padding:12px; }
       .risk-topbar, .risk-head { align-items:flex-start; }
       .risk-topbar { display:grid; grid-template-columns:1fr; gap:10px; }
-      .risk-line { gap:10px; line-height:1.5; }
+      .risk-line { gap:8px; line-height:1.4; }
       .risk-actions { width:100%; justify-content:flex-end; }
       .rebalance-advice { min-height:0; }
       .clear-btn { height:32px; }
