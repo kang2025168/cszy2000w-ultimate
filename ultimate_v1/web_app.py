@@ -1010,7 +1010,7 @@ INDEX_HTML = r"""<!doctype html>
     .metric { border:1px solid #cfdae7; border-radius:8px; padding:10px 12px; min-height:68px; background:linear-gradient(180deg,#fff,#f8fafc); box-shadow:0 8px 18px rgba(15,23,42,.06); }
     .metric-label, .pool-meta, .small-muted { color:var(--muted); font-size:12px; }
     .metric-value { font-size:15px; font-weight:850; margin-top:5px; line-height:1.1; white-space:nowrap; font-variant-numeric:tabular-nums; }
-    .risk-strip { margin-top:14px; border:1px solid #d5e6f8; border-radius:8px; padding:12px; display:grid; gap:10px; background:linear-gradient(135deg, #fff 0%, #f4fbff 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.72); }
+    .risk-strip { margin-top:0; border:1px solid #d5e6f8; border-radius:8px; padding:12px; display:grid; gap:10px; background:linear-gradient(135deg, #fff 0%, #f4fbff 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.72); }
     .risk-topbar { display:flex; align-items:center; justify-content:space-between; gap:14px; }
     .risk-main { min-width:0; display:grid; gap:10px; }
     .risk-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; min-width:0; }
@@ -1042,8 +1042,12 @@ INDEX_HTML = r"""<!doctype html>
     .rebalance-title { grid-area:title; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--ink); font-weight:900; }
     .rebalance-detail { grid-area:detail; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
     .exposure-card { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:linear-gradient(180deg,#fff,#f8fbff); box-shadow:0 8px 20px rgba(15,23,42,.035); }
-    .exposure-head { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; font-weight:800; }
+    .exposure-head { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:12px; font-size:13px; font-weight:800; }
     .exposure-value { color:var(--muted); font-size:12px; font-weight:700; }
+    .exposure-event { min-width:0; display:flex; justify-content:center; opacity:1; transition:opacity .28s ease; }
+    .exposure-event.fading { opacity:.18; }
+    .event-inline { max-width:100%; display:grid; grid-template-columns:48px 38px minmax(0,1fr) 28px; align-items:center; gap:8px; color:var(--ink); font-size:12px; font-weight:850; padding:5px 10px; border:1px solid #e0e8f2; border-radius:999px; background:linear-gradient(180deg,#fff,#f8fbff); box-shadow:0 6px 14px rgba(15,23,42,.04); }
+    .event-inline .event-title { max-width:420px; }
     .exposure-bar { height:12px; border-radius:999px; overflow:hidden; background:#e9edf3; margin-top:10px; }
     .exposure-fill { height:100%; width:0%; background:linear-gradient(90deg, #15936a, #d97706); }
     .pool-grid { margin-top:26px; display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; }
@@ -1084,13 +1088,6 @@ INDEX_HTML = r"""<!doctype html>
     .annual-goal.vocabulary .annual-fill { background:var(--cyan); }
     .annual-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--muted); font-size:11px; font-weight:800; }
     .annual-foot span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .events-panel { min-height:164px; background:linear-gradient(180deg,#fff 0%,#fbfcff 100%); }
-    .events-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
-    .events-kicker { color:var(--muted); font-size:12px; font-weight:800; }
-    .event-list { height:118px; overflow:hidden; position:relative; }
-    .event-track { display:grid; gap:7px; transition:transform .55s cubic-bezier(.22,.61,.36,1); will-change:transform; }
-    .event-row { display:grid; grid-template-columns:64px 42px minmax(0,1fr) 30px; align-items:center; gap:8px; height:34px; color:var(--ink); font-size:12px; font-weight:750; padding:2px 4px; border-radius:7px; }
-    .event-row:hover { background:#f5f8fc; }
     .event-date { color:var(--muted); font-weight:850; }
     .event-type { display:inline-flex; align-items:center; justify-content:center; height:22px; border-radius:999px; background:#eef2f6; color:#475467; font-size:11px; font-weight:900; }
     .event-type.macro { background:#fee2e2; color:#b42318; }
@@ -1270,8 +1267,8 @@ INDEX_HTML = r"""<!doctype html>
       .holdings-panel { order:2; }
       .capital-hero { order:3; }
       .annual-panel { order:4; }
-      .events-panel { order:5; }
-      .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .annual-panel, .events-panel { width:100%; }
+      .risk-strip { order:5; }
+      .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .annual-panel, .risk-strip { width:100%; }
       .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:center; }
       .brand-lockup { gap:8px; flex:1 1 auto; }
       .brand-logo { width:38px; height:38px; border-radius:8px; }
@@ -1307,8 +1304,10 @@ INDEX_HTML = r"""<!doctype html>
       .rebalance-advice { min-height:0; }
       .clear-btn { height:32px; }
       .exposure-card { margin-top:12px; padding:12px; }
-      .exposure-head { align-items:flex-start; flex-direction:column; gap:4px; }
+      .exposure-head { grid-template-columns:1fr; align-items:flex-start; gap:6px; }
       .exposure-value { line-height:1.35; }
+      .exposure-event { width:100%; justify-content:flex-start; }
+      .event-inline { width:100%; grid-template-columns:44px 38px minmax(0,1fr) 28px; padding:5px 8px; }
       .pool-grid { margin-top:14px; }
       .pool-card { min-height:112px; padding:12px; }
       .pool-value { font-size:25px; }
@@ -1316,9 +1315,6 @@ INDEX_HTML = r"""<!doctype html>
       .annual-panel { min-height:auto; }
       .annual-panel .mobile-collapse-body { display:none; }
       .annual-panel.mobile-open .mobile-collapse-body { display:block; }
-      .events-panel { min-height:auto; }
-      .events-panel .mobile-collapse-body { display:none; }
-      .events-panel.mobile-open .mobile-collapse-body { display:block; }
       .annual-head { margin-bottom:10px; }
       .annual-grid { grid-template-columns:1fr; gap:9px; }
       .annual-goal { min-height:84px; padding:11px; }
@@ -1413,36 +1409,10 @@ INDEX_HTML = r"""<!doctype html>
                 <div class="rebalance-advice" id="rebalanceAdvice"></div>
               </div>
             </div>
-            <div class="risk-strip">
-              <div class="risk-topbar">
-                <div class="risk-head">
-                  <h2>风险状态</h2>
-                  <div class="market-risk-inline" id="marketRisk"></div>
-                </div>
-                <div class="risk-actions">
-                  <select class="risk-control-select" id="riskPreferenceSelect" onchange="updateRiskPreference(this.value)">
-                    <option value="保守">保守</option>
-                    <option value="中性">中性</option>
-                    <option value="激进">激进</option>
-                  </select>
-                  <button class="clear-btn" onclick="openClearModal()">清仓</button>
-                  <select class="risk-control-select" id="marginUsageSelect" onchange="updateMarginUsage(this.value)" title="A/B/C 保证金使用额度">
-                    <option value="1.0">额度 100%</option>
-                    <option value="1.1">额度 110%</option>
-                    <option value="1.2">额度 120%</option>
-                    <option value="1.3">额度 130%</option>
-                    <option value="1.4">额度 140%</option>
-                    <option value="1.5">额度 150%</option>
-                  </select>
-                </div>
-              </div>
-              <div class="risk-body">
-                <div class="risk-line" id="risk"></div>
-              </div>
-            </div>
             <div class="exposure-card">
               <div class="exposure-head">
                 <span>资金池使用率</span>
+                <div class="exposure-event" id="majorEvents"></div>
                 <span class="exposure-value" id="exposureValue">--</span>
               </div>
               <div class="exposure-bar"><div class="exposure-fill" id="exposureFill"></div></div>
@@ -1462,14 +1432,31 @@ INDEX_HTML = r"""<!doctype html>
             <div class="annual-grid" id="annualGoals"></div>
           </div>
         </div>
-        <div class="panel events-panel mobile-collapsible mobile-open" id="eventsPanel">
-          <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('eventsPanel')"><span>重大事件提醒</span><span></span></button>
-          <div class="mobile-collapse-body">
-            <div class="events-head">
-              <h2>重大事件提醒</h2>
-              <span class="events-kicker">Next 10</span>
+        <div class="risk-strip">
+          <div class="risk-topbar">
+            <div class="risk-head">
+              <h2>风险状态</h2>
+              <div class="market-risk-inline" id="marketRisk"></div>
             </div>
-            <div class="event-list" id="majorEvents"></div>
+            <div class="risk-actions">
+              <select class="risk-control-select" id="riskPreferenceSelect" onchange="updateRiskPreference(this.value)">
+                <option value="保守">保守</option>
+                <option value="中性">中性</option>
+                <option value="激进">激进</option>
+              </select>
+              <button class="clear-btn" onclick="openClearModal()">清仓</button>
+              <select class="risk-control-select" id="marginUsageSelect" onchange="updateMarginUsage(this.value)" title="A/B/C 保证金使用额度">
+                <option value="1.0">额度 100%</option>
+                <option value="1.1">额度 110%</option>
+                <option value="1.2">额度 120%</option>
+                <option value="1.3">额度 130%</option>
+                <option value="1.4">额度 140%</option>
+                <option value="1.5">额度 150%</option>
+              </select>
+            </div>
+          </div>
+          <div class="risk-body">
+            <div class="risk-line" id="risk"></div>
           </div>
         </div>
         <div class="panel chart-panel mobile-collapsible mobile-open" id="chartPanel">
@@ -1700,20 +1687,23 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       const typeClass = {宏观:'macro', IPO:'ipo', 财报:'earnings'};
-      const rowHtml = rows.map(e => {
+      const renderOne = (index) => {
+        const e = rows[index] || rows[0];
         const d = String(e.date || '').slice(5) || '--';
         const type = e.type || '--';
         const title = [e.symbol, e.title].filter(Boolean).join(' · ');
-        return `<div class="event-row" title="${title}"><span class="event-date">${d}</span><span class="event-type ${typeClass[type] || ''}">${type}</span><span class="event-title">${title || '--'}</span><span class="event-impact">${e.impact || ''}</span></div>`;
-      }).join('');
-      box.innerHTML = `<div class="event-track" id="majorEventsTrack">${rowHtml}</div>`;
-      if (rows.length > 3) {
-        const maxIndex = rows.length - 3;
+        box.innerHTML = `<div class="event-inline" title="${title}"><span class="event-date">${d}</span><span class="event-type ${typeClass[type] || ''}">${type}</span><span class="event-title">${title || '--'}</span><span class="event-impact">${e.impact || ''}</span></div>`;
+      };
+      renderOne(0);
+      if (rows.length > 1) {
         majorEventsTimer = setInterval(() => {
-          majorEventsIndex = majorEventsIndex >= maxIndex ? 0 : majorEventsIndex + 1;
-          const track = document.getElementById('majorEventsTrack');
-          if (track) track.style.transform = `translateY(${-majorEventsIndex * 41}px)`;
-        }, 3000);
+          majorEventsIndex = (majorEventsIndex + 1) % rows.length;
+          box.classList.add('fading');
+          setTimeout(() => {
+            renderOne(majorEventsIndex);
+            box.classList.remove('fading');
+          }, 260);
+        }, 7000);
       }
     }
     function poolCard(g, cap) {
