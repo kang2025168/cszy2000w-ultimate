@@ -355,14 +355,30 @@ def _quote_cache(symbols: list[str]) -> dict[str, dict]:
     return {str(r.get("symbol") or "").upper(): r for r in rows}
 
 
+def _write_quote_cache(cur, symbol: str, current: float, prev: float, source: str) -> None:
+    """写入持仓表现价缓存。"""
+    change_pct = (current - prev) / prev if current > 0 and prev > 0 else None
+    cur.execute(
+        """
+        INSERT INTO stock_quote_cache
+            (symbol, current_price, prev_close, day_change_pct, source, fetched_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            current_price=VALUES(current_price),
+            prev_close=VALUES(prev_close),
+            day_change_pct=VALUES(day_change_pct),
+            source=VALUES(source),
+            fetched_at=NOW(),
+            updated_at=NOW()
+        """,
+        (symbol, current, prev or None, change_pct, source),
+    )
+
+
 def _refresh_missing_quotes(symbols: list[str]) -> None:
-    """本地日线没有价格时，少量用 yfinance 补现价/昨收。"""
+    """本地日线没有价格时，优先用 Alpaca snapshot 补现价/昨收，再用 yfinance 兜底。"""
     global _QUOTE_REFRESH_TS
-    if env_str("HOLDINGS_ENABLE_YFINANCE_QUOTE", "1").strip() not in {"1", "true", "TRUE", "yes", "YES"}:
-        return
     if time.time() - _QUOTE_REFRESH_TS < 120:
-        return
-    if not importlib.util.find_spec("yfinance"):
         return
 
     _QUOTE_REFRESH_TS = time.time()
@@ -371,14 +387,31 @@ def _refresh_missing_quotes(symbols: list[str]) -> None:
     if not targets:
         return
 
-    try:
-        import yfinance as yf
-    except Exception:
-        return
-
+    unresolved: list[str] = []
     with db_conn() as conn:
         with conn.cursor() as cur:
             for symbol in targets:
+                try:
+                    from app.strategy_b import get_snapshot_realtime
+
+                    current, prev, feed = get_snapshot_realtime(symbol)
+                    if float(current or 0) > 0:
+                        _write_quote_cache(cur, symbol, float(current), float(prev or 0), f"alpaca_snapshot_{feed}")
+                        continue
+                except Exception as exc:
+                    print(f"[HOLDINGS QUOTE] {symbol} alpaca snapshot failed: {exc}", flush=True)
+                unresolved.append(symbol)
+
+            if env_str("HOLDINGS_ENABLE_YFINANCE_QUOTE", "1").strip() not in {"1", "true", "TRUE", "yes", "YES"}:
+                return
+            if not importlib.util.find_spec("yfinance"):
+                return
+            try:
+                import yfinance as yf
+            except Exception:
+                return
+
+            for symbol in unresolved:
                 old_timeout = socket.getdefaulttimeout()
                 try:
                     socket.setdefaulttimeout(float(env_str("HOLDINGS_QUOTE_TIMEOUT_SEC", "3") or "3"))
@@ -411,22 +444,7 @@ def _refresh_missing_quotes(symbols: list[str]) -> None:
                                 prev = closes[-2]
                     if current <= 0:
                         continue
-                    change_pct = (current - prev) / prev if current > 0 and prev > 0 else None
-                    cur.execute(
-                        """
-                        INSERT INTO stock_quote_cache
-                            (symbol, current_price, prev_close, day_change_pct, source, fetched_at, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
-                        ON DUPLICATE KEY UPDATE
-                            current_price=VALUES(current_price),
-                            prev_close=VALUES(prev_close),
-                            day_change_pct=VALUES(day_change_pct),
-                            source=VALUES(source),
-                            fetched_at=NOW(),
-                            updated_at=NOW()
-                        """,
-                        (symbol, current, prev or None, change_pct, "yfinance"),
-                    )
+                    _write_quote_cache(cur, symbol, current, prev, "yfinance")
                 except Exception as exc:
                     print(f"[HOLDINGS QUOTE] {symbol} quote refresh failed: {exc}", flush=True)
                 finally:
