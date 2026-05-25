@@ -84,12 +84,12 @@ def _margin_usage_pct() -> float:
 
 
 def _market_exposure_pct(risk) -> float:
-    """读取市场环境目标仓位：向上/VIX低 85%，横盘 55%，向下 25%。"""
+    """读取市场环境目标仓位：向上/VIX低 90%，横盘 80%，向下 35%。"""
     if risk.market_trend == "向上" and risk.vix < env_float("REBALANCE_LOW_VIX", 20.0):
-        return env_float("REBALANCE_TARGET_UP", 0.85)
+        return env_float("REBALANCE_TARGET_UP", 0.90)
     if risk.market_trend == "向下":
-        return env_float("REBALANCE_TARGET_DOWN", 0.25)
-    return env_float("REBALANCE_TARGET_SIDEWAYS", 0.55)
+        return env_float("REBALANCE_TARGET_DOWN", 0.35)
+    return env_float("REBALANCE_TARGET_SIDEWAYS", 0.80)
 
 
 def _risk_percents() -> tuple[float, dict[str, float]]:

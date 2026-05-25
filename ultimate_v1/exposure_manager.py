@@ -74,13 +74,13 @@ def _target_exposure_pct() -> tuple[float, str]:
     """根据保证金额度和市场大环境给出总仓位目标。"""
     risk = get_risk_state()
     if risk.market_trend == "向上" and risk.vix < env_float("REBALANCE_LOW_VIX", 20.0):
-        market_pct = env_float("REBALANCE_TARGET_UP", 0.85)
+        market_pct = env_float("REBALANCE_TARGET_UP", 0.90)
         reason = "up_low_vix"
     elif risk.market_trend == "向下":
-        market_pct = env_float("REBALANCE_TARGET_DOWN", 0.25)
+        market_pct = env_float("REBALANCE_TARGET_DOWN", 0.35)
         reason = "downtrend"
     else:
-        market_pct = env_float("REBALANCE_TARGET_SIDEWAYS", 0.55)
+        market_pct = env_float("REBALANCE_TARGET_SIDEWAYS", 0.80)
         reason = "sideways"
     margin_pct = _margin_usage_pct()
     return market_pct * margin_pct, f"{reason}; margin={margin_pct:.0%}"

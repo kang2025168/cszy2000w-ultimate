@@ -392,8 +392,8 @@ def _base_exposure_by_trend(trend: str) -> float:
     if trend == "向上":
         return 0.90
     if trend == "向下":
-        return 0.30
-    return 0.60
+        return 0.35
+    return 0.80
 
 
 def _dynamic_weights_from_base(trend: str, vix: float) -> dict[str, float]:
