@@ -13,8 +13,6 @@ from .db import db_conn, fetch_all
 D_OPTION_UNDERLYINGS_TABLE = "d_option_underlyings"
 D_INTRADAY_CANDIDATES_TABLE = "d_intraday_candidates"
 D_OPTION_PREVIEW_SIDE_LIMIT = int(os.getenv("D_OPTION_PREVIEW_SIDE_LIMIT", "24"))
-Q_OPTION_REASON_PREFIX = "Q manual option buy"
-LEGACY_D_OPTION_REASON_PREFIX = "D manual option buy"
 
 OPTION_MODES = [
     {"mode": "BULL_CALL", "label": "看涨进攻", "desc": "Bull Call 借方价差"},
@@ -159,17 +157,17 @@ def _underlying_price(symbol: str) -> tuple[float, str]:
     return 0.0, "missing"
 
 
-def _mode_cp(strategy_c, mode: str) -> str:
-    if mode in {strategy_c.MODE_BULL_CALL, strategy_c.MODE_BEAR_CALL}:
+def _mode_cp(strategy_q, mode: str) -> str:
+    if mode in {strategy_q.MODE_BULL_CALL, strategy_q.MODE_BEAR_CALL}:
         return "C"
     return "P"
 
 
-def _option_rows_around_price(strategy_c, symbol: str, mode: str, expiry: date, price: float, width: float) -> list[dict]:
-    cp = _mode_cp(strategy_c, mode)
-    width = max(float(width or strategy_c.C_SPREAD_WIDTH or 1.0), 0.01)
-    strike_range = max(strategy_c.C_OPTION_CHAIN_STRIKE_RANGE, width * 8.0, 80.0)
-    chain_quotes = strategy_c._get_option_chain_quotes(symbol, expiry, cp, price, strike_range)
+def _option_rows_around_price(strategy_q, symbol: str, mode: str, expiry: date, price: float, width: float) -> list[dict]:
+    cp = _mode_cp(strategy_q, mode)
+    width = max(float(width or strategy_q.C_SPREAD_WIDTH or 1.0), 0.01)
+    strike_range = max(strategy_q.C_OPTION_CHAIN_STRIKE_RANGE, width * 8.0, 80.0)
+    chain_quotes = strategy_q._get_option_chain_quotes(symbol, expiry, cp, price, strike_range)
     strikes = sorted(chain_quotes.keys())
     side_limit = max(int(D_OPTION_PREVIEW_SIDE_LIMIT or 24), 3)
     below = [s for s in strikes if s < price][-side_limit:]
@@ -177,19 +175,19 @@ def _option_rows_around_price(strategy_c, symbol: str, mode: str, expiry: date, 
     selected = sorted(below + above, reverse=True)
     rows = []
     for strike in selected:
-        if mode == strategy_c.MODE_BULL_CALL:
+        if mode == strategy_q.MODE_BULL_CALL:
             buy_strike = strike
             sell_strike = min(strikes, key=lambda s: abs(s - (buy_strike + width)), default=None)
             buy_label, sell_label = "BUY C", "SELL C"
-        elif mode == strategy_c.MODE_BEAR_PUT:
+        elif mode == strategy_q.MODE_BEAR_PUT:
             buy_strike = strike
             sell_strike = min(strikes, key=lambda s: abs(s - (buy_strike - width)), default=None)
             buy_label, sell_label = "BUY P", "SELL P"
-        elif mode == strategy_c.MODE_BULL_PUT:
+        elif mode == strategy_q.MODE_BULL_PUT:
             sell_strike = strike
             buy_strike = min(strikes, key=lambda s: abs(s - (sell_strike - width)), default=None)
             buy_label, sell_label = "BUY P", "SELL P"
-        elif mode == strategy_c.MODE_BEAR_CALL:
+        elif mode == strategy_q.MODE_BEAR_CALL:
             sell_strike = strike
             buy_strike = min(strikes, key=lambda s: abs(s - (sell_strike + width)), default=None)
             buy_label, sell_label = "BUY C", "SELL C"
@@ -216,7 +214,7 @@ def _option_rows_around_price(strategy_c, symbol: str, mode: str, expiry: date, 
 
         buy_quote = quote_dict(buy_q)
         sell_quote = quote_dict(sell_q)
-        if mode in strategy_c.DEBIT_MODES:
+        if mode in strategy_q.DEBIT_MODES:
             spread_mid = round(max(buy_quote["mid"] - sell_quote["mid"], 0.0), 2)
             alpaca_limit_price = spread_mid
             max_loss_per_spread = round(spread_mid * 100.0, 2)
@@ -254,272 +252,15 @@ def _option_rows_around_price(strategy_c, symbol: str, mode: str, expiry: date, 
 
 def submit_option_combo(payload: dict) -> dict:
     """按页面选中的 Q 期权组合提交指定张数的 MLEG 限价开仓单，并写入组合记录。"""
-    from app import strategy_c
+    from app.strategy_q import submit_option_combo as _submit_option_combo
 
-    symbol = str(payload.get("symbol") or "").strip().upper()
-    mode = str(payload.get("mode") or "").strip().upper()
-    expiry = date.fromisoformat(str(payload.get("expiry") or "")[:10])
-    row = payload.get("row") or {}
-    buy = row.get("buy") or {}
-    sell = row.get("sell") or {}
-    qty = max(1, min(int(float(payload.get("qty") or 1)), 99))
-    if not symbol or mode not in {m["mode"] for m in OPTION_MODES}:
-        raise RuntimeError("invalid symbol or mode")
-
-    price, price_source = _underlying_price(symbol)
-    buy_leg = strategy_c.OptionLeg(
-        "BUY",
-        str(buy.get("label") or "").split()[-1] or _mode_cp(strategy_c, mode),
-        float(buy.get("strike") or 0),
-        option_symbol=str(buy.get("option_symbol") or ""),
-    )
-    sell_leg = strategy_c.OptionLeg(
-        "SELL",
-        str(sell.get("label") or "").split()[-1] or _mode_cp(strategy_c, mode),
-        float(sell.get("strike") or 0),
-        option_symbol=str(sell.get("option_symbol") or ""),
-    )
-    if not buy_leg.option_symbol or not sell_leg.option_symbol:
-        raise RuntimeError("missing option symbol")
-
-    plan = strategy_c.SpreadPlan(
-        underlying=symbol,
-        mode=mode,
-        expiry=expiry,
-        underlying_price=round(float(price or 0), 2),
-        width=abs(float(buy_leg.strike) - float(sell_leg.strike)),
-        legs=[buy_leg, sell_leg],
-        signal_score=0.0,
-        signal_reason=f"{Q_OPTION_REASON_PREFIX} price_source={price_source}",
-        status="SUBMITTED",
-    )
-    limit_price = float(row.get("alpaca_limit_price") or 0)
-    if limit_price == 0:
-        raise RuntimeError("invalid limit price")
-    pricing = strategy_c.SpreadPricing(
-        entry_price=abs(float(row.get("spread_mid") or limit_price)),
-        alpaca_limit_price=round(limit_price, 2),
-        max_loss_per_spread=float(row.get("max_loss_per_spread") or 0),
-        qty=qty,
-        buying_power=0.0,
-        reason=f"Q manual selected combo qty={qty}",
-    )
-    # Q 仓位必须落库，后续 q_sell_bot 才能只管理 Q 期权组合。
-    for leg in plan.legs:
-        leg.qty = int(qty)
-    plan.max_loss = float(pricing.max_loss_per_spread) * int(qty)
-    spread_id = strategy_c.record_spread_plan(plan, allow_duplicate=True)
-    if not spread_id:
-        raise RuntimeError("Q option spread was not recorded; abort submit to keep q_sell_bot tracking")
-    conn = strategy_c._connect()
-    try:
-        strategy_c._update_spread_existing_fields(
-            conn,
-            int(spread_id),
-            status="SUBMITTED",
-            entry_price=float(pricing.entry_price),
-            current_value=float(pricing.entry_price),
-            qty=int(qty),
-            max_loss=float(pricing.max_loss_per_spread) * int(qty),
-        )
-        try:
-            order = strategy_c.submit_open_spread_order(plan, pricing)
-        except Exception as exc:
-            strategy_c._update_spread_existing_fields(conn, int(spread_id), status="FAILED", close_reason=str(exc)[:500])
-            raise
-        order_id = str(getattr(order, "id", "") or getattr(order, "order_id", "") or "")
-        order_status = str(getattr(order, "status", "") or "")
-        strategy_c._update_spread_existing_fields(conn, int(spread_id), order_id=order_id, status="SUBMITTED")
-    finally:
-        conn.close()
-    return {
-        "ok": True,
-        "spread_id": int(spread_id),
-        "symbol": symbol,
-        "mode": mode,
-        "expiry": expiry.isoformat(),
-        "limit_price": pricing.alpaca_limit_price,
-        "qty": qty,
-        "order_id": order_id,
-        "status": order_status,
-    }
-
-
-def _q_reason_filter(strategy_c, conn) -> tuple[str, list[str]]:
-    """只筛 Q 页面手动开出的组合；兼容改名前的 D manual 记录。"""
-    cols = strategy_c._table_columns(conn, strategy_c.SPREADS_TABLE)
-    if "signal_reason" not in cols:
-        return "1=0", []
-    return "(`signal_reason` LIKE %s OR `signal_reason` LIKE %s)", [
-        f"{Q_OPTION_REASON_PREFIX}%",
-        f"{LEGACY_D_OPTION_REASON_PREFIX}%",
-    ]
-
-
-def _load_q_spreads(conn, strategy_c, statuses: tuple[str, ...]) -> list[dict]:
-    where, params = _q_reason_filter(strategy_c, conn)
-    placeholders = ", ".join(["%s"] * len(statuses))
-    sql = f"""
-    SELECT *
-    FROM `{strategy_c.SPREADS_TABLE}`
-    WHERE {where}
-      AND status IN ({placeholders})
-    ORDER BY id ASC;
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, tuple(params + list(statuses)))
-        return cur.fetchall() or []
-
-
-def _order_status_text(order) -> str:
-    status = getattr(order, "status", "") or ""
-    return str(getattr(status, "value", status) or "").lower()
-
-
-def _sync_q_submitted_spreads(conn, strategy_c) -> int:
-    """同步 Q 开仓订单状态：只有已成交的组合才进入 OPEN，避免卖出未成交组合。"""
-    rows = _load_q_spreads(conn, strategy_c, ("SUBMITTED",))
-    if not rows:
-        return 0
-    client = strategy_c._get_trading_client()
-    synced = 0
-    for spread in rows:
-        spread_id = int(spread.get("id") or 0)
-        order_id = str(spread.get("order_id") or "").strip()
-        if not spread_id or not order_id:
-            continue
-        try:
-            order = client.get_order_by_id(order_id)
-            status = _order_status_text(order)
-            filled_avg = float(getattr(order, "filled_avg_price", 0) or 0)
-            if status == "filled":
-                update = {"status": "OPEN"}
-                if filled_avg > 0:
-                    update["entry_price"] = abs(filled_avg)
-                    update["current_value"] = abs(filled_avg)
-                strategy_c._update_spread_existing_fields(conn, spread_id, **update)
-                synced += 1
-            elif status in {"canceled", "expired", "rejected"}:
-                strategy_c._update_spread_existing_fields(
-                    conn,
-                    spread_id,
-                    status=status.upper(),
-                    close_reason=f"open order {status}",
-                )
-                synced += 1
-        except Exception as exc:
-            print(f"[Q SELL BOT] sync spread_id={spread_id} order_id={order_id} failed: {exc}", flush=True)
-    return synced
-
-
-def _quote_q_current_value(strategy_c, spread: dict, legs: list[dict]) -> float | None:
-    """用当前期权 bid/ask 估算平仓价值，缺报价时回退到表里的 current_value。"""
-    symbols = [str(leg.get("option_symbol") or "").strip() for leg in legs if leg.get("option_symbol")]
-    if not symbols:
-        return None
-    try:
-        quotes = strategy_c._get_option_quotes(symbols)
-        net_close_cash = 0.0
-        for leg in legs:
-            symbol = str(leg.get("option_symbol") or "").strip()
-            quote = quotes.get(symbol)
-            if not quote:
-                return None
-            side = str(leg.get("side") or "").upper()
-            bid = float(getattr(quote, "bid", 0) or 0)
-            ask = float(getattr(quote, "ask", 0) or 0)
-            if side == "BUY":
-                if bid <= 0:
-                    return None
-                net_close_cash += bid
-            elif side == "SELL":
-                if ask <= 0:
-                    return None
-                net_close_cash -= ask
-        mode = str(spread.get("mode") or "").upper()
-        if mode in strategy_c.DEBIT_MODES:
-            return round(max(net_close_cash, 0.0), 2)
-        if mode in strategy_c.CREDIT_MODES:
-            return round(max(-net_close_cash, 0.0), 2)
-    except Exception as exc:
-        print(f"[Q SELL BOT] quote spread_id={spread.get('id')} failed: {exc}", flush=True)
-    return None
-
+    return _submit_option_combo(payload)
 
 def q_sell_once() -> int:
     """Q 机器人执行一次：只扫描 Q 手动期权组合，只做平仓/卖出动作。"""
-    from app import strategy_c
+    from app.strategy_q import q_sell_once as _q_sell_once
 
-    conn = strategy_c._connect()
-    closed = 0
-    try:
-        synced = _sync_q_submitted_spreads(conn, strategy_c)
-        if synced:
-            print(f"[Q SELL BOT] synced submitted spreads={synced}", flush=True)
-
-        spreads = _load_q_spreads(conn, strategy_c, ("OPEN",))
-        if not spreads:
-            print("[Q SELL BOT] no OPEN Q option spreads", flush=True)
-            return 0
-
-        for spread in spreads:
-            spread_id = int(spread.get("id") or 0)
-            legs = strategy_c.load_spread_legs(conn, spread_id)
-            if not legs:
-                print(f"[Q SELL BOT] spread_id={spread_id} skip: no legs", flush=True)
-                continue
-
-            current_value = _quote_q_current_value(strategy_c, spread, legs)
-            if current_value is not None:
-                strategy_c._update_spread_existing_fields(conn, spread_id, current_value=float(current_value))
-            else:
-                current_value = strategy_c.get_spread_current_value(spread, legs)
-            if current_value is None:
-                print(f"[Q SELL BOT] spread_id={spread_id} skip: missing current value", flush=True)
-                continue
-
-            should_close, reason, metric = strategy_c.should_close_spread(spread, current_value, legs)
-            print(
-                f"[Q SELL BOT] spread_id={spread_id} {spread.get('underlying')} "
-                f"mode={spread.get('mode')} current={current_value:.2f} {reason}",
-                flush=True,
-            )
-            if not should_close:
-                continue
-
-            block_same_day, block_reason = strategy_c._block_same_day_close(spread, reason)
-            if block_same_day:
-                print(f"[Q SELL BOT] spread_id={spread_id} skip close: {block_reason}", flush=True)
-                continue
-
-            close_legs = strategy_c.build_close_legs(legs)
-            strategy_c.print_close_plan(spread, close_legs, reason, metric, current_value)
-            if strategy_c.C_ENABLE_REAL_ORDER == 1:
-                try:
-                    order = strategy_c.submit_close_spread_order(spread, legs, current_value)
-                    order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
-                    strategy_c._update_spread_existing_fields(
-                        conn,
-                        spread_id,
-                        status="CLOSE_SUBMITTED",
-                        close_order_id=str(order_id or ""),
-                        exit_price=float(current_value),
-                        close_reason=str(reason)[:500],
-                        profit=float(metric.get("profit") or 0.0),
-                        profit_pct=float(metric.get("profit_pct") or 0.0),
-                    )
-                    closed += 1
-                except Exception as exc:
-                    print(f"[Q SELL BOT] close submit failed spread_id={spread_id}: {exc}", flush=True)
-                    strategy_c._update_spread_existing_fields(conn, spread_id, close_reason=f"Q_CLOSE_FAIL {str(exc)[:450]}")
-            elif strategy_c.C_RECORD_PLAN == 1:
-                strategy_c.mark_spread_close_planned(conn, spread_id, reason, current_value, metric)
-                closed += 1
-
-        return closed
-    finally:
-        conn.close()
-
+    return _q_sell_once()
 
 def _plan_to_dict(plan: Any, pricing: Any | None, error: str = "") -> dict:
     legs = []
@@ -550,7 +291,7 @@ def _plan_to_dict(plan: Any, pricing: Any | None, error: str = "") -> dict:
     }
 
 
-def _price_exact_expiry_plan(strategy_c, plan, expiry: date):
+def _price_exact_expiry_plan(strategy_q, plan, expiry: date):
     plan.expiry = expiry
     buy_leg = next((leg for leg in plan.legs if leg.side.upper() == "BUY"), None)
     sell_leg = next((leg for leg in plan.legs if leg.side.upper() == "SELL"), None)
@@ -559,8 +300,8 @@ def _price_exact_expiry_plan(strategy_c, plan, expiry: date):
 
     cp = buy_leg.cp
     center = (float(buy_leg.strike) + float(sell_leg.strike)) / 2.0
-    strike_range = max(strategy_c.C_OPTION_CHAIN_STRIKE_RANGE, abs(float(sell_leg.strike) - float(buy_leg.strike)) * 2.5)
-    chain_quotes = strategy_c._get_option_chain_quotes(plan.underlying, expiry, cp, center, strike_range)
+    strike_range = max(strategy_q.C_OPTION_CHAIN_STRIKE_RANGE, abs(float(sell_leg.strike) - float(buy_leg.strike)) * 2.5)
+    chain_quotes = strategy_q._get_option_chain_quotes(plan.underlying, expiry, cp, center, strike_range)
     if len(chain_quotes) < 2:
         raise RuntimeError(f"chain empty expiry={expiry} cp={cp}")
 
@@ -570,48 +311,48 @@ def _price_exact_expiry_plan(strategy_c, plan, expiry: date):
         for s2 in strikes:
             if abs(s1 - s2) < 0.01:
                 continue
-            if plan.mode == strategy_c.MODE_BULL_CALL and not (s1 < s2):
+            if plan.mode == strategy_q.MODE_BULL_CALL and not (s1 < s2):
                 continue
-            if plan.mode == strategy_c.MODE_BEAR_PUT and not (s1 > s2):
+            if plan.mode == strategy_q.MODE_BEAR_PUT and not (s1 > s2):
                 continue
-            if plan.mode == strategy_c.MODE_BULL_PUT and not (s1 < s2):
+            if plan.mode == strategy_q.MODE_BULL_PUT and not (s1 < s2):
                 continue
-            if plan.mode == strategy_c.MODE_BEAR_CALL and not (s1 > s2):
+            if plan.mode == strategy_q.MODE_BEAR_CALL and not (s1 > s2):
                 continue
             width = abs(float(s2) - float(s1))
-            if width <= 0 or width > max(strategy_c.C_SPREAD_WIDTH * 2.0, strategy_c.C_SPREAD_WIDTH + 5.0):
+            if width <= 0 or width > max(strategy_q.C_SPREAD_WIDTH * 2.0, strategy_q.C_SPREAD_WIDTH + 5.0):
                 continue
             score = abs(s1 - float(buy_leg.strike)) + abs(s2 - float(sell_leg.strike))
-            score += abs(width - strategy_c.C_SPREAD_WIDTH) * 0.25
+            score += abs(width - strategy_q.C_SPREAD_WIDTH) * 0.25
             pairs.append((score, s1, s2))
 
     last_error = ""
     for _score, buy_strike, sell_strike in sorted(pairs)[:40]:
         buy_q = chain_quotes[buy_strike]
         sell_q = chain_quotes[sell_strike]
-        test_plan = strategy_c._clone_plan_with_chain_strikes(
+        test_plan = strategy_q._clone_plan_with_chain_strikes(
             plan,
-            strategy_c.OptionLeg("BUY", cp, buy_strike, option_symbol=buy_q.option_symbol),
-            strategy_c.OptionLeg("SELL", cp, sell_strike, option_symbol=sell_q.option_symbol),
+            strategy_q.OptionLeg("BUY", cp, buy_strike, option_symbol=buy_q.option_symbol),
+            strategy_q.OptionLeg("SELL", cp, sell_strike, option_symbol=sell_q.option_symbol),
             expiry,
         )
         try:
-            old_max_risk = strategy_c.C_MAX_RISK_PER_TRADE
-            old_max_usage = strategy_c.C_MAX_OPTIONS_BP_USAGE
-            strategy_c.C_MAX_RISK_PER_TRADE = 100000.0
-            strategy_c.C_MAX_OPTIONS_BP_USAGE = 100000.0
-            pricing = strategy_c._price_spread_from_quotes(
+            old_max_risk = strategy_q.C_MAX_RISK_PER_TRADE
+            old_max_usage = strategy_q.C_MAX_OPTIONS_BP_USAGE
+            strategy_q.C_MAX_RISK_PER_TRADE = 100000.0
+            strategy_q.C_MAX_OPTIONS_BP_USAGE = 100000.0
+            pricing = strategy_q._price_spread_from_quotes(
                 test_plan,
                 {buy_q.option_symbol: buy_q, sell_q.option_symbol: sell_q},
                 active_options_usage=0.0,
                 options_buying_power_override=100000.0,
             )
-            strategy_c.C_MAX_RISK_PER_TRADE = old_max_risk
-            strategy_c.C_MAX_OPTIONS_BP_USAGE = old_max_usage
+            strategy_q.C_MAX_RISK_PER_TRADE = old_max_risk
+            strategy_q.C_MAX_OPTIONS_BP_USAGE = old_max_usage
             return test_plan, pricing
         except Exception as exc:
-            strategy_c.C_MAX_RISK_PER_TRADE = old_max_risk
-            strategy_c.C_MAX_OPTIONS_BP_USAGE = old_max_usage
+            strategy_q.C_MAX_RISK_PER_TRADE = old_max_risk
+            strategy_q.C_MAX_OPTIONS_BP_USAGE = old_max_usage
             last_error = str(exc)
     raise RuntimeError(last_error or "no tradable option pair")
 
@@ -624,33 +365,33 @@ def option_preview(symbol: str, mode: str, width: float | None = None) -> dict:
     if mode not in valid_modes:
         raise RuntimeError(f"unsupported D option mode: {mode}")
 
-    from app import strategy_c
+    from app import strategy_q
 
-    width = float(width or strategy_c.C_SPREAD_WIDTH or 10.0)
+    width = float(width or strategy_q.C_SPREAD_WIDTH or 10.0)
     price, price_source = _underlying_price(symbol)
     if price <= 0:
         raise RuntimeError(f"cannot resolve underlying price for {symbol}")
     market = {"score": 0.0, "reason": f"D manual option preview price_source={price_source}", "price": price}
     previews = []
     for expiry in _next_two_target_fridays():
-        old_width = strategy_c.C_SPREAD_WIDTH
-        strategy_c.C_SPREAD_WIDTH = width
-        base_plan = strategy_c.build_spread_plan(symbol, mode, price, market)
-        strategy_c.C_SPREAD_WIDTH = old_width
+        old_width = strategy_q.C_SPREAD_WIDTH
+        strategy_q.C_SPREAD_WIDTH = width
+        base_plan = strategy_q.build_spread_plan(symbol, mode, price, market)
+        strategy_q.C_SPREAD_WIDTH = old_width
         if base_plan is None:
             raise RuntimeError(f"failed to build spread plan for {symbol} {mode}")
         option_rows = []
         try:
-            option_rows = _option_rows_around_price(strategy_c, symbol, mode, expiry, price, width)
+            option_rows = _option_rows_around_price(strategy_q, symbol, mode, expiry, price, width)
         except Exception:
             option_rows = []
         try:
-            plan, pricing = _price_exact_expiry_plan(strategy_c, base_plan, expiry)
+            plan, pricing = _price_exact_expiry_plan(strategy_q, base_plan, expiry)
             plan._d_option_rows = option_rows
             previews.append(_plan_to_dict(plan, pricing))
         except Exception as exc:
             base_plan.expiry = expiry
-            strategy_c._attach_option_symbols(base_plan)
+            strategy_q._attach_option_symbols(base_plan)
             base_plan._d_option_rows = option_rows
             previews.append(_plan_to_dict(base_plan, None, str(exc)))
 

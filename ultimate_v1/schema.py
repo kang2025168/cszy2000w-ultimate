@@ -31,6 +31,7 @@ STOCK_OPERATION_COLUMNS = {
     "ac_t_sell_price": "DECIMAL(12,4) NULL",
     "ac_t_high_price": "DECIMAL(12,4) NULL",
     "ac_t_low_price": "DECIMAL(12,4) NULL",
+    "ac_t_entry_time": "DATETIME NULL",
     "ac_t_last_action_date": "DATE NULL",
     "ac_t_last_action_side": "VARCHAR(20) NULL",
     "ac_t_last_up_date": "DATE NULL",

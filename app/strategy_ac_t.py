@@ -82,6 +82,21 @@ BUY_LIMIT_BUFFER_PCT = env_float("AC_T_BUY_LIMIT_BUFFER_PCT", 0.002)
 SELL_LIMIT_BUFFER_PCT = env_float("AC_T_SELL_LIMIT_BUFFER_PCT", 0.002)
 FILL_WAIT_SEC = env_float("AC_T_FILL_WAIT_SEC", 4.0)
 DRY_RUN = env_bool("AC_T_DRY_RUN", False)
+FORCE_CLOSE_UP_T = env_bool("AC_T_FORCE_CLOSE_UP_T", True)
+MIN_LEG_HOLD_MINUTES = env_float("AC_T_MIN_LEG_HOLD_MINUTES", 30.0)
+
+ACTIVE_ORDER_STATUSES = {
+    "new",
+    "accepted",
+    "pending_new",
+    "accepted_for_bidding",
+    "partially_filled",
+    "calculated",
+    "held",
+    "pending_replace",
+    "pending_cancel",
+}
+TERMINAL_ORDER_STATUSES = {"filled", "canceled", "cancelled", "expired", "rejected", "done_for_day"}
 
 
 @dataclass
@@ -149,6 +164,7 @@ def _reset_to_idle_fields(extra: dict | None = None) -> dict:
         "ac_t_sell_price": None,
         "ac_t_high_price": None,
         "ac_t_low_price": None,
+        "ac_t_entry_time": None,
         "ac_t_trade_high_price": None,
         "ac_t_trade_low_price": None,
         "ac_t_extreme_confirmed": 0,
@@ -256,6 +272,26 @@ def _submit_limit_and_wait(client, symbol: str, qty: int, side: str, price: floa
         result.filled_avg_price = float(getattr(fresh, "filled_avg_price", 0) or 0)
     except Exception as exc:
         result.error = str(exc)
+    if result.status in ACTIVE_ORDER_STATUSES:
+        try:
+            client.cancel_order_by_id(order_id)
+            cancel_deadline = sleep_time.time() + 1.5
+            while True:
+                sleep_time.sleep(0.25)
+                fresh = client.get_order_by_id(order_id)
+                result.status = str(getattr(fresh, "status", "") or "").lower()
+                result.filled_qty = int(float(getattr(fresh, "filled_qty", 0) or 0))
+                result.filled_avg_price = float(getattr(fresh, "filled_avg_price", 0) or 0)
+                if result.status not in ACTIVE_ORDER_STATUSES or sleep_time.time() >= cancel_deadline:
+                    break
+            if result.filled_qty > 0:
+                print(
+                    f"[AC_T] partial fill then cancel: symbol={symbol} side={side} "
+                    f"filled_qty={result.filled_qty} status={result.status}",
+                    flush=True,
+                )
+        except Exception as exc:
+            result.error = f"{result.error}; cancel_active_order_failed={exc}" if result.error else f"cancel_active_order_failed={exc}"
     return result
 
 
@@ -276,8 +312,49 @@ def _intent(action: str, row: dict) -> str:
     return f"AC_T:{_today_la()}:{_ac_type(row)}:{row['stock_code']}:{action}"[:80]
 
 
-def _acquire_intent_lock(conn, row: dict, intent: str, side: str) -> bool:
-    """轻量 DB 锁，防止两个 AC bot 同时对同一只股票重复下单。"""
+def _latest_order_status(client, order_id: str) -> tuple[str, int]:
+    if not order_id:
+        return "", 0
+    try:
+        fresh = client.get_order_by_id(order_id)
+        status = str(getattr(fresh, "status", "") or "").lower()
+        filled_qty = int(float(getattr(fresh, "filled_qty", 0) or 0))
+        return status, filled_qty
+    except Exception as exc:
+        print(f"[AC_T] lock status check failed order_id={order_id}: {exc}", flush=True)
+        return "unknown", 0
+
+
+def _same_intent_can_retry(client, row: dict, intent: str) -> tuple[bool, str]:
+    """同一个 intent 不再直接拦截；只有最近订单仍活跃时才挡住。"""
+    last_intent = str(row.get("last_order_intent") or "")
+    if last_intent != intent:
+        return True, "new_intent"
+    order_id = str(row.get("last_order_id") or "")
+    if not order_id:
+        return True, "same_intent_no_order_id"
+    if order_id == "DRY_RUN":
+        return True, "same_intent_dry_run"
+    status, filled_qty = _latest_order_status(client, order_id)
+    if status in ACTIVE_ORDER_STATUSES:
+        return False, f"active_order_still_open status={status} filled_qty={filled_qty}"
+    if status == "filled" and filled_qty > 0:
+        return False, f"same_intent_already_filled status={status} filled_qty={filled_qty}"
+    if status in TERMINAL_ORDER_STATUSES:
+        return True, f"retry_after_terminal_order status={status} filled_qty={filled_qty}"
+    if status == "unknown":
+        return False, "active_order_status_unknown"
+    return True, f"retry_after_non_active_status status={status or 'empty'} filled_qty={filled_qty}"
+
+
+def _acquire_intent_lock(conn, client, row: dict, intent: str, side: str) -> bool:
+    """轻量 DB 锁：防并发重复提交，但不阻止失败/未成交后的重试。"""
+    can_retry, reason = _same_intent_can_retry(client, row, intent)
+    if not can_retry:
+        print(f"[AC_T] lock block {row.get('stock_code')} intent={intent} reason={reason}", flush=True)
+        return False
+    if reason != "new_intent":
+        print(f"[AC_T] lock retry allowed {row.get('stock_code')} intent={intent} reason={reason}", flush=True)
     where_sql, where_args = _row_key(row)
     with conn.cursor() as cur:
         cur.execute(
@@ -287,13 +364,22 @@ def _acquire_intent_lock(conn, row: dict, intent: str, side: str) -> bool:
                 last_order_side=%s,
                 last_order_time=NOW()
             WHERE {where_sql}
-              AND (last_order_intent IS NULL OR last_order_intent <> %s)
+              AND (
+                last_order_intent IS NULL
+                OR last_order_intent <> %s
+                OR last_order_id IS NULL
+                OR last_order_id = ''
+                OR last_order_id = 'DRY_RUN'
+                OR last_order_time < (NOW() - INTERVAL 15 SECOND)
+              )
             """,
             (intent, side, *where_args, intent),
         )
         ok = cur.rowcount == 1
     if ok:
         conn.commit()
+    else:
+        print(f"[AC_T] lock block {row.get('stock_code')} intent={intent} reason=duplicate_protection", flush=True)
     return ok
 
 
@@ -338,7 +424,11 @@ def _prev_close_from_db(conn, symbol: str) -> float:
 
 
 def _open_mode(conn, row: dict, current_price: float, params: dict) -> str:
-    """记录当天开盘模式：NORMAL / GAP_UP / GAP_DOWN。"""
+    """记录当天开盘模式：NORMAL / GAP_UP / GAP_DOWN。
+
+    ac_t_open_price 是机器人首次观察价，不保证等于交易所真实 open。
+    后续可以接 Alpaca dailyBar/open 或 1min bar open 优化；拿不到真实 open 时继续 fallback 当前价。
+    """
     open_date = row.get("ac_t_open_date")
     if hasattr(open_date, "date"):
         open_date = open_date.date()
@@ -407,24 +497,59 @@ def _same_day(value) -> bool:
     return str(value) == str(_today_la())
 
 
+def _entry_age_minutes(row: dict) -> float | None:
+    entry_time = row.get("ac_t_entry_time")
+    if not entry_time:
+        return None
+    if isinstance(entry_time, str):
+        try:
+            entry_time = datetime.fromisoformat(entry_time.replace("Z", ""))
+        except Exception:
+            return None
+    if getattr(entry_time, "tzinfo", None) is not None:
+        entry_time = entry_time.astimezone(LA_TZ).replace(tzinfo=None)
+    try:
+        return max(0.0, (_now_la().replace(tzinfo=None) - entry_time).total_seconds() / 60.0)
+    except Exception:
+        return None
+
+
+def _min_leg_hold_ok(row: dict, force: bool = False) -> tuple[bool, str]:
+    """第一腿成交后至少等待一段时间再做第二腿；强制收尾/恢复除外。"""
+    if force or MIN_LEG_HOLD_MINUTES <= 0:
+        return True, "force_or_disabled"
+    age = _entry_age_minutes(row)
+    if age is None:
+        return True, "no_entry_time"
+    if age < MIN_LEG_HOLD_MINUTES:
+        return False, f"min_leg_hold age={age:.1f}m need={MIN_LEG_HOLD_MINUTES:.1f}m"
+    return True, f"min_leg_hold_ok age={age:.1f}m"
+
+
 def should_force_recover_now(state: str) -> bool:
     """12:55 后，只要核心仓处于临时卖出状态，就强制恢复。"""
     now = _now_la().time()
     return state in DOWN_STATES and FORCE_RECOVER_TIME <= now < MARKET_CLOSE
 
 
+def should_force_close_up_t_now(state: str) -> bool:
+    """12:55 后，按配置强制卖出上涨做T新增仓，避免新增仓隔夜。"""
+    now = _now_la().time()
+    return FORCE_CLOSE_UP_T and state in UP_STATES and FORCE_RECOVER_TIME <= now < MARKET_CLOSE
+
+
 def _buy_t_qty(conn, client, row: dict, qty: int, current_price: float, intent: str) -> FillResult:
-    if not _acquire_intent_lock(conn, row, intent, "buy"):
-        return FillResult(False, error="intent_lock_busy")
     if not _has_buying_power(client, qty, current_price):
         return FillResult(False, error="buying_power")
+    if not _acquire_intent_lock(conn, client, row, intent, "buy"):
+        return FillResult(False, error="intent_lock_busy")
     fill = _submit_limit_and_wait(client, row["stock_code"], qty, "BUY", current_price)
     _write_last_order(conn, row, fill, "buy", intent)
     return fill
 
 
 def _sell_t_qty(conn, client, row: dict, qty: int, current_price: float, intent: str) -> FillResult:
-    if not _acquire_intent_lock(conn, row, intent, "sell"):
+    if not _acquire_intent_lock(conn, client, row, intent, "sell"):
         return FillResult(False, error="intent_lock_busy")
     fill = _submit_limit_and_wait(client, row["stock_code"], qty, "SELL", current_price)
     _write_last_order(conn, row, fill, "sell", intent)
@@ -446,8 +571,8 @@ def handle_idle(conn, client, row: dict, current_price: float, params: dict) -> 
     if not _is_trade_window() and not DRY_RUN:
         return f"skip:no_new_t_window:{mode}"
     if mode == "GAP_UP":
-        # 高开不追买。06:40 后从当前价重新开始记录交易用高点。
-        # 后续必须“重新创新高”再回撤，才允许卖核心仓。
+        # 高开不追买。B 方案：06:40 首次观察价直接作为临时高点，
+        # 后续从这个采样高点回撤即可触发卖核心仓。
         _set_row(
             conn,
             row,
@@ -455,13 +580,13 @@ def handle_idle(conn, client, row: dict, current_price: float, params: dict) -> 
                 "ac_t_state": STATE_GAP_UP_WAIT_PULLBACK_SELL,
                 "ac_t_trade_high_price": _money(current_price),
                 "ac_t_trade_low_price": None,
-                "ac_t_extreme_confirmed": 0,
+                "ac_t_extreme_confirmed": 1,
             },
         )
         return "gap_up_wait_pullback_sell:init"
     if mode == "GAP_DOWN":
-        # 低开不杀跌。06:40 后从当前价重新开始记录交易用低点。
-        # 后续必须“重新创新低”再反弹，才允许买新增仓。
+        # 低开不杀跌。B 方案：06:40 首次观察价直接作为临时低点，
+        # 后续从这个采样低点反弹即可触发买新增仓。
         _set_row(
             conn,
             row,
@@ -469,7 +594,7 @@ def handle_idle(conn, client, row: dict, current_price: float, params: dict) -> 
                 "ac_t_state": STATE_GAP_DOWN_WAIT_REBOUND_BUY,
                 "ac_t_trade_high_price": None,
                 "ac_t_trade_low_price": _money(current_price),
-                "ac_t_extreme_confirmed": 0,
+                "ac_t_extreme_confirmed": 1,
             },
         )
         return "gap_down_wait_rebound_buy:init"
@@ -495,6 +620,7 @@ def handle_idle(conn, client, row: dict, current_price: float, params: dict) -> 
                 "ac_t_last_action_date": today,
                 "ac_t_last_action_side": "UP_BUY",
                 "ac_t_last_up_date": today,
+                "ac_t_entry_time": _now_la().replace(tzinfo=None),
                 "qty": core_qty + fill.filled_qty,
                 "is_bought": 1,
             },
@@ -521,6 +647,7 @@ def handle_idle(conn, client, row: dict, current_price: float, params: dict) -> 
                 "ac_t_last_action_date": today,
                 "ac_t_last_action_side": "DOWN_SELL",
                 "ac_t_last_down_date": today,
+                "ac_t_entry_time": _now_la().replace(tzinfo=None),
                 "ac_t_temporarily_out": 1,
                 "ac_t_force_recover_deadline": force_deadline,
                 "qty": max(core_qty - fill.filled_qty, 0),
@@ -532,18 +659,27 @@ def handle_idle(conn, client, row: dict, current_price: float, params: dict) -> 
     return "idle:no_signal"
 
 
-def _finish_up_sell(conn, client, row: dict, current_price: float, reason: str) -> str:
+def _finish_up_sell(conn, client, row: dict, current_price: float, reason: str, force: bool = False) -> str:
     """卖出上涨/低开反弹买入的新增仓；这里不卖核心仓。"""
     t_qty = _safe_int(row.get("ac_t_qty"))
     if t_qty <= 0:
         _set_row(conn, row, _reset_to_idle_fields())
         return "up_reset:no_qty"
+    hold_ok, hold_reason = _min_leg_hold_ok(row, force=force)
+    if not hold_ok:
+        print(f"[AC_T] hold block {row.get('stock_code')} reason={reason} {hold_reason}", flush=True)
+        return f"skip:{hold_reason}"
     fill = _sell_t_qty(conn, client, row, t_qty, current_price, _intent(reason, row))
     if fill.filled_qty <= 0:
         return f"no_fill:up_sell status={fill.status} err={fill.error}"
     remaining = max(t_qty - fill.filled_qty, 0)
     core_qty = _safe_int(row.get("ac_t_core_qty"), _safe_int(row.get("qty")))
     if remaining > 0:
+        print(
+            f"[AC_T] up sell partial {row.get('stock_code')} reason={reason} "
+            f"filled_qty={fill.filled_qty} remaining_qty={remaining}",
+            flush=True,
+        )
         _set_row(
             conn,
             row,
@@ -575,6 +711,7 @@ def handle_up_t_holding(conn, client, row: dict, current_price: float, params: d
     buy_price = _safe_float(row.get("ac_t_buy_price"))
     high_price = max(_safe_float(row.get("ac_t_high_price"), buy_price), current_price)
     if high_price != _safe_float(row.get("ac_t_high_price")):
+        # 这里记录的是机器人轮询采样高点，不是交易所完整日内最高价。
         _set_row(conn, row, {"ac_t_high_price": _money(high_price)})
         row["ac_t_high_price"] = _money(high_price)
 
@@ -606,12 +743,21 @@ def _finish_down_buy(conn, client, row: dict, current_price: float, reason: str,
     if t_qty <= 0:
         _set_row(conn, row, _reset_to_idle_fields())
         return "down_reset:no_qty"
+    hold_ok, hold_reason = _min_leg_hold_ok(row, force=force)
+    if not hold_ok:
+        print(f"[AC_T] hold block {row.get('stock_code')} reason={reason} {hold_reason}", flush=True)
+        return f"skip:{hold_reason}"
     fill = _buy_t_qty(conn, client, row, t_qty, current_price, _intent(reason, row))
     if fill.filled_qty <= 0:
         return f"no_fill:down_buy status={fill.status} err={fill.error}"
     remaining = max(t_qty - fill.filled_qty, 0)
     core_qty = _safe_int(row.get("ac_t_core_qty"), _safe_int(row.get("qty")))
     if remaining > 0:
+        print(
+            f"[AC_T] down buy partial {row.get('stock_code')} reason={reason} "
+            f"filled_qty={fill.filled_qty} remaining_qty={remaining}",
+            flush=True,
+        )
         _set_row(
             conn,
             row,
@@ -645,6 +791,7 @@ def handle_down_t_wait_buyback(conn, client, row: dict, current_price: float, pa
     sell_price = _safe_float(row.get("ac_t_sell_price"))
     low_price = min(_safe_float(row.get("ac_t_low_price"), sell_price), current_price)
     if low_price != _safe_float(row.get("ac_t_low_price")):
+        # 这里记录的是机器人轮询采样低点，不是交易所完整日内最低价。
         _set_row(conn, row, {"ac_t_low_price": _money(low_price)})
         row["ac_t_low_price"] = _money(low_price)
 
@@ -671,20 +818,17 @@ def handle_down_t_wait_buyback_at_sell_price(conn, client, row: dict, current_pr
 
 
 def handle_gap_up_wait_pullback_sell(conn, client, row: dict, current_price: float, params: dict) -> str:
-    """高开模式：必须 06:40 后重新创新高，再从新高回撤，才卖核心仓。"""
+    """高开模式：6:40 首次观察价可作为临时高点，从采样高点回撤后卖核心仓。"""
     if _now_la().time() >= FORCE_RECOVER_TIME and not DRY_RUN:
         return "skip:no_gap_up_core_sell_after_1255"
     trade_high = _safe_float(row.get("ac_t_trade_high_price"))
-    confirmed = _safe_int(row.get("ac_t_extreme_confirmed"))
     if trade_high <= 0:
-        _set_row(conn, row, {"ac_t_trade_high_price": _money(current_price), "ac_t_extreme_confirmed": 0})
+        _set_row(conn, row, {"ac_t_trade_high_price": _money(current_price), "ac_t_extreme_confirmed": 1})
         return "gap_up_track_high:init"
     if current_price > trade_high:
-        # 只有这里设置 confirmed=1：开盘价本身不算正式交易高点。
+        # 这里记录的是机器人轮询采样高点，不是交易所完整日内最高价。
         _set_row(conn, row, {"ac_t_trade_high_price": _money(current_price), "ac_t_extreme_confirmed": 1})
         return "gap_up_track_high:new_high"
-    if not confirmed:
-        return "gap_up_wait_new_high"
     if current_price > trade_high * (1 - params["gap_pullback_pct"]):
         return "gap_up_wait_pullback"
 
@@ -709,6 +853,7 @@ def handle_gap_up_wait_pullback_sell(conn, client, row: dict, current_price: flo
             "ac_t_last_action_date": _today_la(),
             "ac_t_last_action_side": "GAP_UP_SELL",
             "ac_t_last_down_date": _today_la(),
+            "ac_t_entry_time": _now_la().replace(tzinfo=None),
             "ac_t_temporarily_out": 1,
             "ac_t_force_recover_deadline": force_deadline,
             "qty": max(core_qty - fill.filled_qty, 0),
@@ -723,6 +868,7 @@ def handle_gap_up_wait_buyback(conn, client, row: dict, current_price: float, pa
     sell_price = _safe_float(row.get("ac_t_sell_price"))
     low_price = min(_safe_float(row.get("ac_t_low_price"), sell_price), current_price)
     if low_price != _safe_float(row.get("ac_t_low_price")):
+        # 这里记录的是机器人轮询采样低点，不是交易所完整日内最低价。
         _set_row(conn, row, {"ac_t_low_price": _money(low_price)})
         row["ac_t_low_price"] = _money(low_price)
     if sell_price > 0 and current_price <= sell_price:
@@ -733,20 +879,17 @@ def handle_gap_up_wait_buyback(conn, client, row: dict, current_price: float, pa
 
 
 def handle_gap_down_wait_rebound_buy(conn, client, row: dict, current_price: float, params: dict) -> str:
-    """低开模式：必须 06:40 后重新创新低，再从新低反弹，才买新增仓。"""
+    """低开模式：6:40 首次观察价可作为临时低点，从采样低点反弹后买新增仓。"""
     if _now_la().time() >= FORCE_RECOVER_TIME and not DRY_RUN:
         return "skip:no_gap_down_buy_after_1255"
     trade_low = _safe_float(row.get("ac_t_trade_low_price"))
-    confirmed = _safe_int(row.get("ac_t_extreme_confirmed"))
     if trade_low <= 0:
-        _set_row(conn, row, {"ac_t_trade_low_price": _money(current_price), "ac_t_extreme_confirmed": 0})
+        _set_row(conn, row, {"ac_t_trade_low_price": _money(current_price), "ac_t_extreme_confirmed": 1})
         return "gap_down_track_low:init"
     if current_price < trade_low:
-        # 只有这里设置 confirmed=1：开盘价本身不算正式交易低点。
+        # 这里记录的是机器人轮询采样低点，不是交易所完整日内最低价。
         _set_row(conn, row, {"ac_t_trade_low_price": _money(current_price), "ac_t_extreme_confirmed": 1})
         return "gap_down_track_low:new_low"
-    if not confirmed:
-        return "gap_down_wait_new_low"
     if current_price < trade_low * (1 + params["gap_rebound_pct"]):
         return "gap_down_wait_rebound"
 
@@ -769,6 +912,7 @@ def handle_gap_down_wait_rebound_buy(conn, client, row: dict, current_price: flo
             "ac_t_last_action_date": _today_la(),
             "ac_t_last_action_side": "GAP_DOWN_BUY",
             "ac_t_last_up_date": _today_la(),
+            "ac_t_entry_time": _now_la().replace(tzinfo=None),
             "qty": real_qty + fill.filled_qty,
             "is_bought": 1,
         },
@@ -781,6 +925,7 @@ def handle_gap_down_holding(conn, client, row: dict, current_price: float, param
     buy_price = _safe_float(row.get("ac_t_buy_price"))
     high_price = max(_safe_float(row.get("ac_t_high_price"), buy_price), current_price)
     if high_price != _safe_float(row.get("ac_t_high_price")):
+        # 这里记录的是机器人轮询采样高点，不是交易所完整日内最高价。
         _set_row(conn, row, {"ac_t_high_price": _money(high_price)})
         row["ac_t_high_price"] = _money(high_price)
 
@@ -797,7 +942,22 @@ def handle_gap_down_holding(conn, client, row: dict, current_price: float, param
 
 def force_buyback_core(conn, client, row: dict, current_price: float) -> str:
     """12:55 强制恢复核心仓：恢复长期仓优先于单次做T盈亏。"""
+    print(
+        f"[AC_T] FORCE_RECOVER {row.get('stock_code')} "
+        f"qty={_safe_int(row.get('ac_t_qty'))} price={current_price:.2f}",
+        flush=True,
+    )
     return _finish_down_buy(conn, client, row, current_price, "FORCE_RECOVER_1255", force=True)
+
+
+def force_close_up_t(conn, client, row: dict, current_price: float) -> str:
+    """12:55 强制卖出上涨做T新增仓：只处理 ac_t_qty，不动核心仓。"""
+    print(
+        f"[AC_T] FORCE_CLOSE_UP_T {row.get('stock_code')} "
+        f"qty={_safe_int(row.get('ac_t_qty'))} price={current_price:.2f}",
+        flush=True,
+    )
+    return _finish_up_sell(conn, client, row, current_price, "FORCE_CLOSE_UP_T", force=True)
 
 
 def process_ac_t_symbol(conn, client, row: dict) -> str:
@@ -820,6 +980,9 @@ def process_ac_t_symbol(conn, client, row: dict) -> str:
     if should_force_recover_now(state):
         # 强制恢复优先级最高，即使已经过了新开做T窗口也要执行。
         return force_buyback_core(conn, client, row, current_price)
+    if should_force_close_up_t_now(state):
+        # 只卖新增做T仓 ac_t_qty，不动长期核心仓。
+        return force_close_up_t(conn, client, row, current_price)
     if not (MARKET_OPEN <= _now_la().time() < MARKET_CLOSE) and not DRY_RUN:
         return "skip:not_regular_hours"
 

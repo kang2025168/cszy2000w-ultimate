@@ -11,7 +11,7 @@ Q 只负责期权仓位，且这个机器人只做卖出/平仓动作：
 import argparse
 import time
 
-from ultimate_v1.d_tactical import q_sell_once
+from app.strategy_q import q_sell_once
 from ultimate_v1.schema import ensure_schema
 from ultimate_v1.state_store import heartbeat, is_bot_enabled
 
