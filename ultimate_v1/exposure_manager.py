@@ -127,11 +127,11 @@ def _strategy_weights(risk) -> dict[str, float]:
         }
     else:
         a, b, c, d = {
-            "NORMAL": (0.30, 0.40, 0.30, 0.30),
-            "SAFE": (0.40, 0.25, 0.35, 0.00),
-            "ATTACK": (0.25, 0.45, 0.30, 0.30),
-            "RISK_OFF": (0.70, 0.00, 0.30, 0.00),
-        }.get(str(risk.mode or "NORMAL").upper(), (0.30, 0.40, 0.30, 0.30))
+            "NORMAL": (0.20, 0.30, 0.50, 0.30),
+            "SAFE": (0.35, 0.15, 0.50, 0.10),
+            "ATTACK": (0.15, 0.35, 0.50, 0.30),
+            "RISK_OFF": (0.60, 0.00, 0.40, 0.00),
+        }.get(str(risk.mode or "NORMAL").upper(), (0.20, 0.30, 0.50, 0.30))
         weights = {"A": a, "B": b, "C": c, "D": d}
 
     if os.getenv("REBALANCE_INCLUDE_D_BUY", "0") != "1":

@@ -62,12 +62,12 @@ def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
         print(f"[CAPITAL WARN] dynamic weights unavailable, fallback mode weights: {exc}", flush=True)
 
     a, b, c, allow_d = {
-        "NORMAL": (0.30, 0.40, 0.30, True),
-        "SAFE": (0.40, 0.25, 0.35, False),
-        "ATTACK": (0.25, 0.45, 0.30, True),
-        "RISK_OFF": (0.70, 0.00, 0.30, False),
-    }.get(mode, (0.30, 0.40, 0.30, True))
-    d = 0.30 if allow_d else 0.0
+        "NORMAL": (0.20, 0.30, 0.50, 0.30),
+        "SAFE": (0.35, 0.15, 0.50, 0.10),
+        "ATTACK": (0.15, 0.35, 0.50, 0.30),
+        "RISK_OFF": (0.60, 0.00, 0.40, 0.00),
+    }.get(mode, (0.20, 0.30, 0.50, 0.30))
+    allow_d = d > 0
     return {"A": a, "B": b, "C": c, "D": d}, allow_d
 
 
