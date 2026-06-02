@@ -192,6 +192,15 @@ def _annual_goals_payload(allocation) -> list[dict]:
         start_equity = equity
         set_app_setting("ANNUAL_STOCK_START_EQUITY", f"{start_equity:.2f}")
     return_current = ((equity - start_equity) / start_equity) if start_equity > 0 else 0.0
+    stock_completions = int(_setting_float("ANNUAL_STOCK_COMPLETIONS", 0.0))
+    if return_target > 0 and return_current >= return_target and equity > 0 and start_equity > 0:
+        stock_completions += 1
+        set_app_setting("ANNUAL_STOCK_COMPLETIONS", str(stock_completions))
+        set_app_setting("ANNUAL_STOCK_LAST_COMPLETED_AT", _now_market_tz().date().isoformat())
+        set_app_setting("ANNUAL_STOCK_LAST_COMPLETED_EQUITY", f"{equity:.2f}")
+        set_app_setting("ANNUAL_STOCK_START_EQUITY", f"{equity:.2f}")
+        start_equity = equity
+        return_current = 0.0
 
     weekly_fitness_target = _setting_float("WEEKLY_FITNESS_TARGET", 4.0)
     weekly_fitness_current = _setting_float("WEEKLY_FITNESS_CURRENT", 0.0)
@@ -222,12 +231,14 @@ def _annual_goals_payload(allocation) -> list[dict]:
         {
             "key": "stock_growth",
             "name": "股票账户跃迁",
-            "desc": "年度回报目标 30%",
+            "desc": f"年度回报目标 30% · 已完成 {stock_completions} 次",
             "current": return_current,
             "target": return_target,
             "unit": "percent",
             "start_equity": start_equity,
             "equity": equity,
+            "completed_count": stock_completions,
+            "status_label": f"第 {stock_completions + 1} 轮",
         },
         {
             "key": "fitness",
@@ -1646,6 +1657,7 @@ INDEX_HTML = r"""<!doctype html>
         const currentLabel = goalValue(goal, current);
         const targetLabel = goalValue(goal, target);
         const extra = `${currentLabel} / ${targetLabel}`;
+        const statusLabel = goal.status_label || (rawPct >= 100 ? '已达成' : '推进中');
         return `
           <div class="annual-goal ${goal.key || ''}">
             <div class="annual-goal-top">
@@ -1653,7 +1665,7 @@ INDEX_HTML = r"""<!doctype html>
               <div class="annual-actions">${goal.step ? `<button class="annual-step-btn" onclick="advanceAnnualGoal('${goal.key}')">${goal.action_label || '+'}</button>` : ''}<span class="annual-pct">${pctText}</span></div>
             </div>
             <div class="annual-bar"><div class="annual-fill" style="width:${donePct}%"></div></div>
-            <div class="annual-foot"><span>${extra}</span><span>${rawPct >= 100 ? '已达成' : '推进中'}</span></div>
+            <div class="annual-foot"><span>${extra}</span><span>${statusLabel}</span></div>
           </div>`;
       }).join('') : '<div class="small-muted">暂无年度任务数据</div>';
     }
