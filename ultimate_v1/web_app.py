@@ -1005,9 +1005,10 @@ INDEX_HTML = r"""<!doctype html>
     .panel { background:linear-gradient(180deg, #fff 0%, #fbfdff 100%); border:1px solid var(--line); border-radius:8px; padding:16px; box-shadow:var(--shadow-soft); }
     .mobile-collapse-toggle { display:none; }
     .left-stack, .right-stack { display:flex; flex-direction:column; gap:18px; min-width:0; }
-    .capital-hero { flex:1; }
+    .capital-hero { flex:0 0 auto; }
     .hero-top { display:grid; grid-template-columns:minmax(340px,1fr) minmax(300px,.78fr); gap:12px; align-items:start; padding:14px; border:1px solid #c5d5e6; border-radius:8px; background:linear-gradient(145deg,#eef5fb 0%,#f8fbff 45%,#edf4fa 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.86), 0 18px 44px rgba(15,23,42,.10); }
     .hero-top:before { content:""; grid-column:1 / -1; height:3px; border-radius:999px; background:linear-gradient(90deg,#15936a,#2563eb,#d97706); opacity:.72; margin:-2px 0 0; }
+    .hero-main-column { display:grid; gap:12px; min-width:0; }
     .hero-donut { border:1px solid #cbd8e6; border-radius:8px; min-height:164px; padding:14px; overflow:hidden; background:linear-gradient(135deg,#f0f7ff 0%,#f8fbff 58%,#eef6fb 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.82), 0 12px 28px rgba(15,23,42,.07); }
     .hero-donut-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:4px; }
     .mode-pill { display:inline-flex; align-items:center; justify-content:center; min-width:48px; height:26px; padding:0 10px; border-radius:999px; background:#101828; color:#fff; font-size:12px; font-weight:900; }
@@ -1016,52 +1017,54 @@ INDEX_HTML = r"""<!doctype html>
     .hero-carousel-track.bots { transform:translateX(-50%); }
     .hero-carousel-page { width:50%; flex:0 0 50%; min-width:0; display:flex; flex-direction:column; }
     .hero-carousel-page .donut-wrap { min-height:112px; }
-    .hero-metrics-column { display:grid; gap:12px; align-self:start; min-width:0; padding:10px; border:1px solid #d5e2ef; border-radius:8px; background:linear-gradient(135deg,#fffaf3 0%,#f7fbff 54%,#eef5fb 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.78); }
+    .hero-side-column { display:grid; gap:10px; align-self:stretch; min-width:0; padding:10px; border:1px solid #d5e2ef; border-radius:8px; background:linear-gradient(135deg,#fffaf3 0%,#f7fbff 54%,#eef5fb 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.78); }
+    .hero-pools-list { display:grid; gap:8px; }
+    .hero-pool-row { border:1px solid #d8e3ef; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); padding:9px 10px; display:grid; gap:6px; box-shadow:0 6px 14px rgba(15,23,42,.035); }
+    .hero-pool-top { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .hero-pool-name { color:var(--ink); font-size:13px; font-weight:950; }
+    .hero-pool-meta { color:var(--muted); font-size:11px; font-weight:800; }
+    .hero-pool-mid { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+    .hero-pool-used { color:var(--ink); font-size:18px; font-weight:950; line-height:1; }
+    .hero-pool-available { color:var(--muted); font-size:11px; font-weight:850; white-space:nowrap; }
     .metric-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; align-self:start; }
     .metric { border:1px solid #cfdae7; border-radius:8px; padding:10px 12px; min-height:68px; background:linear-gradient(180deg,#fff,#f8fafc); box-shadow:0 8px 18px rgba(15,23,42,.06); }
     .metric-label, .pool-meta, .small-muted { color:var(--muted); font-size:12px; }
     .metric-value { font-size:15px; font-weight:850; margin-top:5px; line-height:1.1; white-space:nowrap; font-variant-numeric:tabular-nums; }
-    .risk-strip { margin-top:0; border:1px solid #d5e6f8; border-radius:8px; padding:12px; display:grid; gap:10px; background:linear-gradient(135deg, #fff 0%, #f4fbff 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.72); }
-    .risk-topbar { display:flex; align-items:center; justify-content:space-between; gap:14px; }
+    .risk-compact-card { border:1px solid #d5e6f8; border-radius:8px; padding:12px; display:grid; gap:10px; background:linear-gradient(135deg, #fff 0%, #f4fbff 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.72), 0 10px 24px rgba(15,23,42,.045); }
+    .risk-topbar { display:grid; grid-template-columns:1fr; gap:10px; }
     .risk-main { min-width:0; display:grid; gap:10px; }
-    .risk-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; min-width:0; }
+    .risk-head { display:grid; grid-template-columns:1fr; gap:8px; min-width:0; }
     .risk-head h2 { white-space:nowrap; }
     .risk-body { min-width:0; }
     .risk-line { display:flex; gap:8px; flex-wrap:wrap; align-content:flex-start; color:var(--muted); font-size:11px; }
     .risk-chip { min-height:24px; display:inline-flex; align-items:center; border-radius:999px; padding:4px 9px; background:#eef2f6; color:#475467; font-size:11px; font-weight:850; white-space:nowrap; border:1px solid rgba(255,255,255,.72); box-shadow:0 4px 10px rgba(15,23,42,.035); }
+    .risk-chip-label { color:inherit; opacity:.72; font-size:10px; font-weight:850; line-height:1; }
+    .risk-chip-value { color:inherit; font-size:11px; font-weight:950; line-height:1.15; max-width:100%; white-space:nowrap; }
     .risk-chip.ok { background:#e7f6ef; color:#08734f; }
     .risk-chip.warn { background:#fff3d6; color:#9a5b00; }
     .risk-chip.danger { background:#fee2e2; color:#b42318; }
     .risk-chip.info { background:#e0f2fe; color:#075985; }
-    .market-risk-inline { display:flex; gap:7px; flex-wrap:wrap; align-items:center; min-width:0; }
-    .market-risk-inline .risk-chip { padding:5px 10px; font-size:12px; }
+    .market-risk-inline { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; align-items:stretch; min-width:0; }
+    .market-risk-inline .risk-chip { min-height:46px; justify-content:center; flex-direction:column; gap:4px; border-radius:8px; padding:7px 6px; font-size:11px; overflow:visible; }
     .market-risk-inline.fresh .risk-chip { animation:freshPulse .85s ease-out 1; }
     @keyframes freshPulse {
       0% { transform:scale(1); box-shadow:0 0 0 0 rgba(21,147,106,.24); filter:brightness(1); }
       42% { transform:scale(1.035); box-shadow:0 0 0 7px rgba(21,147,106,.10); filter:brightness(1.04); }
       100% { transform:scale(1); box-shadow:0 0 0 0 rgba(21,147,106,0); filter:brightness(1); }
     }
-    .risk-actions { display:flex; align-items:center; gap:10px; flex:0 0 auto; }
+    .risk-actions { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; gap:8px; width:100%; }
     .risk-badge { font-size:13px; font-weight:700; padding:5px 9px; border-radius:999px; background:#e7f6ef; color:var(--green); white-space:nowrap; }
     .risk-badge.warn { background:#fff3d6; color:#9a5b00; }
     .risk-badge.danger { background:#fee2e2; color:#b42318; }
-    .risk-control-select { height:34px; border:1px solid var(--line); border-radius:7px; padding:0 10px; background:#fff; color:var(--ink); font-weight:800; box-shadow:0 5px 14px rgba(15,23,42,.035); }
-    .clear-btn { height:30px; padding:0 14px; border:0; border-radius:7px; background:#fee2e2; color:#b42318; font-weight:850; }
+    .risk-control-select { width:100%; height:38px; border:1px solid var(--line); border-radius:7px; padding:0 10px; background:#fff; color:var(--ink); font-weight:800; box-shadow:0 5px 14px rgba(15,23,42,.035); }
+    .clear-btn { height:38px; padding:0 16px; border:0; border-radius:7px; background:#fee2e2; color:#b42318; font-weight:850; white-space:nowrap; }
     .clear-btn:hover { background:#fecaca; }
+    .capital-bottom-grid { display:grid; grid-template-columns:1fr; gap:12px; }
+    .rebalance-card { margin-top:0; }
     .rebalance-advice { min-height:74px; display:grid; grid-template-columns:auto 1fr; grid-template-areas:"icon title" "icon detail"; align-items:center; column-gap:10px; row-gap:4px; padding:11px 12px; border:1px solid #c4ddf6; border-radius:8px; background:linear-gradient(135deg,#eef8ff,#f8fbff); color:var(--muted); font-size:12px; font-weight:750; box-shadow:0 10px 22px rgba(15,23,42,.07); }
     .rebalance-icon { grid-area:icon; width:34px; height:34px; border-radius:8px; display:grid; place-items:center; background:#fff; color:#075985; font-weight:950; box-shadow:inset 0 0 0 1px #bfdbfe; }
     .rebalance-title { grid-area:title; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--ink); font-weight:900; }
     .rebalance-detail { grid-area:detail; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-    .exposure-card { margin-top:14px; border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:linear-gradient(180deg,#fff,#f8fbff); box-shadow:0 8px 20px rgba(15,23,42,.035); }
-    .exposure-head { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:12px; font-size:13px; font-weight:800; }
-    .exposure-value { color:var(--muted); font-size:12px; font-weight:700; }
-    .exposure-event { min-width:0; display:flex; justify-content:center; opacity:1; transition:opacity .28s ease; }
-    .exposure-event.fading { opacity:.18; }
-    .event-inline { max-width:100%; display:grid; grid-template-columns:48px 38px minmax(0,1fr) 28px; align-items:center; gap:8px; color:var(--ink); font-size:12px; font-weight:850; padding:5px 10px; border:1px solid #e0e8f2; border-radius:999px; background:linear-gradient(180deg,#fff,#f8fbff); box-shadow:0 6px 14px rgba(15,23,42,.04); }
-    .event-inline .event-title { max-width:420px; }
-    .exposure-bar { height:12px; border-radius:999px; overflow:hidden; background:#e9edf3; margin-top:10px; }
-    .exposure-fill { height:100%; width:0%; background:linear-gradient(90deg, #15936a, #d97706); }
-    .pool-grid { margin-top:26px; display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; }
     .pool-card { border:1px solid var(--line); border-radius:8px; padding:14px; min-height:126px; background:linear-gradient(180deg,#fff,#fafcff); box-shadow:0 10px 22px rgba(15,23,42,.04); position:relative; overflow:hidden; }
     .pool-card:before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:#d7e0ea; }
     .pool-card.defensive-pool { background:linear-gradient(180deg,#f9fbff,#f4f8fd); }
@@ -1111,7 +1114,6 @@ INDEX_HTML = r"""<!doctype html>
     .event-type.earnings { background:#e7f6ef; color:#08734f; }
     .event-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .event-impact { color:var(--muted); text-align:right; font-size:11px; font-weight:850; }
-    .event-empty { color:var(--muted); font-size:12px; font-weight:750; padding:8px 0; }
     .carousel-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
     .carousel-actions { display:flex; align-items:center; gap:7px; }
     .carousel-tab { height:28px; min-width:36px; padding:0 10px; border:1px solid #cfd9e6; border-radius:7px; background:#fff; color:var(--muted); font-weight:850; }
@@ -1279,12 +1281,11 @@ INDEX_HTML = r"""<!doctype html>
       h2 { font-size:15px; }
       .dash, .left-stack, .right-stack { display:contents; }
       .left-titlebar { order:0; }
-      .chart-panel { order:1; }
-      .holdings-panel { order:2; }
-      .capital-hero { order:3; }
-      .annual-panel { order:4; }
-      .risk-strip { order:5; }
-      .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .annual-panel, .risk-strip { width:100%; }
+      .capital-hero { order:1; }
+      .annual-panel { order:2; }
+      .chart-panel { order:3; }
+      .holdings-panel { order:5; }
+      .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .annual-panel { width:100%; }
       .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:center; }
       .brand-lockup { gap:8px; flex:1 1 auto; }
       .brand-logo { width:38px; height:38px; border-radius:8px; }
@@ -1305,26 +1306,18 @@ INDEX_HTML = r"""<!doctype html>
       .mobile-collapsible.mobile-open .mobile-collapse-body { display:block; }
       .mobile-collapsible.mobile-open .mobile-collapse-toggle span:last-child::before { content:"收起"; }
       .mobile-collapsible:not(.mobile-open) .mobile-collapse-toggle span:last-child::before { content:"展开"; }
-      .hero-top, .pool-grid { grid-template-columns:1fr; gap:10px; }
+      .hero-top { grid-template-columns:1fr; gap:10px; }
       .hero-donut { min-height:auto; padding:13px; }
-      .hero-metrics-column { gap:10px; }
+      .hero-side-column { gap:10px; }
       .metric-grid { grid-template-columns:repeat(2, minmax(0,1fr)); gap:9px; }
       .metric { min-height:64px; padding:10px; }
       .metric-label, .pool-meta, .small-muted { font-size:11px; }
       .metric-value { font-size:15px; margin-top:6px; }
-      .risk-strip { padding:12px; }
       .risk-topbar, .risk-head { align-items:flex-start; }
       .risk-topbar { display:grid; grid-template-columns:1fr; gap:10px; }
       .risk-line { gap:8px; line-height:1.4; }
-      .risk-actions { width:100%; justify-content:flex-end; }
+      .risk-actions { width:100%; }
       .rebalance-advice { min-height:0; }
-      .clear-btn { height:32px; }
-      .exposure-card { margin-top:12px; padding:12px; }
-      .exposure-head { grid-template-columns:1fr; align-items:flex-start; gap:6px; }
-      .exposure-value { line-height:1.35; }
-      .exposure-event { width:100%; justify-content:flex-start; }
-      .event-inline { width:100%; grid-template-columns:44px 38px minmax(0,1fr) 28px; padding:5px 8px; }
-      .pool-grid { margin-top:14px; }
       .pool-card { min-height:112px; padding:12px; }
       .pool-value { font-size:25px; }
       .pool-amounts { font-size:11px; gap:6px; }
@@ -1396,44 +1389,63 @@ INDEX_HTML = r"""<!doctype html>
           <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('capitalPanel')"><span>账户资金</span><span></span></button>
           <div class="mobile-collapse-body">
             <div class="hero-top">
-              <div class="hero-donut">
-                <div class="hero-donut-head">
-                  <h2 id="toolsPanelTitle">资金比例</h2>
-                  <div class="carousel-actions">
-                    <span class="mode-pill" id="modeValue">--</span>
-                    <button class="carousel-tab active" id="toolTabDonut" onclick="setToolsPage('donut')">资金</button>
-                    <button class="carousel-tab" id="toolTabBots" onclick="setToolsPage('bots')">机器人</button>
+              <div class="hero-main-column">
+                <div class="hero-donut">
+                  <div class="hero-donut-head">
+                    <h2 id="toolsPanelTitle">资金比例</h2>
+                    <div class="carousel-actions">
+                      <span class="mode-pill" id="modeValue">--</span>
+                      <button class="carousel-tab active" id="toolTabDonut" onclick="setToolsPage('donut')">资金</button>
+                      <button class="carousel-tab" id="toolTabBots" onclick="setToolsPage('bots')">机器人</button>
+                    </div>
                   </div>
-                </div>
-                <div class="hero-carousel-viewport">
-                  <div class="hero-carousel-track" id="toolsTrack">
-                    <div class="hero-carousel-page">
-                      <div class="donut-wrap">
-                        <canvas id="capitalDonut" width="220" height="220"></canvas>
-                        <div class="legend" id="donutLegend"></div>
+                  <div class="hero-carousel-viewport">
+                    <div class="hero-carousel-track" id="toolsTrack">
+                      <div class="hero-carousel-page">
+                        <div class="donut-wrap">
+                          <canvas id="capitalDonut" width="220" height="220"></canvas>
+                          <div class="legend" id="donutLegend"></div>
+                        </div>
+                      </div>
+                      <div class="hero-carousel-page">
+                        <div class="bot-grid" id="botLights"></div>
+                        <div class="bot-pager" id="botPager"></div>
                       </div>
                     </div>
-                    <div class="hero-carousel-page">
-                      <div class="bot-grid" id="botLights"></div>
-                      <div class="bot-pager" id="botPager"></div>
-                    </div>
                   </div>
                 </div>
+                <div class="capital-bottom-grid">
+                  <div class="risk-compact-card">
+                    <div class="risk-topbar">
+                      <div class="risk-head">
+                        <h2>风险状态</h2>
+                        <div class="market-risk-inline" id="marketRisk"></div>
+                      </div>
+                      <div class="risk-actions">
+                        <select class="risk-control-select" id="riskPreferenceSelect" onchange="updateRiskPreference(this.value)">
+                          <option value="保守">保守</option>
+                          <option value="中性">中性</option>
+                          <option value="激进">激进</option>
+                        </select>
+                        <button class="clear-btn" onclick="openClearModal()">清仓</button>
+                        <select class="risk-control-select" id="marginUsageSelect" onchange="updateMarginUsage(this.value)" title="A/B/C 保证金使用额度">
+                          <option value="1.0">额度 100%</option>
+                          <option value="1.1">额度 110%</option>
+                          <option value="1.2">额度 120%</option>
+                          <option value="1.3">额度 130%</option>
+                          <option value="1.4">额度 140%</option>
+                          <option value="1.5">额度 150%</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="rebalance-card"><div class="rebalance-advice" id="rebalanceAdvice"></div></div>
+                </div>
               </div>
-              <div class="hero-metrics-column">
-                <div class="metric-grid" id="metrics"></div>
-                <div class="rebalance-advice" id="rebalanceAdvice"></div>
+              <div class="hero-side-column">
+                <div class="hero-pools-list" id="heroPools"></div>
               </div>
             </div>
-            <div class="exposure-card">
-              <div class="exposure-head">
-                <span>资金池使用率</span>
-                <div class="exposure-event" id="majorEvents"></div>
-                <span class="exposure-value" id="exposureValue">--</span>
-              </div>
-              <div class="exposure-bar"><div class="exposure-fill" id="exposureFill"></div></div>
-            </div>
-            <div class="pool-grid" id="pools"></div>
           </div>
         </div>
       </div>
@@ -1446,33 +1458,6 @@ INDEX_HTML = r"""<!doctype html>
               <span class="annual-kicker">2026 Goals</span>
             </div>
             <div class="annual-grid" id="annualGoals"></div>
-          </div>
-        </div>
-        <div class="risk-strip">
-          <div class="risk-topbar">
-            <div class="risk-head">
-              <h2>风险状态</h2>
-              <div class="market-risk-inline" id="marketRisk"></div>
-            </div>
-            <div class="risk-actions">
-              <select class="risk-control-select" id="riskPreferenceSelect" onchange="updateRiskPreference(this.value)">
-                <option value="保守">保守</option>
-                <option value="中性">中性</option>
-                <option value="激进">激进</option>
-              </select>
-              <button class="clear-btn" onclick="openClearModal()">清仓</button>
-              <select class="risk-control-select" id="marginUsageSelect" onchange="updateMarginUsage(this.value)" title="A/B/C 保证金使用额度">
-                <option value="1.0">额度 100%</option>
-                <option value="1.1">额度 110%</option>
-                <option value="1.2">额度 120%</option>
-                <option value="1.3">额度 130%</option>
-                <option value="1.4">额度 140%</option>
-                <option value="1.5">额度 150%</option>
-              </select>
-            </div>
-          </div>
-          <div class="risk-body">
-            <div class="risk-line" id="risk"></div>
           </div>
         </div>
         <div class="panel chart-panel mobile-collapsible mobile-open" id="chartPanel">
@@ -1616,8 +1601,6 @@ INDEX_HTML = r"""<!doctype html>
     let dOptionQty = 1;
     let selectedDCombo = null;
     let dOptionScrollMode = 'preserve';
-    let majorEventsTimer = null;
-    let majorEventsIndex = 0;
     async function api(path) {
       const r = await fetch(path);
       if (r.status === 401) { location.reload(); return {ok:false, error:'unauthorized'}; }
@@ -1686,43 +1669,6 @@ INDEX_HTML = r"""<!doctype html>
       if (!result.ok) { alert(result.error || '年度任务更新失败'); return; }
       await loadAll();
     }
-    function renderMajorEvents(payload) {
-      const box = document.getElementById('majorEvents');
-      if (!box) return;
-      if (majorEventsTimer) {
-        clearInterval(majorEventsTimer);
-        majorEventsTimer = null;
-      }
-      majorEventsIndex = 0;
-      if (!payload || !payload.ok) {
-        box.innerHTML = `<div class="event-empty">事件日历暂不可用</div>`;
-        return;
-      }
-      const rows = payload.rows || [];
-      if (!rows.length) {
-        box.innerHTML = `<div class="event-empty">${payload.message || '未来 45 天暂无重点事件'}</div>`;
-        return;
-      }
-      const typeClass = {宏观:'macro', IPO:'ipo', 财报:'earnings'};
-      const renderOne = (index) => {
-        const e = rows[index] || rows[0];
-        const d = String(e.date || '').slice(5) || '--';
-        const type = e.type || '--';
-        const title = [e.symbol, e.title].filter(Boolean).join(' · ');
-        box.innerHTML = `<div class="event-inline" title="${title}"><span class="event-date">${d}</span><span class="event-type ${typeClass[type] || ''}">${type}</span><span class="event-title">${title || '--'}</span><span class="event-impact">${e.impact || ''}</span></div>`;
-      };
-      renderOne(0);
-      if (rows.length > 1) {
-        majorEventsTimer = setInterval(() => {
-          majorEventsIndex = (majorEventsIndex + 1) % rows.length;
-          box.classList.add('fading');
-          setTimeout(() => {
-            renderOne(majorEventsIndex);
-            box.classList.remove('fading');
-          }, 260);
-        }, 7000);
-      }
-    }
     function poolCard(g, cap) {
       const defensive = cap.defensive_pools?.[g];
       if (defensive) {
@@ -1741,6 +1687,15 @@ INDEX_HTML = r"""<!doctype html>
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
       const riskPct = Number(cap.total_risk_percent || 0) * Number(cap.pool_risk_percents?.[g] || 0) * 100;
       return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池</div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>月度目标 ${money(displayTarget)}</span><span>可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
+    }
+    function poolRow(g, cap) {
+      const riskTarget = Number(cap.targets?.[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
+      const displayTarget = riskTarget > 0 ? riskTarget : baseTarget;
+      const used = Number(cap.used?.[g] || 0), av = Number(cap.available?.[g] || 0);
+      const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
+      const basePct = Number(cap.base_percents?.[g] || 0) * 100;
+      const riskPct = Number(cap.total_risk_percent || 0) * Number(cap.pool_risk_percents?.[g] || 0) * 100;
+      return `<div class="hero-pool-row"><div class="hero-pool-top"><div><div class="hero-pool-name">${g} 资金池</div><div class="hero-pool-meta">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><span class="small-muted">${w.toFixed(1)}%</span></div><div class="hero-pool-mid"><span class="hero-pool-used">${money(used)}</span><span class="hero-pool-available">可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
     function drawDonutOn(canvasId, legendId, cap) {
       const canvas = document.getElementById(canvasId);
@@ -2314,7 +2269,7 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
     function riskChip(label, value, tone='info') {
-      return `<span class="risk-chip ${tone}">${label}=${value}</span>`;
+      return `<span class="risk-chip ${tone}"><span class="risk-chip-label">${label}</span><span class="risk-chip-value">${value}</span></span>`;
     }
     function qqqRiskValue(risk) {
       const price = Number(risk.qqq_price || 0);
@@ -2372,29 +2327,17 @@ INDEX_HTML = r"""<!doctype html>
       const refreshBtn = document.querySelector('.refresh-btn');
       if (refreshBtn) refreshBtn.classList.add('loading');
       try {
-      const [cap, risk, holdings, state, phase, dTactical, majorEvents] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase'), api('/api/d_tactical'), api('/api/major_events')]);
+      const [cap, risk, holdings, state, phase, dTactical] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase'), api('/api/d_tactical')]);
       if (cap.ok) {
         window.latestCapitalPayload = cap;
         document.getElementById('modeValue').textContent = cap.mode_label || cap.mode;
-        document.getElementById('metrics').innerHTML = [
-          metric('Equity', money(cap.equity)), metric('Buying Power', money(cap.buying_power)), metric('Portfolio', money(cap.portfolio_value)), metric('Cash', money(cap.cash))
-        ].join('');
         renderAnnualGoals(cap.annual_goals || []);
-        document.getElementById('pools').innerHTML = ['A','B','C','D','X','Z'].map(g => poolCard(g, cap)).join('');
-        const usedTotal = Number(cap.used_total || 0);
-        const usableTotal = Number(cap.usable_total || 0);
-        const baseTotal = Number(cap.base_total || 0);
-        const exposureBase = usableTotal > 0 ? usableTotal : baseTotal;
-        const exposurePct = exposureBase > 0 ? Math.min(999, usedTotal / exposureBase * 100) : 0;
-        const totalRiskPct = Number(cap.total_risk_percent || 0) * 100;
-        document.getElementById('exposureValue').textContent = `${exposurePct.toFixed(1)}% / 可用${totalRiskPct.toFixed(0)}% / ${money(usedTotal)}`;
-        document.getElementById('exposureFill').style.width = `${Math.min(100, exposurePct)}%`;
+        document.getElementById('heroPools').innerHTML = ['A','B','C','D'].map(g => poolRow(g, cap)).join('');
         const marginSelect = document.getElementById('marginUsageSelect');
         if (marginSelect) marginSelect.value = String((Number(cap.margin_usage_percent || cap.total_risk_percent || 1)).toFixed(1));
         drawDonut(cap);
       } else {
         document.getElementById('modeValue').textContent = 'ERROR';
-        document.getElementById('metrics').innerHTML = metric('账户', cap.error || '不可用');
       }
       const tone = riskTone(risk);
       const riskSelect = document.getElementById('riskPreferenceSelect');
@@ -2402,17 +2345,6 @@ INDEX_HTML = r"""<!doctype html>
       const marketExposure = Number(risk.recommended_exposure || 0);
       const rebalanceTarget = Number(state?.exposure_state?.target_exposure_pct ?? marketExposure);
       const targetTone = rebalanceTarget <= 0.1 ? 'danger' : rebalanceTarget < 0.5 ? 'warn' : 'ok';
-      document.getElementById('risk').innerHTML = [
-        riskChip('风险', Number(risk.risk_multiplier || 0).toFixed(2), tone),
-        riskChip('日亏', pct(risk.daily_pnl_pct), Number(risk.daily_pnl_pct || 0) < 0 ? 'danger' : 'ok'),
-        riskChip('连亏', risk.loss_days || 0, Number(risk.loss_days || 0) > 0 ? 'warn' : 'ok'),
-        riskChip('回撤', pct(risk.max_drawdown), Number(risk.max_drawdown || 0) > 0.04 ? 'danger' : 'ok'),
-        riskChip('市场仓位', `${(marketExposure * 100).toFixed(0)}%`, marketExposure < 0.5 ? 'warn' : 'ok'),
-        riskChip('调仓目标', `${(rebalanceTarget * 100).toFixed(0)}%`, targetTone),
-        riskChip('AC', (risk.block_a || risk.block_c) ? '警' : '正常', (risk.block_a || risk.block_c) ? 'danger' : 'ok'),
-        riskChip('B', risk.block_b ? '警' : '正常', risk.block_b ? 'danger' : 'ok'),
-        riskChip('D', risk.block_d ? '警' : '正常', risk.block_d ? 'danger' : 'ok')
-      ].join('');
       document.getElementById('marketRisk').innerHTML = [
         riskChip('趋势', risk.market_trend || '--', risk.market_trend === '向上' ? 'ok' : risk.market_trend === '向下' ? 'danger' : 'warn'),
         riskChip('QQQ', qqqRiskValue(risk), Number(risk.qqq_change_pct || 0) < 0 ? 'warn' : 'ok'),
@@ -2423,7 +2355,6 @@ INDEX_HTML = r"""<!doctype html>
       void marketRisk.offsetWidth;
       marketRisk.classList.add('fresh');
       renderRebalanceAdvice(state.exposure_state, risk);
-      renderMajorEvents(majorEvents);
       window.latestBotProcesses = state.bot_processes || [];
       latestBotHeartbeats = state.bot_heartbeats || [];
       latestBotControls = state.bot_controls || [];
