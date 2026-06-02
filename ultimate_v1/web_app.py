@@ -209,14 +209,16 @@ def _annual_goals_payload(allocation) -> list[dict]:
 
     return [
         {
-            "key": "retirement",
-            "name": "退休金满额计划",
-            "desc": f"目标存满 ${retirement_target:,.0f}",
-            "current": retirement_current,
-            "target": retirement_target,
-            "unit": "money",
-            "step": 500,
-            "action_label": "+500",
+            "key": "stock_growth",
+            "name": "股票账户跃迁",
+            "desc": f"年度回报目标 30% · 已完成 {stock_completions} 次",
+            "current": return_current,
+            "target": return_target,
+            "unit": "percent",
+            "start_equity": start_equity,
+            "equity": equity,
+            "completed_count": stock_completions,
+            "status_label": f"第 {stock_completions + 1} 轮",
         },
         {
             "key": "cash_guard",
@@ -229,16 +231,14 @@ def _annual_goals_payload(allocation) -> list[dict]:
             "action_label": "+500",
         },
         {
-            "key": "stock_growth",
-            "name": "股票账户跃迁",
-            "desc": f"年度回报目标 30% · 已完成 {stock_completions} 次",
-            "current": return_current,
-            "target": return_target,
-            "unit": "percent",
-            "start_equity": start_equity,
-            "equity": equity,
-            "completed_count": stock_completions,
-            "status_label": f"第 {stock_completions + 1} 轮",
+            "key": "retirement",
+            "name": "退休金满额计划",
+            "desc": f"目标存满 ${retirement_target:,.0f}",
+            "current": retirement_current,
+            "target": retirement_target,
+            "unit": "money",
+            "step": 500,
+            "action_label": "+500",
         },
         {
             "key": "fitness",
@@ -1080,6 +1080,11 @@ INDEX_HTML = r"""<!doctype html>
     .annual-grid { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:10px; }
     .annual-goal { border:1px solid #e0e8f2; border-radius:8px; padding:12px; background:linear-gradient(180deg,#fff,#f9fbff); min-height:94px; display:grid; gap:9px; align-content:start; box-shadow:0 8px 18px rgba(15,23,42,.035); }
     .annual-goal { grid-column:span 2; }
+    .annual-goal.stock_growth { grid-column:1 / -1; min-height:92px; }
+    .annual-goal.stock_growth .annual-goal-top { align-items:center; }
+    .annual-goal.stock_growth .annual-name { font-size:15px; }
+    .annual-goal.stock_growth .annual-desc { white-space:normal; }
+    .annual-goal.retirement, .annual-goal.cash_guard { grid-column:span 3; }
     .annual-goal.fitness { grid-column:span 3; }
     .annual-goal.vocabulary { grid-column:span 3; }
     .annual-goal-top { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
