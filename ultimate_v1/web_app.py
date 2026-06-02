@@ -1043,13 +1043,29 @@ def _manual_stock_buy(payload: dict, *, dry_run: bool) -> dict:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    UPDATE `{table}`
-                    SET strategy_group=%s, capital_pool=%s, last_order_side='buy',
-                        last_order_id=%s, last_order_intent=%s, last_order_time=NOW()
-                    WHERE UPPER(stock_code)=%s
-                    LIMIT 1
+                    INSERT INTO `{table}` (
+                        stock_code, stock_type, is_bought, can_buy, can_sell,
+                        strategy_group, capital_pool, last_order_side,
+                        last_order_id, last_order_intent, last_order_time
+                    )
+                    VALUES (%s, %s, 0, 0, 0, %s, %s, 'buy', %s, %s, NOW())
+                    ON DUPLICATE KEY UPDATE
+                        stock_type=VALUES(stock_type),
+                        strategy_group=VALUES(strategy_group),
+                        capital_pool=VALUES(capital_pool),
+                        last_order_side='buy',
+                        last_order_id=VALUES(last_order_id),
+                        last_order_intent=VALUES(last_order_intent),
+                        last_order_time=NOW()
                     """,
-                    (group, group, response["order_id"], f"MANUAL:{order_type} amount={requested_amount:.2f}"[:80], symbol),
+                    (
+                        symbol,
+                        group,
+                        group,
+                        group,
+                        response["order_id"],
+                        f"MANUAL:{order_type} amount={requested_amount:.2f}"[:80],
+                    ),
                 )
     except Exception as exc:
         response["ops_update_error"] = str(exc)
@@ -1244,25 +1260,26 @@ INDEX_HTML = r"""<!doctype html>
     .tabs { display:flex; gap:6px; flex-wrap:wrap; }
     .tab { height:28px; border-radius:6px; padding:0 10px; color:var(--muted); }
     .tab.active { background:#101828; color:#fff; border-color:#101828; }
-    .manual-trade-panel { margin-top:12px; border:1px solid #cbd8e6; border-radius:8px; background:linear-gradient(135deg,#f8fbff 0%,#fff 56%,#f2f7fc 100%); padding:12px; display:grid; gap:12px; }
-    .manual-trade-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
-    .manual-title { font-size:14px; font-weight:950; color:var(--ink); }
+    .manual-trade-panel { margin-top:12px; border:1px solid #cbd8e6; border-radius:8px; background:linear-gradient(135deg,#f8fbff 0%,#fff 56%,#f2f7fc 100%); padding:12px 14px; display:grid; gap:10px; box-shadow:inset 0 1px 0 rgba(255,255,255,.86); }
+    .manual-trade-head { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:start; gap:14px; }
+    .manual-title-line { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+    .manual-title { font-size:15px; font-weight:950; color:var(--ink); }
+    .manual-pool-pill { display:inline-flex; align-items:center; height:24px; border-radius:999px; padding:0 9px; background:#101828; color:#fff; font-size:12px; font-weight:950; }
     .manual-subtitle { margin-top:3px; color:var(--muted); font-size:12px; font-weight:750; }
-    .manual-cap { text-align:right; color:var(--muted); font-size:12px; font-weight:850; }
-    .manual-cap b { display:block; color:var(--ink); font-size:18px; line-height:1.15; }
-    .manual-grid { display:grid; grid-template-columns:minmax(170px,.85fr) minmax(120px,.6fr) minmax(180px,1fr) minmax(130px,.65fr); gap:10px; align-items:end; }
+    .manual-cap { min-width:130px; text-align:right; color:var(--muted); font-size:12px; font-weight:850; }
+    .manual-cap b { display:block; color:var(--ink); font-size:20px; line-height:1.12; }
+    .manual-grid { display:grid; grid-template-columns:minmax(160px,1fr) minmax(140px,.9fr) minmax(120px,.72fr) minmax(116px,.58fr) minmax(108px,.5fr); gap:10px; align-items:end; }
     .manual-field { display:grid; gap:6px; min-width:0; }
     .manual-field label { color:var(--muted); font-size:11px; font-weight:900; }
     .manual-field input, .manual-field select { width:100%; height:36px; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--ink); padding:0 10px; font-weight:850; outline:none; }
     .manual-field input:focus, .manual-field select:focus { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.10); }
-    .fraction-buttons { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:6px; }
-    .fraction-btn { height:36px; border-radius:7px; padding:0 6px; font-weight:900; color:#475467; }
-    .fraction-btn.active { background:#101828; color:#fff; border-color:#101828; }
-    .manual-actions { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+    .manual-preview-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding-top:2px; }
     .manual-preview { color:var(--muted); font-size:12px; font-weight:800; }
     .manual-preview b { color:var(--ink); }
     .manual-buttons { display:flex; gap:8px; align-items:center; }
     .manual-buttons button { height:34px; font-weight:900; }
+    .manual-check-btn { min-width:66px; }
+    .manual-buy-btn { min-width:92px; }
     .manual-buy-btn { border:0; background:#15936a; color:#fff; }
     .manual-buy-btn:hover { background:#08734f; }
     .manual-buy-btn:disabled, .manual-check-btn:disabled { opacity:.45; pointer-events:none; }
@@ -1423,7 +1440,9 @@ INDEX_HTML = r"""<!doctype html>
       .mobile-collapse-body { display:none; padding:12px; border-top:1px solid #eef2f6; }
       .mobile-collapsible:not(.mobile-open) > .mobile-collapse-body { display:none !important; }
       .manual-trade-panel { padding:10px; }
-      .manual-trade-head, .manual-actions { align-items:flex-start; }
+      .manual-trade-head { grid-template-columns:1fr; }
+      .manual-cap { text-align:left; }
+      .manual-preview-row { align-items:flex-start; flex-direction:column; }
       .manual-grid { grid-template-columns:1fr; }
       .manual-buttons { width:100%; }
       .manual-buttons button { flex:1; }
@@ -1616,16 +1635,22 @@ INDEX_HTML = r"""<!doctype html>
             <div class="manual-trade-panel" id="manualTradePanel">
               <div class="manual-trade-head">
                 <div>
-                  <div class="manual-title">手动下单</div>
+                  <div class="manual-title-line"><span class="manual-title">手动下单</span><span class="manual-pool-pill" id="manualPoolPill">A 资金池</span></div>
                   <div class="manual-subtitle" id="manualTradeSubtitle">点击左侧 A/B/C/D 资金池后选择股票和额度</div>
                 </div>
                 <div class="manual-cap"><span>可用额度</span><b id="manualAvailable">$0.00</b></div>
               </div>
               <div class="manual-grid">
                 <div class="manual-field">
-                  <label for="manualSymbol">股票代码</label>
+                  <label for="manualSymbol">股票代码（可手动输入）</label>
                   <input id="manualSymbol" list="manualSymbolList" placeholder="例如 AAPL" oninput="updateManualTradePreview()" />
                   <datalist id="manualSymbolList"></datalist>
+                </div>
+                <div class="manual-field">
+                  <label for="manualCandidateSelect">预选池</label>
+                  <select id="manualCandidateSelect" onchange="selectManualCandidate(this.value)">
+                    <option value="">手动输入</option>
+                  </select>
                 </div>
                 <div class="manual-field">
                   <label for="manualOrderMode">购买模式</label>
@@ -1635,20 +1660,20 @@ INDEX_HTML = r"""<!doctype html>
                   </select>
                 </div>
                 <div class="manual-field">
-                  <label>买多少</label>
-                  <div class="fraction-buttons" id="manualFractions">
-                    <button class="fraction-btn active" type="button" data-fraction="0.25" onclick="selectManualFraction(0.25)">1/4</button>
-                    <button class="fraction-btn" type="button" data-fraction="0.3333333333" onclick="selectManualFraction(0.3333333333)">1/3</button>
-                    <button class="fraction-btn" type="button" data-fraction="0.5" onclick="selectManualFraction(0.5)">1/2</button>
-                  </div>
+                  <label for="manualFractionSelect">买多少</label>
+                  <select id="manualFractionSelect" onchange="selectManualFraction(this.value)">
+                    <option value="0.25">可用额度 1/4</option>
+                    <option value="0.3333333333">可用额度 1/3</option>
+                    <option value="0.5">可用额度 1/2</option>
+                  </select>
                 </div>
                 <div class="manual-field">
                   <label for="manualLimitPrice">限价</label>
                   <input id="manualLimitPrice" type="number" min="0" step="0.01" placeholder="限价模式填写" oninput="updateManualTradePreview()" />
                 </div>
               </div>
-              <div class="manual-actions">
-                <div>
+              <div class="manual-preview-row">
+                <div class="manual-preview-wrap">
                   <div class="manual-preview" id="manualPreview">预计买入 <b>$0.00</b></div>
                   <div class="manual-error" id="manualTradeError"></div>
                 </div>
@@ -1933,16 +1958,33 @@ INDEX_HTML = r"""<!doctype html>
       const rows = latestManualCandidates.filter(r => String(r.capital_pool || r.strategy_group || '').toUpperCase() === selectedManualPool);
       const list = document.getElementById('manualSymbolList');
       if (list) {
-        list.innerHTML = rows.map(r => `<option value="${escAttr(r.symbol)}">${escAttr(r.strategy_group || selectedManualPool)} ${escAttr(r.stock_type || '')}</option>`).join('');
+        list.innerHTML = rows.map(r => `<option value="${escAttr(r.symbol)}">${escAttr(selectedManualPool)} · ${escAttr(r.stock_type || '')}</option>`).join('');
+      }
+      const select = document.getElementById('manualCandidateSelect');
+      if (select) {
+        const options = ['<option value="">手动输入</option>'].concat(rows.map(r => {
+          const price = Number(r.current_price || r.close_price || 0);
+          const suffix = price > 0 ? ` · ${money(price)}` : '';
+          return `<option value="${escAttr(r.symbol)}">${escAttr(selectedManualPool)} · ${escAttr(r.symbol)}${suffix}</option>`;
+        }));
+        select.innerHTML = options.join('');
       }
       const input = document.getElementById('manualSymbol');
       if (input && !input.value && rows.length) input.value = rows[0].symbol || '';
       const subtitle = document.getElementById('manualTradeSubtitle');
       if (subtitle) subtitle.textContent = `${selectedManualPool} 资金池 · ${rows.length ? `${rows.length} 个队列代码可选` : '可手动输入股票代码'}`;
+      const pill = document.getElementById('manualPoolPill');
+      if (pill) pill.textContent = `${selectedManualPool} 资金池`;
+    }
+    function selectManualCandidate(symbol) {
+      const input = document.getElementById('manualSymbol');
+      if (input && symbol) input.value = String(symbol || '').toUpperCase();
+      updateManualTradePreview();
     }
     function selectManualFraction(value) {
       manualFraction = Number(value || 0.25);
-      document.querySelectorAll('.fraction-btn').forEach(btn => btn.classList.toggle('active', Math.abs(Number(btn.dataset.fraction || 0) - manualFraction) < 0.0001));
+      const select = document.getElementById('manualFractionSelect');
+      if (select) select.value = String(value);
       updateManualTradePreview();
     }
     function updateManualTradePreview() {
@@ -1951,6 +1993,8 @@ INDEX_HTML = r"""<!doctype html>
       const mode = document.getElementById('manualOrderMode')?.value || 'amount';
       const limit = Number(document.getElementById('manualLimitPrice')?.value || 0);
       const symbol = String(document.getElementById('manualSymbol')?.value || '').trim().toUpperCase();
+      const candidateSelect = document.getElementById('manualCandidateSelect');
+      if (candidateSelect && candidateSelect.value && candidateSelect.value !== symbol) candidateSelect.value = '';
       const errorEl = document.getElementById('manualTradeError');
       const availableEl = document.getElementById('manualAvailable');
       const previewEl = document.getElementById('manualPreview');
