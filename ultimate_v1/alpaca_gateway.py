@@ -130,36 +130,6 @@ def submit_market_sell(symbol: str, qty: float):
     return trading_client().submit_order(order_data=request)
 
 
-def submit_market_buy_notional(symbol: str, notional: float):
-    """按金额提交股票市价买单，用于看板手动买入。"""
-    from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import MarketOrderRequest
-
-    request = MarketOrderRequest(
-        symbol=symbol,
-        notional=round(float(notional or 0.0), 2),
-        side=OrderSide.BUY,
-        time_in_force=TimeInForce.DAY,
-    )
-    return trading_client().submit_order(order_data=request)
-
-
-def submit_limit_buy(symbol: str, qty: float, limit_price: float):
-    """按限价提交股票买单，用于看板手动买入。"""
-    from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import LimitOrderRequest
-
-    request = LimitOrderRequest(
-        symbol=symbol,
-        qty=round(float(qty or 0.0), 6),
-        side=OrderSide.BUY,
-        time_in_force=TimeInForce.DAY,
-        limit_price=stock_limit_price(limit_price),
-        extended_hours=True,
-    )
-    return trading_client().submit_order(order_data=request)
-
-
 def stock_limit_price(price: float) -> float:
     """股票限价精度：>=1 美元保留 2 位，低价股保留 4 位。"""
     price = float(price or 0.0)

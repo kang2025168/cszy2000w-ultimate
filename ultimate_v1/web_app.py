@@ -947,131 +947,6 @@ def _refresh_market_categories_payload(selected_key: str = "") -> dict:
     return payload
 
 
-def _manual_buy_candidates_payload() -> dict:
-    """读取手动下单面板的可买股票代码。"""
-    table = settings().ops_table
-    try:
-        rows = fetch_all(
-            f"""
-            SELECT UPPER(stock_code) AS symbol,
-                   UPPER(COALESCE(NULLIF(strategy_group,''), stock_type, capital_pool, '')) AS strategy_group,
-                   UPPER(COALESCE(NULLIF(capital_pool,''), NULLIF(strategy_group,''), stock_type, '')) AS capital_pool,
-                   stock_type, can_buy, is_bought,
-                   close_price, current_price, updated_at
-            FROM `{table}`
-            WHERE COALESCE(can_buy, 0)=1
-              AND COALESCE(is_bought, 0)=0
-              AND UPPER(COALESCE(NULLIF(capital_pool,''), NULLIF(strategy_group,''), stock_type, '')) IN ('A','B','C','D')
-            ORDER BY FIELD(UPPER(COALESCE(NULLIF(capital_pool,''), NULLIF(strategy_group,''), stock_type, '')), 'A','B','C','D'),
-                     updated_at DESC, stock_code ASC
-            LIMIT 120
-            """
-        )
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "rows": []}
-    return {"ok": True, "rows": rows}
-
-
-def _manual_stock_buy(payload: dict, *, dry_run: bool) -> dict:
-    """资金池约束后的手动股票买入。"""
-    group = str(payload.get("pool") or "").strip().upper()
-    if group not in {"A", "B", "C", "D"}:
-        return {"ok": False, "error": "请选择 A/B/C/D 资金池"}
-    symbol = str(payload.get("symbol") or "").strip().upper()
-    if not symbol or not symbol.replace(".", "").replace("-", "").isalnum():
-        return {"ok": False, "error": "股票代码无效"}
-    order_mode = str(payload.get("order_mode") or "amount").strip().lower()
-    fraction = _safe_float(payload.get("fraction"), 0.25)
-    allowed_fractions = (0.25, 1 / 3, 0.5)
-    if not any(abs(fraction - allowed) < 0.0001 for allowed in allowed_fractions):
-        return {"ok": False, "error": "只支持 1/4、1/3、1/2 可用额度"}
-
-    allocation = get_capital_allocation()
-    if allocation is None:
-        return {"ok": False, "error": "资金池读取失败，禁止手动开仓"}
-    available = max(0.0, float(allocation.available.get(group, 0.0) or 0.0))
-    requested_amount = round(available * fraction, 2)
-    requested_amount = min(requested_amount, available)
-    if requested_amount <= 0:
-        return {"ok": False, "error": f"{group} 资金池可用额度不足", "available": available}
-
-    limit_price = 0.0
-    qty = 0.0
-    order_type = "market_notional"
-    if order_mode == "limit":
-        limit_price = alpaca_gateway.stock_limit_price(_safe_float(payload.get("limit_price"), 0.0))
-        if limit_price <= 0:
-            return {"ok": False, "error": "限价模式必须填写有效限价"}
-        qty = int((requested_amount / limit_price) * 1_000_000) / 1_000_000
-        spend_cap = round(qty * limit_price, 2)
-        if qty <= 0 or spend_cap <= 0:
-            return {"ok": False, "error": "限价过高，当前额度不足以买入"}
-        if spend_cap > available + 0.0001:
-            return {"ok": False, "error": "订单金额超过资金池可用额度"}
-        requested_amount = min(spend_cap, requested_amount, available)
-        order_type = "limit"
-    elif order_mode != "amount":
-        return {"ok": False, "error": "不支持的购买模式"}
-
-    response = {
-        "ok": True,
-        "dry_run": dry_run,
-        "pool": group,
-        "symbol": symbol,
-        "order_type": order_type,
-        "fraction": fraction,
-        "available": round(available, 2),
-        "amount": round(requested_amount, 2),
-        "qty": qty,
-        "limit_price": limit_price,
-        "order_id": "",
-        "status": "DRY_RUN" if dry_run else "",
-    }
-    if dry_run:
-        return response
-
-    if order_mode == "limit":
-        order = alpaca_gateway.submit_limit_buy(symbol, qty, limit_price)
-    else:
-        order = alpaca_gateway.submit_market_buy_notional(symbol, requested_amount)
-    response["order_id"] = str(getattr(order, "id", "") or getattr(order, "order_id", "") or "")
-    response["status"] = str(getattr(order, "status", "") or "")
-
-    table = settings().ops_table
-    try:
-        with db_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    INSERT INTO `{table}` (
-                        stock_code, stock_type, is_bought, can_buy, can_sell,
-                        strategy_group, capital_pool, last_order_side,
-                        last_order_id, last_order_intent, last_order_time
-                    )
-                    VALUES (%s, %s, 0, 0, 0, %s, %s, 'buy', %s, %s, NOW())
-                    ON DUPLICATE KEY UPDATE
-                        stock_type=VALUES(stock_type),
-                        strategy_group=VALUES(strategy_group),
-                        capital_pool=VALUES(capital_pool),
-                        last_order_side='buy',
-                        last_order_id=VALUES(last_order_id),
-                        last_order_intent=VALUES(last_order_intent),
-                        last_order_time=NOW()
-                    """,
-                    (
-                        symbol,
-                        group,
-                        group,
-                        group,
-                        response["order_id"],
-                        f"MANUAL:{order_type} amount={requested_amount:.2f}"[:80],
-                    ),
-                )
-    except Exception as exc:
-        response["ops_update_error"] = str(exc)
-    return response
-
-
 INDEX_HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1178,10 +1053,6 @@ INDEX_HTML = r"""<!doctype html>
     .pool-grid { margin-top:26px; display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; }
     .pool-card { border:1px solid var(--line); border-radius:8px; padding:14px; min-height:126px; background:linear-gradient(180deg,#fff,#fafcff); box-shadow:0 10px 22px rgba(15,23,42,.04); position:relative; overflow:hidden; }
     .pool-card:before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:#d7e0ea; }
-    .pool-card.trade-enabled { cursor:pointer; }
-    .pool-card.trade-enabled:hover { border-color:#9db7d5; box-shadow:0 12px 28px rgba(15,23,42,.08); }
-    .pool-card.selected { border-color:#101828; box-shadow:0 0 0 2px rgba(16,24,40,.12), 0 16px 34px rgba(15,23,42,.10); background:linear-gradient(180deg,#fff,#f3f7fc); }
-    .pool-card.selected:after { content:"已选"; position:absolute; right:12px; bottom:10px; border-radius:999px; padding:3px 8px; background:#101828; color:#fff; font-size:11px; font-weight:900; }
     .pool-card.defensive-pool { background:linear-gradient(180deg,#f9fbff,#f4f8fd); }
     .pool-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
     .pool-name { font-size:13px; color:var(--muted); font-weight:700; }
@@ -1252,47 +1123,14 @@ INDEX_HTML = r"""<!doctype html>
     .bot-page-dot { width:7px; height:7px; border-radius:999px; background:#d0d5dd; cursor:pointer; }
     .bot-page-dot.active { width:18px; background:#101828; }
     .bot-page-label { min-width:42px; color:var(--muted); font-size:11px; font-weight:800; text-align:right; }
-    .chart-panel { flex:0 0 auto; min-height:0; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
-    .chart-panel .mobile-collapse-body { flex:0 0 auto; min-height:0; min-width:0; display:flex; flex-direction:column; }
+    .chart-panel { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
+    .chart-panel .mobile-collapse-body { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; }
     .chart-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
     .chart-title { display:flex; align-items:baseline; gap:14px; }
     .today-pnl { font-size:15px; font-weight:850; color:var(--green); }
     .tabs { display:flex; gap:6px; flex-wrap:wrap; }
     .tab { height:28px; border-radius:6px; padding:0 10px; color:var(--muted); }
     .tab.active { background:#101828; color:#fff; border-color:#101828; }
-    .manual-trade-panel { width:100%; max-width:100%; min-width:0; margin-top:12px; border:1px solid #cbd8e6; border-radius:8px; background:linear-gradient(135deg,#f8fbff 0%,#fff 56%,#f2f7fc 100%); padding:12px 14px; display:grid; gap:10px; box-shadow:inset 0 1px 0 rgba(255,255,255,.86); overflow:hidden; }
-    .manual-trade-head { min-width:0; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:start; gap:14px; }
-    .manual-title-line { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
-    .manual-title { font-size:15px; font-weight:950; color:var(--ink); }
-    .manual-pool-pill { display:inline-flex; align-items:center; height:24px; border-radius:999px; padding:0 9px; background:#101828; color:#fff; font-size:12px; font-weight:950; }
-    .manual-subtitle { margin-top:3px; color:var(--muted); font-size:12px; font-weight:750; }
-    .manual-cap { min-width:0; text-align:right; color:var(--muted); font-size:12px; font-weight:850; }
-    .manual-cap b { display:block; color:var(--ink); font-size:18px; line-height:1.12; white-space:nowrap; }
-    .manual-grid { min-width:0; display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; align-items:end; }
-    .manual-field { display:grid; gap:6px; min-width:0; }
-    .manual-field label { color:var(--muted); font-size:11px; font-weight:900; }
-    .manual-field input, .manual-field select { width:100%; min-width:0; height:34px; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--ink); padding:0 9px; font-size:13px; font-weight:850; outline:none; }
-    .manual-field input:focus, .manual-field select:focus { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.10); }
-    .manual-preview-row { min-width:0; display:flex; align-items:center; justify-content:space-between; gap:12px; padding-top:2px; flex-wrap:wrap; }
-    .manual-preview { color:var(--muted); font-size:12px; font-weight:800; }
-    .manual-preview b { color:var(--ink); }
-    .manual-buttons { min-width:0; display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
-    .manual-buttons button { height:34px; font-size:13px; font-weight:900; }
-    .manual-check-btn { min-width:66px; }
-    .manual-buy-btn { min-width:92px; }
-    .manual-buy-btn { border:0; background:#15936a; color:#fff; }
-    .manual-buy-btn:hover { background:#08734f; }
-    .manual-buy-btn:disabled, .manual-check-btn:disabled { opacity:.45; pointer-events:none; }
-    .manual-error { min-height:16px; color:#b42318; font-size:12px; font-weight:850; }
-    @media (max-width: 1420px) {
-      .manual-trade-head { grid-template-columns:1fr; }
-      .manual-cap { text-align:left; }
-      .manual-preview-row { align-items:flex-start; }
-      .manual-buttons { justify-content:flex-start; }
-    }
-    @media (max-width: 1180px) {
-      .manual-grid { grid-template-columns:repeat(2, minmax(0,1fr)); }
-    }
     .trade-records { flex:0 0 auto; display:flex; flex-direction:column; }
     .trade-records-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .trade-records-title { font-size:13px; font-weight:850; color:var(--ink); }
@@ -1448,13 +1286,6 @@ INDEX_HTML = r"""<!doctype html>
       .mobile-collapse-toggle span:last-child { color:var(--blue); font-size:12px; font-weight:850; }
       .mobile-collapse-body { display:none; padding:12px; border-top:1px solid #eef2f6; }
       .mobile-collapsible:not(.mobile-open) > .mobile-collapse-body { display:none !important; }
-      .manual-trade-panel { padding:10px; }
-      .manual-trade-head { grid-template-columns:1fr; }
-      .manual-cap { text-align:left; }
-      .manual-preview-row { align-items:flex-start; flex-direction:column; }
-      .manual-grid { grid-template-columns:1fr; }
-      .manual-buttons { width:100%; }
-      .manual-buttons button { flex:1; }
       .mobile-collapsible.mobile-open .mobile-collapse-body { display:block; }
       .mobile-collapsible.mobile-open .mobile-collapse-toggle span:last-child::before { content:"收起"; }
       .mobile-collapsible:not(.mobile-open) .mobile-collapse-toggle span:last-child::before { content:"展开"; }
@@ -1641,57 +1472,6 @@ INDEX_HTML = r"""<!doctype html>
               </div>
             </div>
             <canvas id="equityChart" width="760" height="260"></canvas>
-            <div class="manual-trade-panel" id="manualTradePanel">
-              <div class="manual-trade-head">
-                <div>
-                  <div class="manual-title-line"><span class="manual-title">手动下单</span><span class="manual-pool-pill" id="manualPoolPill">A 资金池</span></div>
-                  <div class="manual-subtitle" id="manualTradeSubtitle">点击左侧 A/B/C/D 资金池后选择股票和额度</div>
-                </div>
-                <div class="manual-cap"><span>可用额度</span><b id="manualAvailable">$0.00</b></div>
-              </div>
-              <div class="manual-grid">
-                <div class="manual-field">
-                  <label for="manualSymbol">股票代码（可手动输入）</label>
-                  <input id="manualSymbol" list="manualSymbolList" placeholder="例如 AAPL" oninput="updateManualTradePreview()" />
-                  <datalist id="manualSymbolList"></datalist>
-                </div>
-                <div class="manual-field">
-                  <label for="manualCandidateSelect">预选池</label>
-                  <select id="manualCandidateSelect" onchange="selectManualCandidate(this.value)">
-                    <option value="">手动输入</option>
-                  </select>
-                </div>
-                <div class="manual-field">
-                  <label for="manualOrderMode">购买模式</label>
-                  <select id="manualOrderMode" onchange="updateManualTradePreview()">
-                    <option value="amount">金额买入</option>
-                    <option value="limit">限价买入</option>
-                  </select>
-                </div>
-                <div class="manual-field">
-                  <label for="manualFractionSelect">买多少</label>
-                  <select id="manualFractionSelect" onchange="selectManualFraction(this.value)">
-                    <option value="0.25">可用额度 1/4</option>
-                    <option value="0.3333333333">可用额度 1/3</option>
-                    <option value="0.5">可用额度 1/2</option>
-                  </select>
-                </div>
-                <div class="manual-field">
-                  <label for="manualLimitPrice">限价</label>
-                  <input id="manualLimitPrice" type="number" min="0" step="0.01" placeholder="限价模式填写" oninput="updateManualTradePreview()" />
-                </div>
-              </div>
-              <div class="manual-preview-row">
-                <div class="manual-preview-wrap">
-                  <div class="manual-preview" id="manualPreview">预计买入 <b>$0.00</b></div>
-                  <div class="manual-error" id="manualTradeError"></div>
-                </div>
-                <div class="manual-buttons">
-                  <button class="manual-check-btn" id="manualCheckBtn" onclick="submitManualStockBuy(true)">预检</button>
-                  <button class="manual-buy-btn" id="manualBuyBtn" onclick="submitManualStockBuy(false)">确认买入</button>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -1820,9 +1600,6 @@ INDEX_HTML = r"""<!doctype html>
     let dOptionQty = 1;
     let selectedDCombo = null;
     let dOptionScrollMode = 'preserve';
-    let selectedManualPool = 'A';
-    let manualFraction = 0.25;
-    let latestManualCandidates = [];
     let majorEventsTimer = null;
     let majorEventsIndex = 0;
     async function api(path) {
@@ -1851,9 +1628,6 @@ INDEX_HTML = r"""<!doctype html>
       return n > 0 ? compactNumber(n) : '--';
     }
     function metric(label, value) { return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`; }
-    function escAttr(value) {
-      return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-    }
     function goalValue(goal, value) {
       if (goal.unit === 'percent') return `${(Number(value || 0) * 100).toFixed(1)}%`;
       if (goal.unit === 'count') return `${Number(value || 0).toFixed(0)}${goal.suffix || ''}`;
@@ -1941,7 +1715,7 @@ INDEX_HTML = r"""<!doctype html>
         const w = target > 0 ? Math.min(100, used / target * 100) : 0;
         const basePct = Number(defensive.base_percent || 0) * 100;
         const sub = g === 'X' ? '底仓现金 · 不参与交易' : `目标 ${basePct.toFixed(1)}% · 不参与交易`;
-        return `<div class="pool-card defensive-pool" data-pool="${g}"><div class="pool-head"><div><div class="pool-name">${g} 资金池 <span class="pool-label">${defensive.label}</span></div><div class="small-muted">${sub}</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>底仓目标 ${money(target)}</span><span>缺口 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
+        return `<div class="pool-card defensive-pool"><div class="pool-head"><div><div class="pool-name">${g} 资金池 <span class="pool-label">${defensive.label}</span></div><div class="small-muted">${sub}</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>底仓目标 ${money(target)}</span><span>缺口 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
       }
       const riskTarget = Number(cap.targets[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
       const displayTarget = riskTarget > 0 ? riskTarget : baseTarget;
@@ -1949,107 +1723,7 @@ INDEX_HTML = r"""<!doctype html>
       const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
       const riskPct = Number(cap.total_risk_percent || 0) * Number(cap.pool_risk_percents?.[g] || 0) * 100;
-      const selected = g === selectedManualPool ? ' selected' : '';
-      return `<div class="pool-card trade-enabled${selected}" data-pool="${g}" onclick="selectManualPool('${g}')"><div class="pool-head"><div><div class="pool-name">${g} 资金池</div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>月度目标 ${money(displayTarget)}</span><span>可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
-    }
-    function selectedPoolAvailable() {
-      const cap = window.latestCapitalPayload || {};
-      return Math.max(0, Number(cap.available?.[selectedManualPool] || 0));
-    }
-    function selectManualPool(pool) {
-      if (!['A','B','C','D'].includes(pool)) return;
-      selectedManualPool = pool;
-      if (window.latestCapitalPayload) document.getElementById('pools').innerHTML = ['A','B','C','D','X','Z'].map(g => poolCard(g, window.latestCapitalPayload)).join('');
-      renderManualCandidates();
-      updateManualTradePreview();
-    }
-    function renderManualCandidates() {
-      const rows = latestManualCandidates.filter(r => String(r.capital_pool || r.strategy_group || '').toUpperCase() === selectedManualPool);
-      const list = document.getElementById('manualSymbolList');
-      if (list) {
-        list.innerHTML = rows.map(r => `<option value="${escAttr(r.symbol)}">${escAttr(selectedManualPool)} · ${escAttr(r.stock_type || '')}</option>`).join('');
-      }
-      const select = document.getElementById('manualCandidateSelect');
-      if (select) {
-        const options = ['<option value="">手动输入</option>'].concat(rows.map(r => {
-          const price = Number(r.current_price || r.close_price || 0);
-          const suffix = price > 0 ? ` · ${money(price)}` : '';
-          return `<option value="${escAttr(r.symbol)}">${escAttr(selectedManualPool)} · ${escAttr(r.symbol)}${suffix}</option>`;
-        }));
-        select.innerHTML = options.join('');
-      }
-      const input = document.getElementById('manualSymbol');
-      if (input && !input.value && rows.length) input.value = rows[0].symbol || '';
-      const subtitle = document.getElementById('manualTradeSubtitle');
-      if (subtitle) subtitle.textContent = `${selectedManualPool} 资金池 · ${rows.length ? `${rows.length} 个队列代码可选` : '可手动输入股票代码'}`;
-      const pill = document.getElementById('manualPoolPill');
-      if (pill) pill.textContent = `${selectedManualPool} 资金池`;
-    }
-    function selectManualCandidate(symbol) {
-      const input = document.getElementById('manualSymbol');
-      if (input && symbol) input.value = String(symbol || '').toUpperCase();
-      updateManualTradePreview();
-    }
-    function selectManualFraction(value) {
-      manualFraction = Number(value || 0.25);
-      const select = document.getElementById('manualFractionSelect');
-      if (select) select.value = String(value);
-      updateManualTradePreview();
-    }
-    function updateManualTradePreview() {
-      const available = selectedPoolAvailable();
-      const amount = Math.min(available, Math.max(0, available * manualFraction));
-      const mode = document.getElementById('manualOrderMode')?.value || 'amount';
-      const limit = Number(document.getElementById('manualLimitPrice')?.value || 0);
-      const symbol = String(document.getElementById('manualSymbol')?.value || '').trim().toUpperCase();
-      const candidateSelect = document.getElementById('manualCandidateSelect');
-      if (candidateSelect && candidateSelect.value && candidateSelect.value !== symbol) candidateSelect.value = '';
-      const errorEl = document.getElementById('manualTradeError');
-      const availableEl = document.getElementById('manualAvailable');
-      const previewEl = document.getElementById('manualPreview');
-      const buyBtn = document.getElementById('manualBuyBtn');
-      const checkBtn = document.getElementById('manualCheckBtn');
-      if (availableEl) availableEl.textContent = money(available);
-      let error = '';
-      let preview = `预计买入 <b>${money(amount)}</b>`;
-      if (!symbol) error = '请填写股票代码';
-      else if (available <= 0) error = `${selectedManualPool} 资金池没有可用额度`;
-      else if (mode === 'limit') {
-        if (limit <= 0) error = '限价模式需要填写限价';
-        else {
-          const qty = Math.floor((amount / limit) * 1000000) / 1000000;
-          preview = `预计买入 <b>${money(qty * limit)}</b> · 数量 ${qty.toFixed(6)} · 限价 ${money(limit)}`;
-          if (qty <= 0) error = '当前额度不足以按该限价买入';
-        }
-      }
-      if (errorEl) errorEl.textContent = error;
-      if (previewEl) previewEl.innerHTML = preview;
-      if (buyBtn) buyBtn.disabled = !!error;
-      if (checkBtn) checkBtn.disabled = !!error;
-    }
-    async function loadManualCandidates() {
-      const payload = await api('/api/manual_buy_candidates');
-      latestManualCandidates = payload.ok ? (payload.rows || []) : [];
-      renderManualCandidates();
-      updateManualTradePreview();
-    }
-    function manualBuyResultText(result) {
-      const qtyText = Number(result.qty || 0) > 0 ? `\n数量 ${Number(result.qty).toFixed(6)}` : '';
-      const limitText = Number(result.limit_price || 0) > 0 ? `\n限价 ${money(result.limit_price)}` : '';
-      return `${result.dry_run ? '预检通过' : '买入订单已提交'}\n资金池 ${result.pool}\n代码 ${result.symbol}\n金额 ${money(result.amount)}${qtyText}${limitText}\n可用额度 ${money(result.available)}\n订单 ${result.order_id || '--'}\n状态 ${result.status || '--'}`;
-    }
-    async function submitManualStockBuy(dryRun=false) {
-      const symbol = String(document.getElementById('manualSymbol')?.value || '').trim().toUpperCase();
-      const orderMode = document.getElementById('manualOrderMode')?.value || 'amount';
-      const limitPrice = Number(document.getElementById('manualLimitPrice')?.value || 0);
-      const amount = Math.min(selectedPoolAvailable(), selectedPoolAvailable() * manualFraction);
-      if (!dryRun && !confirm(`确认用 ${selectedManualPool} 资金池买入 ${symbol}？\n预计金额 ${money(amount)}\n这笔订单不能超过当前资金池可用额度。`)) return;
-      const password = dryRun ? '' : prompt('请输入操作密码确认买入');
-      if (!dryRun && !password) return;
-      const result = await postJson('/api/manual_stock_buy', {pool:selectedManualPool, symbol, order_mode:orderMode, fraction:manualFraction, limit_price:limitPrice, password, dry_run:dryRun});
-      if (!result.ok) { alert(result.error || '手动买入失败'); return; }
-      alert(manualBuyResultText(result));
-      if (!dryRun) await loadAll();
+      return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池</div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>月度目标 ${money(displayTarget)}</span><span>可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
     function drawDonutOn(canvasId, legendId, cap) {
       const canvas = document.getElementById(canvasId);
@@ -2743,7 +2417,6 @@ INDEX_HTML = r"""<!doctype html>
       renderHoldings();
       renderLowerView();
       if (lowerView === 'market') await loadMarketCategories(currentCategory);
-      await loadManualCandidates();
       await loadCurve(currentPeriod);
       } finally {
         if (refreshBtn) refreshBtn.classList.remove('loading');
@@ -3025,8 +2698,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_curve_payload(period))
             elif path == "/api/trade_records":
                 self._send_json(_trade_records_payload())
-            elif path == "/api/manual_buy_candidates":
-                self._send_json(_manual_buy_candidates_payload())
             elif path == "/api/rebalance":
                 self._send_json({"ok": True, "rows": generate_rebalance_report()})
             else:
@@ -3061,12 +2732,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(result)
             elif path == "/api/d_option_buy":
                 self._send_json(submit_option_combo(payload))
-            elif path == "/api/manual_stock_buy":
-                dry_run = bool(payload.get("dry_run") is True or str(payload.get("dry_run") or "").lower() in {"1", "true", "yes", "on"})
-                if not dry_run and not self._check_password(payload):
-                    self._send_json({"ok": False, "error": "密码错误或未配置操作密码"}, 403)
-                    return
-                self._send_json(_manual_stock_buy(payload, dry_run=dry_run))
             elif path == "/api/annual_goal_step":
                 goal = str(payload.get("goal") or "").strip()
                 self._send_json(_advance_annual_goal(goal))
