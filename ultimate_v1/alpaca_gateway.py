@@ -14,7 +14,6 @@ class AccountSnapshot:
     buying_power: float
     cash: float
     portfolio_value: float
-    daytrade_buying_power: float | None = None
 
 
 def trading_client():
@@ -106,11 +105,6 @@ def get_account_snapshot() -> AccountSnapshot | None:
             buying_power=float(getattr(acct, "buying_power", 0) or 0),
             cash=float(getattr(acct, "cash", 0) or 0),
             portfolio_value=float(getattr(acct, "portfolio_value", 0) or 0),
-            daytrade_buying_power=(
-                float(getattr(acct, "daytrading_buying_power", 0) or 0)
-                if getattr(acct, "daytrading_buying_power", None) is not None
-                else None
-            ),
         )
         return snap
     except Exception as exc:
@@ -132,6 +126,36 @@ def submit_market_sell(symbol: str, qty: float):
         qty=qty,
         side=OrderSide.SELL,
         time_in_force=TimeInForce.DAY,
+    )
+    return trading_client().submit_order(order_data=request)
+
+
+def submit_market_buy_notional(symbol: str, notional: float):
+    """按金额提交股票市价买单，用于看板手动买入。"""
+    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import MarketOrderRequest
+
+    request = MarketOrderRequest(
+        symbol=symbol,
+        notional=round(float(notional or 0.0), 2),
+        side=OrderSide.BUY,
+        time_in_force=TimeInForce.DAY,
+    )
+    return trading_client().submit_order(order_data=request)
+
+
+def submit_limit_buy(symbol: str, qty: float, limit_price: float):
+    """按限价提交股票买单，用于看板手动买入。"""
+    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest
+
+    request = LimitOrderRequest(
+        symbol=symbol,
+        qty=round(float(qty or 0.0), 6),
+        side=OrderSide.BUY,
+        time_in_force=TimeInForce.DAY,
+        limit_price=stock_limit_price(limit_price),
+        extended_hours=True,
     )
     return trading_client().submit_order(order_data=request)
 
