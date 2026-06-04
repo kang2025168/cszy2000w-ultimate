@@ -1331,6 +1331,8 @@ INDEX_HTML = r"""<!doctype html>
     th { background:linear-gradient(180deg,#eef4fa,#e8eef5); color:#344054; font-size:12px; }
     tbody tr:hover td { background:#f8fbff; }
     tr:last-child td { border-bottom:0; }
+    .symbol-fill-btn { border:0; background:transparent; padding:0; height:auto; color:var(--ink); font:inherit; font-weight:950; cursor:pointer; }
+    .symbol-fill-btn:hover { color:#075985; text-decoration:underline; box-shadow:none; }
     .status { display:inline-block; min-width:64px; text-align:center; padding:3px 8px; border-radius:999px; background:#eef2f6; }
     .open { color:var(--green); background:#e7f6ef; }
     .closed { color:var(--muted); }
@@ -2137,6 +2139,15 @@ INDEX_HTML = r"""<!doctype html>
         manualQuoteInterval = setInterval(() => loadManualBuyQuote(symbol, false), 3000);
       }, 420);
     }
+    function fillManualSymbol(symbol) {
+      const input = document.getElementById('manualBuySymbol');
+      const value = String(symbol || '').trim().toUpperCase();
+      if (!input || !value) return;
+      input.value = value;
+      handleManualBuySymbolInput(input);
+      document.getElementById('manualBuyEntry')?.scrollIntoView({block:'nearest'});
+      input.focus();
+    }
     async function loadManualBuyQuote(symbol, seedLimits=false) {
       try {
         const payload = await api(`/api/stock_quote?symbol=${encodeURIComponent(symbol)}`);
@@ -2613,7 +2624,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('holdings').innerHTML = `<thead><tr>${['代码','策略组','状态','日涨跌','现价','数量','初始成本','均价','持仓市值','浮盈亏','浮盈亏%','已实现','持仓天数','更新时间'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
         rows.map(r => {
           const day = Number(r.day_change_pct || 0);
-          return `<tr><td><b>${r.symbol}</b></td><td>${r.strategy_group}</td><td><span class="status ${r.status}">${r.status}</span></td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${Number(r.qty||0).toFixed(4)}</td><td>${maybeMoney(r.initial_entry_price || r.avg_entry_price)}</td><td>${money(r.avg_entry_price)}</td><td>${money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${money(r.realized_pnl)}</td><td>${r.holding_days || 0}</td><td>${r.last_update_time || ''}</td></tr>`;
+          return `<tr><td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td><td>${r.strategy_group}</td><td><span class="status ${r.status}">${r.status}</span></td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${Number(r.qty||0).toFixed(4)}</td><td>${maybeMoney(r.initial_entry_price || r.avg_entry_price)}</td><td>${money(r.avg_entry_price)}</td><td>${money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${money(r.realized_pnl)}</td><td>${r.holding_days || 0}</td><td>${r.last_update_time || ''}</td></tr>`;
         }).join('') +
         blanks + `</tbody>`;
     }
@@ -2698,7 +2709,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('marketTable').innerHTML = `<thead><tr>${['代码','涨跌','开','高','低','收','量'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
         rows.map(r => {
           const change = Number(r.change_pct || 0);
-          return `<tr><td><b>${r.symbol}</b></td><td class="${cls(change)}">${pct(change)}</td><td>${money(r.open)}</td><td>${money(r.high)}</td><td>${money(r.low)}</td><td>${money(r.close)}</td><td>${compactNumber(r.volume)}</td></tr>`;
+          return `<tr><td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td><td class="${cls(change)}">${pct(change)}</td><td>${money(r.open)}</td><td>${money(r.high)}</td><td>${money(r.low)}</td><td>${money(r.close)}</td><td>${compactNumber(r.volume)}</td></tr>`;
         }).join('') + blanks + `</tbody>`;
     }
     async function loadMarketCategories(category=currentCategory) {
