@@ -1010,9 +1010,9 @@ def _manual_stock_order_payload(payload: dict) -> dict:
         return {"ok": False, "error": "只支持买入或卖出"}
     if pool not in {"A", "B", "C", "D"}:
         return {"ok": False, "error": "资金池无效"}
-    fractions = {"1/4": 0.25, "1/3": 1 / 3, "1/2": 0.5}
+    fractions = {"1/4": 0.25, "1/3": 1 / 3, "1/2": 0.5, "full": 1.0}
     fraction = fractions.get(size)
-    if not fraction:
+    if fraction is None:
         return {"ok": False, "error": "额度选项无效"}
     if order_type not in {"market", "limit"}:
         return {"ok": False, "error": "订单类型无效"}
@@ -1744,8 +1744,8 @@ INDEX_HTML = r"""<!doctype html>
               </select>
             </div>
             <div class="manual-field">
-              <label>持仓来源</label>
-              <input value="当前持仓" disabled />
+              <label for="manualHeldQty">股票数量</label>
+              <input id="manualHeldQty" value="--" disabled />
             </div>
             <div class="manual-field">
               <label for="manualSellSize">卖出数量</label>
@@ -1753,6 +1753,7 @@ INDEX_HTML = r"""<!doctype html>
                 <option value="1/4">持仓 1/4</option>
                 <option value="1/3">持仓 1/3</option>
                 <option value="1/2">持仓 1/2</option>
+                <option value="full">全仓</option>
               </select>
             </div>
             <div class="manual-field">
@@ -2107,6 +2108,18 @@ INDEX_HTML = r"""<!doctype html>
         card.classList.add('fresh');
       });
     }
+    function updateManualHeldQty() {
+      const symbol = (document.getElementById('manualBuySymbol')?.value || '').trim().toUpperCase();
+      const box = document.getElementById('manualHeldQty');
+      if (!box) return;
+      if (!symbol) {
+        box.value = '--';
+        return;
+      }
+      const row = (latestHoldings || []).find(r => String(r.symbol || '').toUpperCase() === symbol);
+      const qty = Number(row?.total_shares ?? row?.qty ?? 0);
+      box.value = qty > 0 ? `${qty.toFixed(4)} 股` : '0.0000 股';
+    }
     function handleManualBuySymbolInput(input) {
       input.value = input.value.toUpperCase().replace(/[^A-Z.]/g,'');
       const symbol = input.value.trim();
@@ -2116,6 +2129,7 @@ INDEX_HTML = r"""<!doctype html>
       }
       latestManualQuote = null;
       setManualQuote(symbol ? '加载中' : '--', '--', '--');
+      updateManualHeldQty();
       if (manualBuyQuoteTimer) clearTimeout(manualBuyQuoteTimer);
       if (symbol.length < 1) return;
       manualBuyQuoteTimer = setTimeout(() => {
@@ -2133,6 +2147,7 @@ INDEX_HTML = r"""<!doctype html>
           return;
         }
         latestManualQuote = payload;
+        updateManualHeldQty();
         setManualQuote(
           Number(payload.last || 0) > 0 ? money(payload.last) : '--',
           Number(payload.bid || 0) > 0 ? money(payload.bid) : '--',
@@ -2187,7 +2202,7 @@ INDEX_HTML = r"""<!doctype html>
       const typeText = p.order_type === 'limit' ? `限价 ${money(p.price)}` : '市价';
       const basis = p.side === 'buy'
         ? `${p.pool} 资金池可用 ${money(p.available)} 的 ${p.size}`
-        : `当前持仓 ${Number(p.held_qty || 0).toFixed(4)} 股的 ${p.size}`;
+        : `当前持仓 ${Number(p.held_qty || 0).toFixed(4)} 股的 ${p.size === 'full' ? '全仓' : p.size}`;
       return `${sideText} ${p.symbol}\n订单类型：${typeText}\n估算数量：${Number(p.qty || 0).toFixed(4)} 股\n估算金额：${money(p.notional)}\n计算依据：${basis}\nBid / Ask：${Number(p.bid || 0) > 0 ? money(p.bid) : '--'} / ${Number(p.ask || 0) > 0 ? money(p.ask) : '--'}\n\n确认执行后会提交 Alpaca 订单。`;
     }
     async function previewManualStockOrder(side) {
@@ -2802,6 +2817,7 @@ INDEX_HTML = r"""<!doctype html>
       renderPhase(phase);
       if (dTactical.ok) renderDTactical(dTactical);
       latestHoldings = holdings.rows || [];
+      updateManualHeldQty();
       renderHoldings();
       renderLowerView();
       if (lowerView === 'market') await loadMarketCategories(currentCategory);
