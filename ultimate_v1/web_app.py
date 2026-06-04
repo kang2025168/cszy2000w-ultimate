@@ -987,6 +987,10 @@ INDEX_HTML = r"""<!doctype html>
     .phase-chip.blue .phase-dot { background:var(--blue); box-shadow:0 0 0 4px rgba(37,99,235,.12); }
     .phase-chip.warn .phase-dot { background:var(--amber); box-shadow:0 0 0 4px rgba(183,110,0,.14); }
     .phase-chip.sleep .phase-dot { background:var(--red); box-shadow:0 0 0 4px rgba(198,40,40,.12); }
+    .trade-focus-btn { height:38px; min-width:76px; padding:0 14px; border:1px solid #bfd4ee; border-radius:9px; background:#fff; color:#075985; font-size:13px; font-weight:900; box-shadow:0 9px 20px rgba(15,23,42,.08); transition:background .14s ease, color .14s ease, transform .12s ease; }
+    .trade-focus-btn:hover { background:#eff6ff; color:#0f172a; }
+    .trade-focus-btn.active { background:#101828; border-color:#101828; color:#fff; }
+    .trade-focus-btn:active { transform:scale(.96); }
     .phase-popover { position:absolute; z-index:12; top:72px; left:24px; width:min(680px, calc(100vw - 48px)); display:none; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 24px 70px rgba(15,23,42,.18); padding:14px; }
     .phase-popover.show { display:block; }
     .phase-summary { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
@@ -1005,6 +1009,12 @@ INDEX_HTML = r"""<!doctype html>
     .panel { background:linear-gradient(180deg, #fff 0%, #fbfdff 100%); border:1px solid var(--line); border-radius:8px; padding:16px; box-shadow:var(--shadow-soft); }
     .mobile-collapse-toggle { display:none; }
     .left-stack, .right-stack { display:flex; flex-direction:column; gap:18px; min-width:0; }
+    body.trade-focus main { max-width:none; gap:12px; }
+    body.trade-focus .dash { display:block; }
+    body.trade-focus .left-stack { display:block; }
+    body.trade-focus .right-stack, body.trade-focus .capital-hero, body.trade-focus .phase-popover { display:none !important; }
+    body.trade-focus .holdings-panel { margin-top:12px; min-height:calc(100vh - 116px); }
+    body.trade-focus .holdings-panel .scroll { max-height:calc(100vh - 238px); }
     .capital-hero { flex:0 0 auto; }
     .hero-top { display:grid; grid-template-columns:minmax(340px,1fr) minmax(300px,.78fr); gap:12px; align-items:start; padding:14px; border:1px solid #c5d5e6; border-radius:8px; background:linear-gradient(145deg,#eef5fb 0%,#f8fbff 45%,#edf4fa 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.86), 0 18px 44px rgba(15,23,42,.10); }
     .hero-top:before { content:""; grid-column:1 / -1; height:3px; border-radius:999px; background:linear-gradient(90deg,#15936a,#2563eb,#d97706); opacity:.72; margin:-2px 0 0; }
@@ -1380,6 +1390,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="left-titlebar">
           <div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" /><div class="brand-copy"><h1>CSZY Ultimate V1</h1><div class="dashboard-motto">回撤变成纪律。上升趋势，回调趋势。等待机会，准备水桶。</div></div></div>
           <div class="title-actions">
+            <button class="trade-focus-btn" id="tradeFocusBtn" onclick="toggleTradeFocus()">交易</button>
             <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
             <button class="refresh-btn" onclick="loadAll()">刷新</button>
           </div>
@@ -1775,6 +1786,20 @@ INDEX_HTML = r"""<!doctype html>
     }
     function togglePhasePopover() {
       document.getElementById('phasePopover').classList.toggle('show');
+    }
+    function toggleTradeFocus() {
+      const active = !document.body.classList.contains('trade-focus');
+      document.body.classList.toggle('trade-focus', active);
+      const btn = document.getElementById('tradeFocusBtn');
+      if (btn) {
+        btn.classList.toggle('active', active);
+        btn.textContent = active ? '总览' : '交易';
+      }
+      if (active) {
+        document.getElementById('phasePopover')?.classList.remove('show');
+        setLowerView('holdings');
+        document.querySelector('.holdings-panel')?.scrollIntoView({block:'start'});
+      }
     }
     function isMobileView() {
       return window.matchMedia('(max-width: 760px)').matches;
