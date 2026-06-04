@@ -1354,7 +1354,6 @@ INDEX_HTML = r"""<!doctype html>
     .manual-field label { color:var(--muted); font-size:11px; font-weight:850; }
     .manual-field input, .manual-field select { width:100%; height:38px; border:1px solid #cfd9e6; border-radius:8px; background:#fff; padding:0 10px; color:var(--ink); font-weight:850; box-shadow:0 5px 12px rgba(15,23,42,.035); }
     .manual-field input:disabled { background:#f2f4f7; color:var(--muted); }
-    .manual-field-hint { margin-top:-2px; color:#08734f; font-size:11px; font-weight:900; min-height:14px; }
     .manual-buy-action { height:38px; border:0; border-radius:8px; background:#15936a; color:#fff; font-weight:900; padding:0 16px; white-space:nowrap; }
     .manual-buy-action.sell { background:#b42318; }
     .manual-actions { display:flex; gap:8px; align-items:center; }
@@ -1714,12 +1713,11 @@ INDEX_HTML = r"""<!doctype html>
             <div class="manual-field">
               <label for="manualBuyPool">资金池</label>
               <select id="manualBuyPool" onchange="updateManualPoolAvailable()">
-                <option value="A">A 资金池</option>
-                <option value="B">B 资金池</option>
-                <option value="C" selected>C 资金池</option>
-                <option value="D">D 资金池</option>
+                <option value="A">A 资金池 · 可买入 --</option>
+                <option value="B">B 资金池 · 可买入 --</option>
+                <option value="C" selected>C 资金池 · 可买入 --</option>
+                <option value="D">D 资金池 · 可买入 --</option>
               </select>
-              <div class="manual-field-hint" id="manualPoolAvailable">可买入 --</div>
             </div>
             <div class="manual-field">
               <label for="manualBuySize">使用额度</label>
@@ -2126,10 +2124,13 @@ INDEX_HTML = r"""<!doctype html>
       box.value = qty > 0 ? `${qty.toFixed(4)} 股` : '0.0000 股';
     }
     function updateManualPoolAvailable() {
-      const pool = document.getElementById('manualBuyPool')?.value || 'C';
-      const amount = Number(window.latestCapitalPayload?.available?.[pool] || 0);
-      const box = document.getElementById('manualPoolAvailable');
-      if (box) box.textContent = amount > 0 ? `可买入 ${money(amount)}` : '可买入 $0.00';
+      const select = document.getElementById('manualBuyPool');
+      if (!select) return;
+      ['A','B','C','D'].forEach(pool => {
+        const opt = Array.from(select.options).find(o => o.value === pool);
+        const amount = Number(window.latestCapitalPayload?.available?.[pool] || 0);
+        if (opt) opt.textContent = `${pool} 资金池 · 可买入 ${money(amount)}`;
+      });
     }
     function handleManualBuySymbolInput(input) {
       input.value = input.value.toUpperCase().replace(/[^A-Z.]/g,'');
