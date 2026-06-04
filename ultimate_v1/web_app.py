@@ -537,21 +537,21 @@ def _latest_price_meta(symbols: list[str]) -> dict[str, dict]:
         prev = _safe_float(bucket.get("prev_close"))
         bucket["day_change_pct"] = (latest - prev) / prev if latest > 0 and prev > 0 else None
     missing = [symbol for symbol in symbols if _safe_float((out.get(symbol) or {}).get("latest_close")) <= 0]
-    cached_missing = _quote_cache(missing)
-    stale_missing = [symbol for symbol in missing if symbol not in cached_missing]
+    cached = _quote_cache(missing)
+    stale_missing = [symbol for symbol in missing if symbol not in cached]
     _refresh_missing_quotes(stale_missing)
-    cached = _quote_cache(symbols)
+    if stale_missing:
+        cached = _quote_cache(missing)
     for symbol, row in cached.items():
+        if _safe_float((out.get(symbol) or {}).get("latest_close")) > 0:
+            continue
         current = _safe_float(row.get("current_price"))
         prev = _safe_float(row.get("prev_close"))
-        if current <= 0:
-            continue
         out[symbol] = {
             "latest_close": current,
             "prev_close": prev,
             "day_change_pct": row.get("day_change_pct") if row.get("day_change_pct") is not None else ((current - prev) / prev if current > 0 and prev > 0 else None),
             "latest_date": row.get("fetched_at"),
-            "source": row.get("source") or "quote_cache",
         }
     return out
 
@@ -565,7 +565,7 @@ def _enrich_holdings_rows(rows: list[dict]) -> list[dict]:
         symbol = str(row.get("symbol") or "").strip().upper()
         meta = price_meta.get(symbol) or {}
         latest = _safe_float(meta.get("latest_close"))
-        current = latest or _safe_float(row.get("current_price"))
+        current = _safe_float(row.get("current_price")) or latest
         prev = _safe_float(meta.get("prev_close"))
         day_change_pct = (current - prev) / prev if current > 0 and prev > 0 else meta.get("day_change_pct")
         qty = _safe_float(row.get("qty"))
@@ -963,11 +963,20 @@ def _stock_quote_payload(symbol: str) -> dict:
     symbol = (symbol or "").strip().upper()
     if not symbol or not symbol.replace(".", "").isalpha():
         return {"ok": False, "error": "invalid_symbol"}
+    position_price = 0.0
+    position_qty = 0.0
+    try:
+        pos = alpaca_gateway.trading_client().get_open_position(symbol)
+        position_price = _safe_float(getattr(pos, "current_price", 0))
+        position_qty = _safe_float(getattr(pos, "qty", 0))
+    except Exception:
+        pass
     try:
         from app.strategy_b import get_snapshot_quote_realtime
 
         quote = get_snapshot_quote_realtime(symbol)
-        last = _safe_float(quote.get("last_price"))
+        snapshot_last = _safe_float(quote.get("last_price"))
+        last = position_price or snapshot_last
         bid = _safe_float(quote.get("bid"))
         ask = _safe_float(quote.get("ask"))
         prev = _safe_float(quote.get("prev_close") or quote.get("previous_close"))
@@ -975,7 +984,8 @@ def _stock_quote_payload(symbol: str) -> dict:
             try:
                 with db_conn() as conn:
                     with conn.cursor() as cur:
-                        _write_quote_cache(cur, symbol, last, prev, f"alpaca_snapshot_{quote.get('feed') or ''}")
+                        source = "alpaca_position" if position_price > 0 else f"alpaca_snapshot_{quote.get('feed') or ''}"
+                        _write_quote_cache(cur, symbol, last, prev, source)
             except Exception as cache_exc:
                 print(f"[WEB QUOTE CACHE] {symbol} write failed: {cache_exc}", flush=True)
         return {
@@ -985,12 +995,14 @@ def _stock_quote_payload(symbol: str) -> dict:
             "bid": bid,
             "ask": ask,
             "prev_close": prev,
+            "position_qty": position_qty,
+            "snapshot_last": snapshot_last,
             "limit_price": ask if ask > 0 else last,
-            "source": f"alpaca_snapshot_{quote.get('feed') or ''}",
+            "source": "alpaca_position" if position_price > 0 else f"alpaca_snapshot_{quote.get('feed') or ''}",
         }
     except Exception as exc:
         meta = _latest_price_meta([symbol]).get(symbol) or {}
-        last = _safe_float(meta.get("latest_close"))
+        last = position_price or _safe_float(meta.get("latest_close"))
         if last > 0:
             return {
                 "ok": True,
@@ -999,8 +1011,9 @@ def _stock_quote_payload(symbol: str) -> dict:
                 "bid": 0.0,
                 "ask": 0.0,
                 "prev_close": _safe_float(meta.get("prev_close")),
+                "position_qty": position_qty,
                 "limit_price": last,
-                "source": meta.get("source") or "price_cache",
+                "source": "alpaca_position" if position_price > 0 else meta.get("source") or "price_cache",
                 "warning": str(exc)[:160],
             }
         return {"ok": False, "symbol": symbol, "error": str(exc)[:180]}
@@ -1354,7 +1367,7 @@ INDEX_HTML = r"""<!doctype html>
     .holding-status.closed { color:#667085; background:#eef2f6; }
     .neg { color:var(--red); }
     .pos { color:var(--green); }
-    .scroll { overflow:auto; border-radius:8px; overscroll-behavior:contain; }
+    .scroll { overflow:auto; border-radius:8px; }
     .holdings-panel { margin-top:18px; min-height:430px; overflow:hidden; box-shadow:var(--shadow); }
     .manual-buy-entry { display:none; gap:10px; margin:0 0 14px; padding:12px; border:1px solid #cfe0f3; border-radius:8px; background:linear-gradient(135deg,#fff 0%,#f5fbff 52%,#eef6ff 100%); box-shadow:0 10px 24px rgba(15,23,42,.045); }
     .manual-buy-entry.open { display:grid; }
@@ -2919,43 +2932,6 @@ INDEX_HTML = r"""<!doctype html>
       if (dx < 0) setLowerView(lowerView === 'market' ? 'd' : lowerView === 'd' ? 'trades' : 'market');
       else setLowerView('holdings');
     }, {passive:true});
-    function installAxisLockedScroll() {
-      document.querySelectorAll('.holdings-panel .scroll').forEach(scroller => {
-        if (scroller.dataset.axisLocked === '1') return;
-        scroller.dataset.axisLocked = '1';
-        let startX = 0;
-        let startY = 0;
-        let startLeft = 0;
-        let axis = '';
-        scroller.addEventListener('touchstart', (e) => {
-          const touch = e.touches?.[0];
-          if (!touch) return;
-          startX = touch.clientX;
-          startY = touch.clientY;
-          startLeft = scroller.scrollLeft;
-          axis = '';
-        }, {passive:true});
-        scroller.addEventListener('touchmove', (e) => {
-          if (!isMobileView()) return;
-          const touch = e.touches?.[0];
-          if (!touch) return;
-          const dx = touch.clientX - startX;
-          const dy = touch.clientY - startY;
-          if (!axis && Math.max(Math.abs(dx), Math.abs(dy)) > 8) {
-            axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
-          }
-          if (axis === 'x') {
-            e.preventDefault();
-            scroller.scrollLeft = startLeft - dx;
-          } else if (axis === 'y') {
-            scroller.scrollLeft = startLeft;
-          }
-        }, {passive:false});
-        const reset = () => { axis = ''; };
-        scroller.addEventListener('touchend', reset, {passive:true});
-        scroller.addEventListener('touchcancel', reset, {passive:true});
-      });
-    }
     function openClearModal() {
       document.getElementById('clearPassword').value = '';
       document.getElementById('clearModal').classList.add('show');
@@ -2993,7 +2969,6 @@ INDEX_HTML = r"""<!doctype html>
         if (btn) { btn.classList.remove('loading'); btn.textContent = oldText || '同步仓位'; }
       }
     }
-    installAxisLockedScroll();
     loadAll();
     setInterval(loadAll, 30000);
   </script>
