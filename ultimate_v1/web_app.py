@@ -1547,6 +1547,7 @@ INDEX_HTML = r"""<!doctype html>
       .manual-symbol-row, .manual-order-row { grid-template-columns:1fr; }
       .manual-row-label { align-self:start; }
       .manual-limit-control { grid-template-columns:38px minmax(0,1fr) 38px; }
+      .manual-field input, .manual-field select, .manual-limit-control input { font-size:16px; }
       .manual-quote-strip { grid-template-columns:1fr 1fr 1fr; }
       .manual-actions { display:grid; grid-template-columns:1fr 1fr; }
       .manual-buy-action { width:100%; }
@@ -2146,7 +2147,6 @@ INDEX_HTML = r"""<!doctype html>
       input.value = value;
       handleManualBuySymbolInput(input);
       document.getElementById('manualBuyEntry')?.scrollIntoView({block:'nearest'});
-      input.focus();
     }
     async function loadManualBuyQuote(symbol, seedLimits=false) {
       try {
@@ -2195,7 +2195,6 @@ INDEX_HTML = r"""<!doctype html>
       const symbol = (document.getElementById('manualBuySymbol')?.value || '').trim().toUpperCase();
       if (!symbol) {
         alert('先输入股票代码');
-        document.getElementById('manualBuySymbol')?.focus();
         return null;
       }
       return {
