@@ -21,6 +21,9 @@ class CapitalAllocation:
     buying_power: float
     cash: float
     portfolio_value: float
+    trading_blocked: bool
+    account_blocked: bool
+    trade_suspended_by_user: bool
     A_target: float
     B_target: float
     C_target: float
@@ -238,6 +241,9 @@ def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
         buying_power=snap.buying_power,
         cash=snap.cash,
         portfolio_value=snap.portfolio_value,
+        trading_blocked=snap.trading_blocked,
+        account_blocked=snap.account_blocked,
+        trade_suspended_by_user=snap.trade_suspended_by_user,
         A_target=targets["A"],
         B_target=targets["B"],
         C_target=targets["C"],
@@ -341,6 +347,12 @@ def can_open_new_position(strategy_group: str, estimated_notional: float) -> tup
         allocation = get_capital_allocation()
         if allocation is None:
             return False, "account_snapshot_failed"
+        if allocation.account_blocked:
+            return False, "account_blocked"
+        if allocation.trading_blocked:
+            return False, "trading_blocked"
+        if allocation.trade_suspended_by_user:
+            return False, "trade_suspended_by_user"
         target = allocation.target_for(group)
         used = allocation.used.get(group, get_strategy_used_capital(group))
         available = allocation.available.get(group, max(0.0, target - used))

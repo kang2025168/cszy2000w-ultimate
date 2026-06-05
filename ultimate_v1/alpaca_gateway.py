@@ -14,6 +14,37 @@ class AccountSnapshot:
     buying_power: float
     cash: float
     portfolio_value: float
+    non_marginable_buying_power: float = 0.0
+    options_buying_power: float = 0.0
+    regt_buying_power: float = 0.0
+    daytrading_buying_power: float = 0.0
+    multiplier: float = 0.0
+    trading_blocked: bool = False
+    account_blocked: bool = False
+    trade_suspended_by_user: bool = False
+    pattern_day_trader: bool = False
+    daytrade_count: int = 0
+
+
+def _float_attr(obj, name: str, default: float = 0.0) -> float:
+    try:
+        return float(getattr(obj, name, default) or default)
+    except Exception:
+        return default
+
+
+def _int_attr(obj, name: str, default: int = 0) -> int:
+    try:
+        return int(float(getattr(obj, name, default) or default))
+    except Exception:
+        return default
+
+
+def _bool_attr(obj, name: str, default: bool = False) -> bool:
+    try:
+        return bool(getattr(obj, name, default))
+    except Exception:
+        return default
 
 
 def trading_client():
@@ -101,15 +132,38 @@ def get_account_snapshot() -> AccountSnapshot | None:
     try:
         acct = trading_client().get_account()
         snap = AccountSnapshot(
-            equity=float(getattr(acct, "equity", 0) or 0),
-            buying_power=float(getattr(acct, "buying_power", 0) or 0),
-            cash=float(getattr(acct, "cash", 0) or 0),
-            portfolio_value=float(getattr(acct, "portfolio_value", 0) or 0),
+            equity=_float_attr(acct, "equity"),
+            buying_power=_float_attr(acct, "buying_power"),
+            cash=_float_attr(acct, "cash"),
+            portfolio_value=_float_attr(acct, "portfolio_value"),
+            non_marginable_buying_power=_float_attr(acct, "non_marginable_buying_power"),
+            options_buying_power=_float_attr(acct, "options_buying_power"),
+            regt_buying_power=_float_attr(acct, "regt_buying_power"),
+            daytrading_buying_power=_float_attr(acct, "daytrading_buying_power"),
+            multiplier=_float_attr(acct, "multiplier"),
+            trading_blocked=_bool_attr(acct, "trading_blocked"),
+            account_blocked=_bool_attr(acct, "account_blocked"),
+            trade_suspended_by_user=_bool_attr(acct, "trade_suspended_by_user"),
+            pattern_day_trader=_bool_attr(acct, "pattern_day_trader"),
+            daytrade_count=_int_attr(acct, "daytrade_count"),
         )
         return snap
     except Exception as exc:
         print(f"[ACCOUNT ERROR] cannot fetch Alpaca account: {exc}", flush=True)
         return None
+
+
+def account_trade_block_reason(snap: AccountSnapshot | None) -> str:
+    """返回账户级交易阻断原因；PDT/daytrade 字段已废弃，不再作为阻断条件。"""
+    if snap is None:
+        return "account_snapshot_unavailable"
+    if snap.account_blocked:
+        return "account_blocked"
+    if snap.trading_blocked:
+        return "trading_blocked"
+    if snap.trade_suspended_by_user:
+        return "trade_suspended_by_user"
+    return ""
 
 
 def list_positions() -> list:

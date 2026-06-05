@@ -7,6 +7,7 @@ import sys
 import time
 from dataclasses import dataclass
 from os import environ
+from pathlib import Path
 
 from .config import settings
 from .state_store import bot_controls, heartbeat, log_bot_lifecycle, set_bot_enabled
@@ -55,6 +56,7 @@ BOT_SPECS: dict[str, BotSpec] = {
 }
 
 _PROCESSES: dict[str, subprocess.Popen] = {}
+_LOG_HANDLES: dict[str, object] = {}
 
 
 def managed_bot_names() -> set[str]:
@@ -82,10 +84,24 @@ def start_bot(bot_name: str) -> bool:
     child_env = dict(environ)
     if spec.env:
         child_env.update(spec.env)
-    proc = subprocess.Popen(cmd, env=child_env)
+    log_dir = Path(child_env.get("LOG_DIR") or child_env.get("BOT_LOG_DIR") or "/tmp/logs")
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        log_dir = Path("/tmp")
+    trade_env = (child_env.get("TRADE_ENV") or child_env.get("ALPACA_MODE") or "paper").strip().lower()
+    log_path = log_dir / f"AAA_{bot_name}_{trade_env}.log"
+    log_handle = open(log_path, "a", encoding="utf-8", buffering=1)
+    _LOG_HANDLES[bot_name] = log_handle
+    proc = subprocess.Popen(cmd, env=child_env, stdout=log_handle, stderr=subprocess.STDOUT)
     _PROCESSES[bot_name] = proc
     time.sleep(0.2)
     if proc.poll() is not None:
+        try:
+            log_handle.close()
+        except Exception:
+            pass
+        _LOG_HANDLES.pop(bot_name, None)
         heartbeat(bot_name, "failed", f"机器人启动后退出 returncode={proc.returncode}")
         log_bot_lifecycle(bot_name, "START", "FAILED", f"机器人启动后退出 returncode={proc.returncode}", proc.pid)
         print(f"[BOT SUPERVISOR] {bot_name} exited immediately returncode={proc.returncode}", flush=True)
@@ -110,6 +126,12 @@ def stop_bot(bot_name: str) -> bool:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
+    log_handle = _LOG_HANDLES.pop(bot_name, None)
+    if log_handle:
+        try:
+            log_handle.close()
+        except Exception:
+            pass
     heartbeat(bot_name, "stopped", "机器人已关闭")
     log_bot_lifecycle(bot_name, "STOP", "STOPPED", f"机器人已关闭 returncode={proc.returncode}", proc.pid)
     print(f"[BOT SUPERVISOR] stopped {bot_name}", flush=True)

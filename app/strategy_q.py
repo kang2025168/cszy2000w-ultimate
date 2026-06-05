@@ -135,8 +135,9 @@ C_ALLOW_DIRECT_TEST = int(os.getenv("C_ALLOW_DIRECT_TEST", "0"))
 # 但仍然不更新 stock_operations。
 C_ALLOW_DIRECT_TEST_REAL_ORDER = int(os.getenv("C_ALLOW_DIRECT_TEST_REAL_ORDER", "0"))
 
-# 小账户规避 PDT：同日开仓默认不做普通平仓，但允许紧急风险出口。
-C_BLOCK_SAME_DAY_CLOSE = int(os.getenv("C_BLOCK_SAME_DAY_CLOSE", "1"))
+# 2026-06-04 起 Alpaca/FINRA PDT 计数限制废弃；默认允许同日平仓。
+# 需要更保守的日内换手控制时，可手动设置 C_BLOCK_SAME_DAY_CLOSE=1。
+C_BLOCK_SAME_DAY_CLOSE = int(os.getenv("C_BLOCK_SAME_DAY_CLOSE", "0"))
 C_ALLOW_SAME_DAY_EMERGENCY_CLOSE = int(os.getenv("C_ALLOW_SAME_DAY_EMERGENCY_CLOSE", "1"))
 C_ALLOW_SAME_DAY_TAKE_PROFIT_CLOSE = int(os.getenv("C_ALLOW_SAME_DAY_TAKE_PROFIT_CLOSE", "1"))
 
@@ -1858,8 +1859,9 @@ def _is_emergency_close_reason(reason: str) -> bool:
 
 def _block_same_day_close(spread: dict, reason: str) -> tuple[bool, str]:
     """
-    小账户规避 PDT：
-    - 同日开仓默认不做普通趋势失效平仓，减少无意义 day trade。
+    可选的保守日内换手控制：
+    - 新规后不再为了 PDT 计数默认拦截同日平仓。
+    - 如显式开启，则同日开仓默认不做普通趋势失效平仓。
     - 如果当天已经达到预定收益，允许当天止盈落袋。
     - 如果允许紧急出口，则止损/short strike 威胁/到期风险仍可平仓。
     """
@@ -1871,7 +1873,7 @@ def _block_same_day_close(spread: dict, reason: str) -> tuple[bool, str]:
         return False, f"same-day take-profit close allowed: {reason}"
     if C_ALLOW_SAME_DAY_EMERGENCY_CLOSE == 1 and _is_emergency_close_reason(reason):
         return False, f"same-day emergency close allowed: {reason}"
-    return True, f"same-day close blocked to avoid PDT: {reason}"
+    return True, f"same-day close blocked by conservative intraday turnover config: {reason}"
 
 
 def _short_leg_strike(legs: list[dict], cp: str) -> Optional[float]:

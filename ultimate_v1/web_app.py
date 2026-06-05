@@ -128,6 +128,9 @@ def _allocation_payload() -> dict:
         "buying_power": allocation.buying_power,
         "cash": allocation.cash,
         "portfolio_value": allocation.portfolio_value,
+        "account_blocked": allocation.account_blocked,
+        "trading_blocked": allocation.trading_blocked,
+        "trade_suspended_by_user": allocation.trade_suspended_by_user,
         "base_total": base_total,
         "usable_total": usable_total,
         "used_total": used_total,
@@ -748,6 +751,114 @@ def _trade_records_payload() -> dict:
     return {"ok": True, "rows": cleaned[:200]}
 
 
+def _candidate_log_dirs() -> list[Path]:
+    root = Path(__file__).resolve().parents[1]
+    candidates = [
+        env_str("LOG_DIR", ""),
+        env_str("BOT_LOG_DIR", ""),
+        str(root / "logs"),
+        "/app/logs",
+        "/tmp/logs",
+    ]
+    seen: set[str] = set()
+    out: list[Path] = []
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw)
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _tail_text_file(path: Path, lines: int = 120) -> list[str]:
+    try:
+        if not path.exists() or not path.is_file():
+            return []
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            fh.seek(max(0, size - 120_000))
+            data = fh.read()
+        text = data.decode("utf-8", errors="replace")
+        return text.splitlines()[-max(1, min(lines, 500)):]
+    except Exception as exc:
+        return [f"[log read error] {path}: {exc}"]
+
+
+def _bot_log_path(bot_name: str) -> Path | None:
+    trade_env = (env_str("TRADE_ENV", env_str("ALPACA_MODE", "paper")) or "paper").strip().lower()
+    names = [
+        f"AAA_{bot_name}_{trade_env}.log",
+        f"AAA_{bot_name}_paper.log",
+        f"AAA_{bot_name}_live.log",
+    ]
+    for directory in _candidate_log_dirs():
+        for name in names:
+            path = directory / name
+            if path.exists():
+                return path
+    return None
+
+
+def _bot_log_fallback_lines(bot_name: str) -> list[str]:
+    lines: list[str] = []
+    try:
+        heartbeat_map = {row["bot_name"]: row for row in bot_heartbeats()}
+        hb = heartbeat_map.get(bot_name)
+        if hb:
+            lines.append(
+                f"[heartbeat] status={hb.get('status') or '--'} "
+                f"last_seen={hb.get('last_seen_at') or '--'} message={hb.get('last_message') or ''}"
+            )
+    except Exception:
+        pass
+    try:
+        rows = fetch_all(
+            """
+            SELECT created_at, action, status, message, pid
+            FROM bot_lifecycle_events
+            WHERE bot_name=%s
+            ORDER BY created_at DESC, id DESC
+            LIMIT 30
+            """,
+            (bot_name,),
+        )
+        for row in reversed(rows):
+            lines.append(
+                f"{row.get('created_at')} | {row.get('action')} | {row.get('status')} | "
+                f"{row.get('message') or ''}{(' pid=' + str(row.get('pid'))) if row.get('pid') else ''}"
+            )
+    except Exception:
+        pass
+    return lines or ["暂无日志文件；机器人启动后会写入独立日志。"]
+
+
+def _bot_logs_payload(lines: int = 120) -> dict:
+    """读取每个机器人最近日志，给日志聚焦页展示。"""
+    bots = sorted(managed_bot_names())
+    process_map = {row["bot_name"]: row for row in process_status()}
+    rows = []
+    for bot_name in bots:
+        path = _bot_log_path(bot_name)
+        log_lines = _tail_text_file(path, lines) if path else []
+        if not log_lines:
+            log_lines = _bot_log_fallback_lines(bot_name)
+        proc = process_map.get(bot_name) or {}
+        rows.append(
+            {
+                "bot_name": bot_name,
+                "running": bool(proc.get("running")),
+                "pid": proc.get("pid"),
+                "log_path": str(path) if path else "",
+                "lines": log_lines,
+            }
+        )
+    return {"ok": True, "rows": rows}
+
+
 def _now_market_tz() -> datetime:
     """读取配置时区里的当前时间，默认美西。"""
     tz_name = settings().timezone or "America/Los_Angeles"
@@ -1156,14 +1267,14 @@ INDEX_HTML = r"""<!doctype html>
     .brand-copy { min-width:0; display:flex; flex-direction:column; gap:7px; }
     .left-titlebar h1 { color:#17202a; text-shadow:none; }
     .dashboard-motto { color:#667085; font-size:13px; font-weight:750; letter-spacing:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .title-actions { display:flex; align-items:center; gap:10px; flex:0 0 auto; }
-    .phase-chip { min-width:144px; height:38px; border:1px solid #cbd8e6; border-radius:999px; background:rgba(255,255,255,.96); display:flex; align-items:center; justify-content:center; gap:7px; padding:0 13px; font-size:12px; font-weight:850; color:var(--ink); box-shadow:0 10px 24px rgba(15,23,42,.08); }
+    .title-actions { display:flex; align-items:center; gap:7px; flex:0 0 auto; padding:4px 6px; border:1px solid #d8e4f0; border-radius:8px; background:rgba(255,255,255,.54); }
+    .phase-chip { min-width:112px; height:34px; border:1px solid #cbd8e6; border-radius:999px; background:rgba(255,255,255,.96); display:flex; align-items:center; justify-content:center; gap:6px; padding:0 11px; font-size:12px; font-weight:850; color:var(--ink); box-shadow:0 7px 16px rgba(15,23,42,.06); }
     .phase-chip .phase-dot { width:9px; height:9px; border-radius:50%; background:var(--muted); box-shadow:0 0 0 4px rgba(102,112,133,.1); }
     .phase-chip.ok .phase-dot { background:var(--green); box-shadow:0 0 0 4px rgba(21,147,106,.12); }
     .phase-chip.blue .phase-dot { background:var(--blue); box-shadow:0 0 0 4px rgba(37,99,235,.12); }
     .phase-chip.warn .phase-dot { background:var(--amber); box-shadow:0 0 0 4px rgba(183,110,0,.14); }
     .phase-chip.sleep .phase-dot { background:var(--red); box-shadow:0 0 0 4px rgba(198,40,40,.12); }
-    .trade-focus-btn { height:38px; min-width:76px; padding:0 14px; border:1px solid #bfd4ee; border-radius:9px; background:#fff; color:#075985; font-size:13px; font-weight:900; box-shadow:0 9px 20px rgba(15,23,42,.08); transition:background .14s ease, color .14s ease, transform .12s ease; }
+    .trade-focus-btn { height:34px; min-width:66px; padding:0 12px; border:1px solid #bfd4ee; border-radius:8px; background:#fff; color:#075985; font-size:13px; font-weight:900; box-shadow:0 7px 16px rgba(15,23,42,.06); transition:background .14s ease, color .14s ease, transform .12s ease; }
     .trade-focus-btn:hover { background:#eff6ff; color:#0f172a; }
     .trade-focus-btn.active { background:#101828; border-color:#101828; color:#fff; }
     .trade-focus-btn:active { transform:scale(.96); }
@@ -1177,7 +1288,7 @@ INDEX_HTML = r"""<!doctype html>
     .phase-rule-title { display:flex; gap:10px; align-items:baseline; font-weight:850; }
     .phase-rule-title span { color:var(--muted); font-size:12px; }
     .phase-rule p { margin:6px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
-    .refresh-btn { height:38px; padding:0 18px; border:0; border-radius:9px; background:#2563eb; color:#fff; font-weight:850; box-shadow:0 9px 22px rgba(37,99,235,.22); transition:transform .12s ease, background .12s ease, opacity .12s ease; }
+    .refresh-btn { height:34px; padding:0 14px; border:0; border-radius:8px; background:#2563eb; color:#fff; font-weight:850; box-shadow:0 7px 16px rgba(37,99,235,.18); transition:transform .12s ease, background .12s ease, opacity .12s ease; }
     .refresh-btn:hover { background:#1d4ed8; }
     .refresh-btn:active { transform:scale(.96); }
     .refresh-btn.loading { opacity:.72; pointer-events:none; }
@@ -1188,10 +1299,15 @@ INDEX_HTML = r"""<!doctype html>
     body.trade-focus main { max-width:none; gap:12px; }
     body.trade-focus .dash { display:block; }
     body.trade-focus .left-stack { display:block; }
-    body.trade-focus .right-stack, body.trade-focus .capital-hero, body.trade-focus .phase-popover { display:none !important; }
+    body.trade-focus .right-stack, body.trade-focus .capital-hero, body.trade-focus .phase-popover, body.trade-focus .log-focus-panel { display:none !important; }
     body.trade-focus .holdings-panel { margin-top:12px; min-height:calc(100vh - 116px); }
     body.trade-focus .holdings-panel .scroll { max-height:calc(100vh - 238px); }
     body.trade-focus .manual-buy-entry { display:grid; }
+    body.log-focus main { max-width:none; gap:12px; }
+    body.log-focus .dash { display:block; }
+    body.log-focus .left-stack { display:block; }
+    body.log-focus .right-stack, body.log-focus .capital-hero, body.log-focus .holdings-panel, body.log-focus .phase-popover { display:none !important; }
+    body.log-focus .log-focus-panel { display:block; min-height:calc(100vh - 116px); margin-top:12px; }
     .capital-hero { flex:0 0 auto; }
     .hero-top { display:grid; grid-template-columns:minmax(340px,1fr) minmax(300px,.78fr); gap:12px; align-items:start; padding:14px; border:1px solid #c5d5e6; border-radius:8px; background:linear-gradient(145deg,#eef5fb 0%,#f8fbff 45%,#edf4fa 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.86), 0 18px 44px rgba(15,23,42,.10); }
     .hero-top:before { content:""; grid-column:1 / -1; height:3px; border-radius:999px; background:linear-gradient(90deg,#15936a,#2563eb,#d97706); opacity:.72; margin:-2px 0 0; }
@@ -1344,6 +1460,19 @@ INDEX_HTML = r"""<!doctype html>
     .trade-records table { width:100%; min-width:940px; table-layout:auto; }
     .trade-records th, .trade-records td { padding:8px 10px; font-size:11px; }
     .trade-records th, .trade-records td { white-space:nowrap; }
+    .log-focus-panel { display:none; }
+    .log-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+    .log-head h2 { margin:0; font-size:18px; }
+    .log-actions { display:flex; align-items:center; gap:8px; }
+    .log-refresh-btn { height:34px; padding:0 13px; border:0; border-radius:8px; background:#101828; color:#fff; font-weight:850; }
+    .bot-log-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; }
+    .bot-log-window { min-height:260px; border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,.04); display:flex; flex-direction:column; }
+    .bot-log-title { min-height:42px; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-bottom:1px solid #e8eef6; font-size:12px; font-weight:950; color:var(--ink); }
+    .bot-log-meta { padding:7px 12px; color:var(--muted); font-size:11px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-bottom:1px solid #eef2f6; }
+    .bot-log-status { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:11px; font-weight:900; }
+    .bot-log-status::before { content:""; width:8px; height:8px; border-radius:999px; background:var(--red); box-shadow:0 0 0 3px rgba(198,40,40,.10); }
+    .bot-log-status.running::before { background:var(--green); box-shadow:0 0 0 3px rgba(21,147,106,.10); }
+    .bot-log-body { flex:1; margin:0; padding:11px 12px; max-height:360px; overflow:auto; background:#0b1220; color:#d1e3ff; font:11px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; white-space:pre-wrap; word-break:break-word; }
     .side-pill { border-radius:999px; padding:3px 7px; font-weight:850; font-size:11px; }
     .side-pill.buy { background:#e7f6ef; color:#08734f; }
     .side-pill.sell { background:#fee2e2; color:#b42318; }
@@ -1516,7 +1645,9 @@ INDEX_HTML = r"""<!doctype html>
       .title-actions { gap:7px; flex:0 0 auto; }
       .phase-chip { min-width:88px; height:34px; padding:0 10px; font-size:12px; }
       .phase-chip .phase-dot { width:8px; height:8px; }
-      .refresh-btn { height:36px; padding:0 14px; border-radius:8px; }
+      .refresh-btn { height:34px; padding:0 12px; border-radius:8px; }
+      .title-actions { gap:6px; padding:4px; }
+      .phase-chip { min-width:104px; height:34px; padding:0 10px; }
       .phase-popover { top:64px; left:10px; width:calc(100vw - 20px); padding:12px; }
       .panel { padding:12px; border-radius:10px; }
       .mobile-collapsible { padding:0; overflow:hidden; }
@@ -1568,6 +1699,8 @@ INDEX_HTML = r"""<!doctype html>
       .trade-records-scroll { height:260px; overflow:auto; }
       .trade-records table { min-width:980px; }
       .trade-records th, .trade-records td { padding:8px 7px; font-size:11px; }
+      .bot-log-grid { grid-template-columns:1fr; }
+      .bot-log-body { max-height:300px; }
       .holdings-panel { min-height:520px; margin-top:12px; }
       .manual-buy-top { display:grid; grid-template-columns:1fr; gap:9px; align-items:start; }
       .manual-buy-toggle { width:100%; }
@@ -1613,6 +1746,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" /><div class="brand-copy"><h1>CSZY Ultimate V1</h1><div class="dashboard-motto">回撤变成纪律。上升趋势，回调趋势。等待机会，准备水桶。</div></div></div>
           <div class="title-actions">
             <button class="trade-focus-btn" id="tradeFocusBtn" onclick="toggleTradeFocus()">交易</button>
+            <button class="trade-focus-btn" id="logFocusBtn" onclick="toggleLogFocus()">日志</button>
             <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
             <button class="refresh-btn" onclick="loadAll()">刷新</button>
           </div>
@@ -1884,6 +2018,19 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </div>
     </section>
+    <section class="panel log-focus-panel" id="logFocusPanel">
+      <div class="log-head">
+        <div>
+          <h2>机器人日志</h2>
+          <div class="small-muted">每个机器人独立窗口，显示最近输出</div>
+        </div>
+        <div class="log-actions">
+          <span class="small-muted" id="botLogsMeta">--</span>
+          <button class="log-refresh-btn" onclick="loadBotLogs()">刷新日志</button>
+        </div>
+      </div>
+      <div class="bot-log-grid" id="botLogGrid"></div>
+    </section>
   </main>
   <div class="modal-backdrop" id="clearModal">
     <div class="modal">
@@ -1915,6 +2062,7 @@ INDEX_HTML = r"""<!doctype html>
     };
     const pct = v => `${(Number(v || 0) * 100).toFixed(2)}%`;
     const cls = v => Number(v || 0) < 0 ? 'neg' : Number(v || 0) > 0 ? 'pos' : '';
+    const esc = v => String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
     const colors = {A:'#2563eb', B:'#d97706', C:'#15936a', D:'#7c3aed', X:'#0f766e', Z:'#475569', CASH:'#d0d5dd'};
     let currentPeriod = 'week';
     let currentHolding = 'ALL';
@@ -2129,10 +2277,16 @@ INDEX_HTML = r"""<!doctype html>
     function toggleTradeFocus() {
       const active = !document.body.classList.contains('trade-focus');
       document.body.classList.toggle('trade-focus', active);
+      document.body.classList.remove('log-focus');
       const btn = document.getElementById('tradeFocusBtn');
       if (btn) {
         btn.classList.toggle('active', active);
         btn.textContent = active ? '总览' : '交易';
+      }
+      const logBtn = document.getElementById('logFocusBtn');
+      if (logBtn) {
+        logBtn.classList.remove('active');
+        logBtn.textContent = '日志';
       }
       if (active) {
         document.getElementById('phasePopover')?.classList.remove('show');
@@ -2141,6 +2295,61 @@ INDEX_HTML = r"""<!doctype html>
       } else if (manualQuoteInterval) {
         clearInterval(manualQuoteInterval);
         manualQuoteInterval = null;
+      }
+    }
+    function toggleLogFocus() {
+      const active = !document.body.classList.contains('log-focus');
+      document.body.classList.toggle('log-focus', active);
+      document.body.classList.remove('trade-focus');
+      const btn = document.getElementById('logFocusBtn');
+      if (btn) {
+        btn.classList.toggle('active', active);
+        btn.textContent = active ? '总览' : '日志';
+      }
+      const tradeBtn = document.getElementById('tradeFocusBtn');
+      if (tradeBtn) {
+        tradeBtn.classList.remove('active');
+        tradeBtn.textContent = '交易';
+      }
+      if (manualQuoteInterval) {
+        clearInterval(manualQuoteInterval);
+        manualQuoteInterval = null;
+      }
+      if (active) {
+        document.getElementById('phasePopover')?.classList.remove('show');
+        loadBotLogs();
+        document.getElementById('logFocusPanel')?.scrollIntoView({block:'start'});
+      }
+    }
+    function renderBotLogs(payload) {
+      const rows = payload?.rows || [];
+      const grid = document.getElementById('botLogGrid');
+      const meta = document.getElementById('botLogsMeta');
+      if (meta) meta.textContent = `${rows.length} 个机器人 · ${new Date().toLocaleTimeString()}`;
+      if (!grid) return;
+      grid.innerHTML = rows.map(row => {
+        const lines = (row.lines || []).join('\n') || '暂无日志';
+        const running = row.running ? 'running' : '';
+        const status = row.running ? `运行中${row.pid ? ' pid=' + row.pid : ''}` : '未运行';
+        const path = row.log_path || 'fallback';
+        return `<div class="bot-log-window">
+          <div class="bot-log-title">
+            <span>${esc(row.bot_name)}</span>
+            <span class="bot-log-status ${running}">${esc(status)}</span>
+          </div>
+          <div class="bot-log-meta" title="${esc(path)}">${esc(path)}</div>
+          <pre class="bot-log-body">${esc(lines)}</pre>
+        </div>`;
+      }).join('') || '<div class="empty-state">暂无机器人日志</div>';
+    }
+    async function loadBotLogs() {
+      const meta = document.getElementById('botLogsMeta');
+      if (meta) meta.textContent = '加载中...';
+      try {
+        const payload = await api('/api/bot_logs?lines=140');
+        renderBotLogs(payload);
+      } catch (e) {
+        renderBotLogs({rows:[{bot_name:'日志', running:false, log_path:'', lines:[`读取失败：${e.message || e}`]}]});
       }
     }
     function setManualQuote(last='--', bid='--', ask='--') {
@@ -2899,6 +3108,7 @@ INDEX_HTML = r"""<!doctype html>
       renderHoldings();
       renderLowerView();
       if (lowerView === 'market') await loadMarketCategories(currentCategory);
+      if (document.body.classList.contains('log-focus')) await loadBotLogs();
       await loadCurve(currentPeriod);
       } finally {
         if (refreshBtn) refreshBtn.classList.remove('loading');
@@ -3180,6 +3390,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_curve_payload(period))
             elif path == "/api/trade_records":
                 self._send_json(_trade_records_payload())
+            elif path == "/api/bot_logs":
+                qs = parse_qs(parsed.query)
+                try:
+                    lines = int(qs.get("lines", ["120"])[0])
+                except Exception:
+                    lines = 120
+                self._send_json(_bot_logs_payload(lines))
             elif path == "/api/stock_quote":
                 symbol = parse_qs(parsed.query).get("symbol", [""])[0]
                 self._send_json(_stock_quote_payload(symbol))

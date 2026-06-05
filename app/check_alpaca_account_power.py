@@ -20,9 +20,15 @@
 
 重点看：
     cash                         现金
-    buying_power                 普通购买力，股票可能能用，但期权不一定按这个算
+    buying_power                 当前可用购买力，新日内保证金规则下优先看它
     options_buying_power         如果 Alpaca 返回这个字段，期权更应该看它
+    trading_blocked/account_blocked/trade_suspended_by_user
+                                 账户级交易阻断标志
     open_orders_notional_est     未成交订单大致占用，可能冻结资金
+
+说明：
+    Alpaca 文档显示 2026-06-04 起 PDT/daytrade 计数字段已废弃；
+    脚本仍打印这些字段用于兼容观察，但不建议再把它们当日内交易限制。
 """
 
 from __future__ import annotations
@@ -97,20 +103,35 @@ def print_account_fields(acct):
     print("[INTERPRETATION]", flush=True)
     cash = _safe_float(_get_attr(acct, "cash"))
     bp = _safe_float(_get_attr(acct, "buying_power"))
+    regt_bp = _safe_float(_get_attr(acct, "regt_buying_power"))
+    daytrade_bp = _safe_float(_get_attr(acct, "daytrading_buying_power"))
     opt_bp = _safe_float(_get_attr(acct, "options_buying_power"))
     non_margin_bp = _safe_float(_get_attr(acct, "non_marginable_buying_power"))
+    blocked_flags = [
+        name
+        for name in ("account_blocked", "trading_blocked", "trade_suspended_by_user")
+        if bool(_get_attr(acct, name, False))
+    ]
 
     print(f"cash                    = {cash:.2f}", flush=True)
     print(f"buying_power            = {bp:.2f}", flush=True)
+    print(f"regt_buying_power       = {regt_bp:.2f}", flush=True)
+    if daytrade_bp > 0:
+        print(f"daytrading_buying_power = {daytrade_bp:.2f}  <- PDT 相关兼容字段，已废弃", flush=True)
     print(f"non_marginable_bp       = {non_margin_bp:.2f}", flush=True)
     if opt_bp > 0:
         print(f"options_buying_power    = {opt_bp:.2f}  <- 期权优先看这个", flush=True)
     else:
         print("options_buying_power    = 未返回或为0，期权可能按 cash/non_marginable_bp 判断", flush=True)
+    if blocked_flags:
+        print(f"账户交易阻断标志        = {', '.join(blocked_flags)}", flush=True)
+    else:
+        print("账户交易阻断标志        = none", flush=True)
 
     print(
-        "说明：期权通常不能像股票一样使用保证金杠杆；"
-        "如果 buying_power 高但 cash/options buying power 低，期权单可能会被拒。",
+        "说明：2026-06-04 起 PDT/daytrade 计数限制已废弃，股票日内交易主要看实时 buying_power/"
+        "账户阻断标志；期权通常不能像股票一样使用保证金杠杆，如果 buying_power 高但 "
+        "cash/options buying power 低，期权单仍可能会被拒。",
         flush=True,
     )
 
@@ -171,4 +192,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
