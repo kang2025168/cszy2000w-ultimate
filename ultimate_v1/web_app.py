@@ -1261,7 +1261,7 @@ INDEX_HTML = r"""<!doctype html>
     button { border:1px solid var(--line); background:#fff; color:var(--ink); height:34px; padding:0 12px; border-radius:6px; cursor:pointer; transition:transform .12s ease, border-color .12s ease, box-shadow .12s ease, background .12s ease; }
     button:hover { border-color:#bfd0e4; box-shadow:0 6px 16px rgba(15,23,42,.05); }
     main { padding:20px 24px 36px; max-width:1680px; margin:0 auto; }
-    .left-titlebar { grid-column:1 / -1; position:sticky; top:20px; z-index:20; min-height:58px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:8px 10px 10px 18px; border:1px solid #c9d7e6; border-radius:8px; background:linear-gradient(135deg,#ffffff 0%,#f4f8fc 48%,#eaf2f9 100%); box-shadow:0 18px 44px rgba(15,23,42,.10); backdrop-filter:blur(10px); }
+    .left-titlebar { grid-column:1 / -1; position:relative; z-index:20; min-height:58px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:0 0 4px; border:0; border-radius:0; background:transparent; box-shadow:none; }
     .brand-lockup { display:flex; align-items:center; gap:12px; min-width:0; }
     .brand-logo { width:42px; height:42px; border-radius:8px; object-fit:contain; background:#fff; box-shadow:0 10px 24px rgba(15,23,42,.10); border:1px solid #edf2f7; }
     .brand-copy { min-width:0; display:flex; flex-direction:column; gap:0; }
@@ -1292,11 +1292,11 @@ INDEX_HTML = r"""<!doctype html>
     .refresh-btn:hover { background:#1d4ed8; }
     .refresh-btn:active { transform:scale(.96); }
     .refresh-btn.loading { opacity:.72; pointer-events:none; }
-    .dash { display:grid; grid-template-columns:minmax(560px, 1.08fr) minmax(520px, .92fr); gap:18px; align-items:stretch; }
+    .dash { display:grid; grid-template-columns:minmax(560px, 1.08fr) minmax(520px, .92fr); column-gap:18px; row-gap:8px; align-items:stretch; padding:16px; border:1px solid #c9d7e6; border-radius:8px; background:linear-gradient(180deg,#fff 0%,#f8fbff 100%); box-shadow:0 18px 44px rgba(15,23,42,.08); }
     .panel { background:linear-gradient(180deg, #fff 0%, #fbfdff 100%); border:1px solid var(--line); border-radius:8px; padding:16px; box-shadow:var(--shadow-soft); }
     .mobile-collapse-toggle { display:none; }
     .left-stack, .right-stack { display:flex; flex-direction:column; gap:18px; min-width:0; }
-    .right-stack { padding-top:10px; }
+    .right-stack { padding-top:0; }
     body.trade-focus main { max-width:none; gap:12px; }
     body.trade-focus .dash { display:block; }
     body.trade-focus .left-stack { display:block; }
@@ -1315,7 +1315,7 @@ INDEX_HTML = r"""<!doctype html>
     body.life-focus .right-stack, body.life-focus .capital-hero, body.life-focus .holdings-panel, body.life-focus .phase-popover, body.life-focus .log-focus-panel { display:none !important; }
     body.life-focus .life-focus-panel { display:block; min-height:calc(100vh - 116px); margin-top:12px; }
     .capital-hero { flex:0 0 auto; }
-    .hero-top { display:grid; grid-template-columns:minmax(340px,1fr) minmax(300px,.78fr); gap:12px; align-items:start; padding:14px; border:1px solid #c5d5e6; border-radius:8px; background:linear-gradient(145deg,#eef5fb 0%,#f8fbff 45%,#edf4fa 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.86), 0 18px 44px rgba(15,23,42,.10); }
+    .hero-top { display:grid; grid-template-columns:minmax(340px,1fr) minmax(300px,.78fr); gap:12px; align-items:start; padding:14px; border:1px solid #c5d5e6; border-radius:8px; background:linear-gradient(145deg,#eef5fb 0%,#f8fbff 45%,#edf4fa 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.86), 0 10px 26px rgba(15,23,42,.06); }
     .hero-top:before { content:""; grid-column:1 / -1; height:3px; border-radius:999px; background:linear-gradient(90deg,#15936a,#2563eb,#d97706); opacity:.72; margin:-2px 0 0; }
     .hero-main-column { display:grid; gap:12px; min-width:0; }
     .hero-donut { border:1px solid #cbd8e6; border-radius:8px; min-height:164px; padding:14px; overflow:hidden; background:linear-gradient(135deg,#f0f7ff 0%,#f8fbff 58%,#eef6fb 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.82), 0 12px 28px rgba(15,23,42,.07); }
@@ -1374,6 +1374,13 @@ INDEX_HTML = r"""<!doctype html>
     .rebalance-icon { grid-area:icon; width:34px; height:34px; border-radius:8px; display:grid; place-items:center; background:#fff; color:#075985; font-weight:950; box-shadow:inset 0 0 0 1px #bfdbfe; }
     .rebalance-title { grid-area:title; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--ink); font-weight:900; }
     .rebalance-detail { grid-area:detail; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .broker-balances { grid-column:1 / -1; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding:12px; border:1px solid #d6e2ef; border-radius:8px; background:linear-gradient(135deg,#fff 0%,#f7fbff 62%,#fffaf0 100%); box-shadow:0 8px 20px rgba(15,23,42,.045); }
+    .broker-balance-item { min-height:62px; display:grid; gap:5px; align-content:center; padding:8px 10px; border-right:1px solid #e6edf5; }
+    .broker-balance-item:last-child { border-right:0; }
+    .broker-balance-label { color:var(--muted); font-size:12px; font-weight:900; }
+    .broker-balance-value { color:#17202a; font-size:19px; font-weight:950; line-height:1.1; font-variant-numeric:tabular-nums; }
+    .broker-balance-value.neg { color:var(--red); }
+    .broker-balance-value.pos { color:var(--green); }
     .pool-card { border:1px solid var(--line); border-radius:8px; padding:14px; min-height:126px; background:linear-gradient(180deg,#fff,#fafcff); box-shadow:0 10px 22px rgba(15,23,42,.04); position:relative; overflow:hidden; }
     .pool-card:before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:#d7e0ea; }
     .pool-card.defensive-pool { background:linear-gradient(180deg,#f9fbff,#f4f8fd); }
@@ -1765,6 +1772,9 @@ INDEX_HTML = r"""<!doctype html>
       .journal-prompts { grid-template-columns:1fr; }
       .life-journal { min-height:520px; }
       .journal-textarea { min-height:420px; }
+      .broker-balances { grid-template-columns:1fr; }
+      .broker-balance-item { border-right:0; border-bottom:1px solid #e6edf5; }
+      .broker-balance-item:last-child { border-bottom:0; }
       .bot-log-layout { grid-template-columns:1fr; min-height:auto; }
       .bot-log-sidebar { flex-direction:row; overflow:auto; }
       .bot-log-group-label { display:none; }
@@ -1882,6 +1892,20 @@ INDEX_HTML = r"""<!doctype html>
               </div>
               <div class="hero-side-column">
                 <div class="hero-pools-list" id="heroPools"></div>
+              </div>
+              <div class="broker-balances" id="brokerBalances">
+                <div class="broker-balance-item">
+                  <div class="broker-balance-label">Buying Power</div>
+                  <div class="broker-balance-value">--</div>
+                </div>
+                <div class="broker-balance-item">
+                  <div class="broker-balance-label">Cash</div>
+                  <div class="broker-balance-value">--</div>
+                </div>
+                <div class="broker-balance-item">
+                  <div class="broker-balance-label">Daily Change</div>
+                  <div class="broker-balance-value">--</div>
+                </div>
               </div>
             </div>
           </div>
@@ -3404,6 +3428,25 @@ INDEX_HTML = r"""<!doctype html>
         </span>
       `;
     }
+    function renderBrokerBalances(cap, risk) {
+      const el = document.getElementById('brokerBalances');
+      if (!el) return;
+      const dailyPct = Number(risk?.daily_pnl_pct || 0);
+      const equity = Number(cap?.equity || cap?.portfolio_value || 0);
+      const dailyChange = equity > 0 && Number.isFinite(dailyPct) ? equity * dailyPct : null;
+      const dailyClass = dailyChange === null ? '' : dailyChange < 0 ? 'neg' : dailyChange > 0 ? 'pos' : '';
+      const dailyText = dailyChange === null ? '--' : money(dailyChange);
+      el.innerHTML = [
+        ['Buying Power', money(cap?.buying_power || 0), ''],
+        ['Cash', money(cap?.cash || 0), Number(cap?.cash || 0) < 0 ? 'neg' : Number(cap?.cash || 0) > 0 ? 'pos' : ''],
+        ['Daily Change', dailyText, dailyClass],
+      ].map(([label, value, valueClass]) => `
+        <div class="broker-balance-item">
+          <div class="broker-balance-label">${label}</div>
+          <div class="broker-balance-value ${valueClass}">${value}</div>
+        </div>
+      `).join('');
+    }
     async function updateRiskPreference(value) {
       const result = await postJson('/api/risk_settings', {risk_preference:value});
       if (!result.ok) { alert(result.error || '风险偏好更新失败'); return; }
@@ -3428,6 +3471,7 @@ INDEX_HTML = r"""<!doctype html>
         if (marginSelect) marginSelect.value = String((Number(cap.margin_usage_percent || cap.total_risk_percent || 1)).toFixed(1));
         updateManualPoolAvailable();
         drawDonut(cap);
+        renderBrokerBalances(cap, risk);
       } else {
         document.getElementById('modeValue').textContent = 'ERROR';
       }
