@@ -2522,6 +2522,15 @@ INDEX_HTML = r"""<!doctype html>
     function writeJournals(rows) {
       localStorage.setItem(journalStorageKey, JSON.stringify(rows || {}));
     }
+    function ensureJournalDate(key) {
+      const day = key || todayKey();
+      const rows = readJournals();
+      if (!Object.prototype.hasOwnProperty.call(rows, day)) {
+        rows[day] = '';
+        writeJournals(rows);
+      }
+      return rows;
+    }
     function readTradingRules() {
       try {
         const rows = JSON.parse(localStorage.getItem(tradingRulesStorageKey) || 'null');
@@ -2568,8 +2577,11 @@ INDEX_HTML = r"""<!doctype html>
       const box = document.getElementById('journalDateList');
       if (!box) return;
       const rows = readJournals();
-      const keys = Object.keys(rows).sort().reverse();
-      if (!keys.includes(selectedJournalDate)) selectedJournalDate = keys[0] || todayKey();
+      const keySet = new Set(Object.keys(rows));
+      keySet.add(todayKey());
+      if (selectedJournalDate) keySet.add(selectedJournalDate);
+      const keys = Array.from(keySet).sort().reverse();
+      if (!keys.includes(selectedJournalDate)) selectedJournalDate = todayKey();
       box.innerHTML = keys.length ? keys.map(key => {
         const preview = String(rows[key] || '').trim().split(/\s+/).slice(0, 8).join(' ') || '空白日记';
         return `<button class="journal-date-btn ${key === selectedJournalDate ? 'active' : ''}" onclick="selectJournalDate('${key}')"><span>${journalDateLabel(key)}</span><span class="date-note">${esc(preview)}</span></button>`;
@@ -2581,16 +2593,17 @@ INDEX_HTML = r"""<!doctype html>
     }
     function newTodayJournal() {
       selectedJournalDate = todayKey();
+      ensureJournalDate(selectedJournalDate);
       loadJournal(selectedJournalDate);
       document.getElementById('journalText')?.focus();
     }
     function loadJournal(dateKey=null) {
       updateLifeDate();
       renderTradingRules();
-      selectedJournalDate = dateKey || selectedJournalDate || todayKey();
+      selectedJournalDate = dateKey || todayKey();
       const text = document.getElementById('journalText');
       if (!text) return;
-      const rows = readJournals();
+      const rows = selectedJournalDate === todayKey() ? ensureJournalDate(selectedJournalDate) : readJournals();
       text.value = rows[selectedJournalDate] || '';
       const title = document.querySelector('.journal-title');
       if (title) title.textContent = `${journalDateLabel(selectedJournalDate)} · 今天写点什么`;
