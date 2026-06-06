@@ -1261,12 +1261,12 @@ INDEX_HTML = r"""<!doctype html>
     button { border:1px solid var(--line); background:#fff; color:var(--ink); height:34px; padding:0 12px; border-radius:6px; cursor:pointer; transition:transform .12s ease, border-color .12s ease, box-shadow .12s ease, background .12s ease; }
     button:hover { border-color:#bfd0e4; box-shadow:0 6px 16px rgba(15,23,42,.05); }
     main { padding:20px 24px 36px; max-width:1680px; margin:0 auto; }
-    .left-titlebar { min-height:58px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:8px 10px 10px 18px; border:1px solid #c9d7e6; border-radius:8px; background:linear-gradient(135deg,#ffffff 0%,#f4f8fc 48%,#eaf2f9 100%); box-shadow:0 18px 44px rgba(15,23,42,.10); backdrop-filter:blur(10px); }
+    .left-titlebar { grid-column:1 / -1; position:sticky; top:20px; z-index:20; min-height:58px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:8px 10px 10px 18px; border:1px solid #c9d7e6; border-radius:8px; background:linear-gradient(135deg,#ffffff 0%,#f4f8fc 48%,#eaf2f9 100%); box-shadow:0 18px 44px rgba(15,23,42,.10); backdrop-filter:blur(10px); }
     .brand-lockup { display:flex; align-items:center; gap:12px; min-width:0; }
     .brand-logo { width:42px; height:42px; border-radius:8px; object-fit:contain; background:#fff; box-shadow:0 10px 24px rgba(15,23,42,.10); border:1px solid #edf2f7; }
-    .brand-copy { min-width:0; display:flex; flex-direction:column; gap:7px; }
-    .left-titlebar h1 { color:#17202a; text-shadow:none; }
-    .dashboard-motto { color:#667085; font-size:13px; font-weight:750; letter-spacing:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .brand-copy { min-width:0; display:flex; flex-direction:column; gap:0; }
+    .left-titlebar h1 { color:#17202a; text-shadow:none; white-space:nowrap; }
+    .dashboard-motto { display:none; }
     .title-actions { display:flex; align-items:center; gap:7px; flex:0 0 auto; padding:4px 6px; border:1px solid #d8e4f0; border-radius:8px; background:rgba(255,255,255,.54); }
     .phase-chip { min-width:112px; height:34px; border:1px solid #cbd8e6; border-radius:999px; background:rgba(255,255,255,.96); display:flex; align-items:center; justify-content:center; gap:6px; padding:0 11px; font-size:12px; font-weight:850; color:var(--ink); box-shadow:0 7px 16px rgba(15,23,42,.06); }
     .phase-chip .phase-dot { width:9px; height:9px; border-radius:50%; background:var(--muted); box-shadow:0 0 0 4px rgba(102,112,133,.1); }
@@ -1296,18 +1296,24 @@ INDEX_HTML = r"""<!doctype html>
     .panel { background:linear-gradient(180deg, #fff 0%, #fbfdff 100%); border:1px solid var(--line); border-radius:8px; padding:16px; box-shadow:var(--shadow-soft); }
     .mobile-collapse-toggle { display:none; }
     .left-stack, .right-stack { display:flex; flex-direction:column; gap:18px; min-width:0; }
+    .right-stack { padding-top:10px; }
     body.trade-focus main { max-width:none; gap:12px; }
     body.trade-focus .dash { display:block; }
     body.trade-focus .left-stack { display:block; }
-    body.trade-focus .right-stack, body.trade-focus .capital-hero, body.trade-focus .phase-popover, body.trade-focus .log-focus-panel { display:none !important; }
-    body.trade-focus .holdings-panel { margin-top:12px; min-height:calc(100vh - 116px); }
+    body.trade-focus .right-stack, body.trade-focus .capital-hero, body.trade-focus .phase-popover, body.trade-focus .log-focus-panel, body.trade-focus .life-focus-panel { display:none !important; }
+    body.trade-focus .holdings-panel { display:block; margin-top:12px; min-height:calc(100vh - 116px); }
     body.trade-focus .holdings-panel .scroll { max-height:calc(100vh - 238px); }
     body.trade-focus .manual-buy-entry { display:grid; }
     body.log-focus main { max-width:none; gap:12px; }
     body.log-focus .dash { display:block; }
     body.log-focus .left-stack { display:block; }
-    body.log-focus .right-stack, body.log-focus .capital-hero, body.log-focus .holdings-panel, body.log-focus .phase-popover { display:none !important; }
+    body.log-focus .right-stack, body.log-focus .capital-hero, body.log-focus .holdings-panel, body.log-focus .phase-popover, body.log-focus .life-focus-panel { display:none !important; }
     body.log-focus .log-focus-panel { display:block; min-height:calc(100vh - 116px); margin-top:12px; }
+    body.life-focus main { max-width:none; gap:12px; }
+    body.life-focus .dash { display:block; }
+    body.life-focus .left-stack { display:block; }
+    body.life-focus .right-stack, body.life-focus .capital-hero, body.life-focus .holdings-panel, body.life-focus .phase-popover, body.life-focus .log-focus-panel { display:none !important; }
+    body.life-focus .life-focus-panel { display:block; min-height:calc(100vh - 116px); margin-top:12px; }
     .capital-hero { flex:0 0 auto; }
     .hero-top { display:grid; grid-template-columns:minmax(340px,1fr) minmax(300px,.78fr); gap:12px; align-items:start; padding:14px; border:1px solid #c5d5e6; border-radius:8px; background:linear-gradient(145deg,#eef5fb 0%,#f8fbff 45%,#edf4fa 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.86), 0 18px 44px rgba(15,23,42,.10); }
     .hero-top:before { content:""; grid-column:1 / -1; height:3px; border-radius:999px; background:linear-gradient(90deg,#15936a,#2563eb,#d97706); opacity:.72; margin:-2px 0 0; }
@@ -1460,19 +1466,73 @@ INDEX_HTML = r"""<!doctype html>
     .trade-records table { width:100%; min-width:940px; table-layout:auto; }
     .trade-records th, .trade-records td { padding:8px 10px; font-size:11px; }
     .trade-records th, .trade-records td { white-space:nowrap; }
+    .life-focus-panel { display:none; }
+    .life-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; margin-bottom:14px; }
+    .life-title { display:grid; gap:5px; }
+    .life-title h2 { font-size:20px; }
+    .life-date { color:var(--muted); font-size:12px; font-weight:850; }
+    .life-layout { display:grid; grid-template-columns:minmax(280px,.42fr) minmax(520px,1fr); gap:14px; align-items:stretch; }
+    .life-rules { display:grid; gap:12px; align-content:start; }
+    .life-card { border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); padding:14px; box-shadow:0 8px 20px rgba(15,23,42,.035); }
+    .life-card h3 { margin:0 0 10px; font-size:15px; color:var(--ink); }
+    .life-card-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
+    .life-card-head h3 { margin:0; }
+    .life-edit-btn { height:28px; min-width:52px; border-radius:8px; padding:0 10px; color:#075985; background:#eff8ff; border-color:#bfd7f1; font-size:12px; font-weight:900; }
+    .rule-editor { display:none; gap:8px; }
+    .rule-editor.open { display:grid; }
+    .rule-editor textarea { width:100%; min-height:150px; resize:vertical; border:1px solid #d8e4f0; border-radius:8px; padding:10px 12px; color:#17202a; background:#fff; font:13px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; outline:none; }
+    .rule-editor textarea:focus { border-color:#93c5fd; box-shadow:0 0 0 3px rgba(37,99,235,.10); }
+    .rule-editor-actions { display:flex; justify-content:flex-end; gap:8px; }
+    .rule-editor-actions button { height:30px; border-radius:8px; font-weight:850; }
+    .rule-editor-actions .primary { border:0; background:#101828; color:#fff; }
+    .journal-date-list { display:grid; gap:7px; max-height:220px; overflow:auto; padding-right:2px; }
+    .journal-date-btn { width:100%; min-height:38px; border:1px solid #dbe6f2; border-radius:8px; background:#fff; color:#344054; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 10px; font-size:12px; font-weight:900; text-align:left; }
+    .journal-date-btn:hover { background:#f1f7ff; border-color:#bfd7f1; }
+    .journal-date-btn.active { background:#101828; border-color:#101828; color:#fff; }
+    .journal-date-btn .date-note { color:var(--muted); font-size:11px; font-weight:800; }
+    .journal-date-btn.active .date-note { color:rgba(255,255,255,.72); }
+    .journal-new-day { width:100%; margin-top:9px; border-radius:8px; font-weight:900; color:#075985; background:#eff8ff; }
+    .life-rule-list { display:grid; gap:9px; margin:0; padding:0; list-style:none; }
+    .life-rule-list li { display:grid; grid-template-columns:24px 1fr; gap:8px; align-items:start; color:#344054; font-size:13px; font-weight:800; line-height:1.45; }
+    .life-rule-list span { width:24px; height:24px; border-radius:8px; display:grid; place-items:center; background:#eef6ff; color:#075985; font-size:12px; font-weight:950; }
+    .life-journal { display:flex; flex-direction:column; min-height:620px; border:1px solid #d8e4f0; border-radius:8px; background:#fff; overflow:hidden; box-shadow:0 10px 24px rgba(15,23,42,.045); }
+    .journal-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px; border-bottom:1px solid #e8eef6; background:linear-gradient(180deg,#fff,#f8fbff); }
+    .journal-toolbar-left { display:grid; gap:3px; min-width:0; }
+    .journal-label { color:var(--muted); font-size:11px; font-weight:900; }
+    .journal-title { color:var(--ink); font-size:16px; font-weight:950; }
+    .journal-actions { display:flex; gap:8px; align-items:center; }
+    .journal-btn { height:32px; border-radius:8px; font-weight:850; }
+    .journal-btn.primary { border:0; background:#101828; color:#fff; }
+    .journal-status { color:var(--muted); font-size:11px; font-weight:800; min-width:80px; text-align:right; }
+    .journal-textarea { flex:1; width:100%; min-height:540px; border:0; outline:0; resize:none; padding:20px 22px; color:#17202a; background:linear-gradient(#fff 31px,#eef3f8 32px); background-size:100% 32px; font:15px/32px ui-serif, Georgia, "Times New Roman", serif; }
+    .journal-prompts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; padding:10px 12px 12px; border-top:1px solid #e8eef6; background:#fbfdff; }
+    .journal-prompt { min-height:36px; border:1px solid #dbe6f2; border-radius:8px; background:#fff; color:#344054; font-size:12px; font-weight:850; text-align:left; }
     .log-focus-panel { display:none; }
     .log-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
     .log-head h2 { margin:0; font-size:18px; }
     .log-actions { display:flex; align-items:center; gap:8px; }
     .log-refresh-btn { height:34px; padding:0 13px; border:0; border-radius:8px; background:#101828; color:#fff; font-weight:850; }
-    .bot-log-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; }
-    .bot-log-window { min-height:260px; border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,.04); display:flex; flex-direction:column; }
+    .bot-log-layout { display:grid; grid-template-columns:260px minmax(0,1fr); gap:14px; align-items:stretch; min-height:calc(100vh - 228px); }
+    .bot-log-sidebar { border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f7fbff); padding:10px; display:flex; flex-direction:column; gap:8px; box-shadow:0 8px 20px rgba(15,23,42,.035); }
+    .bot-log-group-label { margin:8px 4px 2px; color:var(--muted); font-size:10px; font-weight:950; text-transform:uppercase; letter-spacing:.04em; }
+    .bot-log-nav-btn { width:100%; min-height:46px; border:1px solid #dbe6f2; border-radius:8px; background:#fff; display:grid; grid-template-columns:1fr auto; align-items:center; gap:8px; padding:8px 10px; text-align:left; color:var(--ink); font-weight:950; box-shadow:0 5px 12px rgba(15,23,42,.025); }
+    .bot-log-nav-btn:hover { background:#f1f7ff; border-color:#bfd7f1; }
+    .bot-log-nav-btn.active { background:#101828; border-color:#101828; color:#fff; box-shadow:0 10px 22px rgba(15,23,42,.16); }
+    .bot-log-nav-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .bot-log-nav-sub { grid-column:1 / -1; color:var(--muted); font-size:11px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .bot-log-nav-btn.active .bot-log-nav-sub { color:rgba(255,255,255,.72); }
+    .bot-log-nav-status { display:inline-flex; align-items:center; gap:5px; color:var(--muted); font-size:11px; font-weight:900; }
+    .bot-log-nav-status::before { content:""; width:8px; height:8px; border-radius:999px; background:var(--red); box-shadow:0 0 0 3px rgba(198,40,40,.10); }
+    .bot-log-nav-status.running::before { background:var(--green); box-shadow:0 0 0 3px rgba(21,147,106,.10); }
+    .bot-log-nav-btn.active .bot-log-nav-status { color:#fff; }
+    .bot-log-grid { min-width:0; }
+    .bot-log-window { min-height:100%; border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,.04); display:flex; flex-direction:column; }
     .bot-log-title { min-height:42px; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-bottom:1px solid #e8eef6; font-size:12px; font-weight:950; color:var(--ink); }
     .bot-log-meta { padding:7px 12px; color:var(--muted); font-size:11px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-bottom:1px solid #eef2f6; }
     .bot-log-status { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:11px; font-weight:900; }
     .bot-log-status::before { content:""; width:8px; height:8px; border-radius:999px; background:var(--red); box-shadow:0 0 0 3px rgba(198,40,40,.10); }
     .bot-log-status.running::before { background:var(--green); box-shadow:0 0 0 3px rgba(21,147,106,.10); }
-    .bot-log-body { flex:1; margin:0; padding:11px 12px; max-height:360px; overflow:auto; background:#0b1220; color:#d1e3ff; font:11px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; white-space:pre-wrap; word-break:break-word; }
+    .bot-log-body { flex:1; margin:0; padding:14px 16px; min-height:520px; max-height:calc(100vh - 318px); overflow:auto; background:#0b1220; color:#d1e3ff; font:12px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; white-space:pre-wrap; word-break:break-word; }
     .side-pill { border-radius:999px; padding:3px 7px; font-weight:850; font-size:11px; }
     .side-pill.buy { background:#e7f6ef; color:#08734f; }
     .side-pill.sell { background:#fee2e2; color:#b42318; }
@@ -1497,7 +1557,7 @@ INDEX_HTML = r"""<!doctype html>
     .neg { color:var(--red); }
     .pos { color:var(--green); }
     .scroll { overflow:auto; border-radius:8px; }
-    .holdings-panel { margin-top:18px; min-height:430px; overflow:hidden; box-shadow:var(--shadow); }
+    .holdings-panel { display:none; margin-top:18px; min-height:430px; overflow:hidden; box-shadow:var(--shadow); }
     .manual-buy-entry { display:none; gap:10px; margin:0 0 14px; padding:12px; border:1px solid #cfe0f3; border-radius:8px; background:linear-gradient(135deg,#fff 0%,#f5fbff 52%,#eef6ff 100%); box-shadow:0 10px 24px rgba(15,23,42,.045); }
     .manual-buy-entry.open { display:grid; }
     .manual-buy-top { display:flex; align-items:center; justify-content:space-between; gap:12px; }
@@ -1631,6 +1691,7 @@ INDEX_HTML = r"""<!doctype html>
       h1 { font-size:23px; line-height:1.05; max-width:128px; }
       h2 { font-size:15px; }
       .dash, .left-stack, .right-stack { display:contents; }
+      .right-stack { padding-top:0; }
       .left-titlebar { order:0; }
       .capital-hero { order:1; }
       .annual-panel { order:2; }
@@ -1699,8 +1760,16 @@ INDEX_HTML = r"""<!doctype html>
       .trade-records-scroll { height:260px; overflow:auto; }
       .trade-records table { min-width:980px; }
       .trade-records th, .trade-records td { padding:8px 7px; font-size:11px; }
-      .bot-log-grid { grid-template-columns:1fr; }
-      .bot-log-body { max-height:300px; }
+      .life-layout { grid-template-columns:1fr; }
+      .life-head { flex-direction:column; }
+      .journal-prompts { grid-template-columns:1fr; }
+      .life-journal { min-height:520px; }
+      .journal-textarea { min-height:420px; }
+      .bot-log-layout { grid-template-columns:1fr; min-height:auto; }
+      .bot-log-sidebar { flex-direction:row; overflow:auto; }
+      .bot-log-group-label { display:none; }
+      .bot-log-nav-btn { min-width:172px; }
+      .bot-log-body { min-height:420px; max-height:520px; }
       .holdings-panel { min-height:520px; margin-top:12px; }
       .manual-buy-top { display:grid; grid-template-columns:1fr; gap:9px; align-items:start; }
       .manual-buy-toggle { width:100%; }
@@ -1741,17 +1810,19 @@ INDEX_HTML = r"""<!doctype html>
   </header>
   <main>
     <section class="dash">
-      <div class="left-stack">
-        <div class="left-titlebar">
-          <div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" /><div class="brand-copy"><h1>CSZY Ultimate V1</h1><div class="dashboard-motto">回撤变成纪律。上升趋势，回调趋势。等待机会，准备水桶。</div></div></div>
-          <div class="title-actions">
-            <button class="trade-focus-btn" id="tradeFocusBtn" onclick="toggleTradeFocus()">交易</button>
-            <button class="trade-focus-btn" id="logFocusBtn" onclick="toggleLogFocus()">日志</button>
-            <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
-            <button class="refresh-btn" onclick="loadAll()">刷新</button>
-          </div>
+      <div class="left-titlebar">
+        <div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="此生只要2000万 logo" /><div class="brand-copy"><h1>此生只要2000万</h1><div class="dashboard-motto"></div></div></div>
+        <div class="title-actions">
+          <button class="trade-focus-btn active" id="overviewFocusBtn" onclick="showOverview()">总览</button>
+          <button class="trade-focus-btn" id="lifeFocusBtn" onclick="toggleLifeFocus()">生活</button>
+          <button class="trade-focus-btn" id="tradeFocusBtn" onclick="toggleTradeFocus()">交易</button>
+          <button class="trade-focus-btn" id="logFocusBtn" onclick="toggleLogFocus()">日志</button>
+          <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
+          <button class="refresh-btn" onclick="loadAll()">刷新</button>
         </div>
-        <div class="phase-popover" id="phasePopover"></div>
+      </div>
+      <div class="phase-popover" id="phasePopover"></div>
+      <div class="left-stack">
         <div class="panel capital-hero mobile-collapsible" id="capitalPanel">
           <button class="mobile-collapse-toggle" onclick="toggleMobilePanel('capitalPanel')"><span>账户资金</span><span></span></button>
           <div class="mobile-collapse-body">
@@ -2018,6 +2089,70 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </div>
     </section>
+    <section class="panel life-focus-panel" id="lifeFocusPanel">
+      <div class="life-head">
+        <div class="life-title">
+          <h2>生活</h2>
+          <div class="life-date" id="lifeDateText">--</div>
+        </div>
+        <div class="small-muted">交易准则和日记本，先把心放稳，再看市场。</div>
+      </div>
+      <div class="life-layout">
+        <div class="life-rules">
+          <div class="life-card">
+            <div class="life-card-head">
+              <h3>交易准则</h3>
+              <button class="life-edit-btn" onclick="editTradingRules()">编辑</button>
+            </div>
+            <ul class="life-rule-list" id="tradingRuleList">
+              <li><span>1</span><div>先确认风险，再考虑收益；没有计划的单不下。</div></li>
+              <li><span>2</span><div>亏损达到规则就执行，不和市场讲道理。</div></li>
+              <li><span>3</span><div>盈利时分批落袋，剩余仓位交给趋势。</div></li>
+              <li><span>4</span><div>状态不好时减仓或休息，现金也是仓位。</div></li>
+            </ul>
+            <div class="rule-editor" id="tradingRuleEditor">
+              <textarea id="tradingRulesText" placeholder="一行写一条交易准则"></textarea>
+              <div class="rule-editor-actions">
+                <button onclick="cancelTradingRuleEdit()">取消</button>
+                <button class="primary" onclick="saveTradingRules()">保存</button>
+              </div>
+            </div>
+          </div>
+          <div class="life-card">
+            <h3>今日复盘</h3>
+            <ul class="life-rule-list">
+              <li><span>问</span><div>今天有没有冲动交易？</div></li>
+              <li><span>问</span><div>止损和止盈有没有按规则执行？</div></li>
+              <li><span>问</span><div>明天最重要的一条纪律是什么？</div></li>
+            </ul>
+          </div>
+          <div class="life-card">
+            <h3>日记日期</h3>
+            <div class="journal-date-list" id="journalDateList"></div>
+            <button class="journal-new-day" onclick="newTodayJournal()">写今天</button>
+          </div>
+        </div>
+        <div class="life-journal">
+          <div class="journal-toolbar">
+            <div class="journal-toolbar-left">
+              <div class="journal-label">日记本</div>
+              <div class="journal-title">今天写点什么</div>
+            </div>
+            <div class="journal-actions">
+              <span class="journal-status" id="journalStatus">未保存</span>
+              <button class="journal-btn" onclick="clearJournal()">清空</button>
+              <button class="journal-btn primary" onclick="saveJournal()">保存</button>
+            </div>
+          </div>
+          <textarea class="journal-textarea" id="journalText" placeholder="写下今天的交易、情绪、身体状态，或者一个简单的想法。"></textarea>
+          <div class="journal-prompts">
+            <button class="journal-prompt" onclick="appendJournalPrompt('今天最好的一个决定：')">今天最好的决定</button>
+            <button class="journal-prompt" onclick="appendJournalPrompt('今天需要避免重复的错误：')">需要避免的错误</button>
+            <button class="journal-prompt" onclick="appendJournalPrompt('明天只做这一件事：')">明天一件事</button>
+          </div>
+        </div>
+      </div>
+    </section>
     <section class="panel log-focus-panel" id="logFocusPanel">
       <div class="log-head">
         <div>
@@ -2029,7 +2164,10 @@ INDEX_HTML = r"""<!doctype html>
           <button class="log-refresh-btn" onclick="loadBotLogs()">刷新日志</button>
         </div>
       </div>
-      <div class="bot-log-grid" id="botLogGrid"></div>
+      <div class="bot-log-layout">
+        <div class="bot-log-sidebar" id="botLogNav"></div>
+        <div class="bot-log-grid" id="botLogGrid"></div>
+      </div>
     </section>
   </main>
   <div class="modal-backdrop" id="clearModal">
@@ -2085,6 +2223,18 @@ INDEX_HTML = r"""<!doctype html>
     let manualQuoteInterval = null;
     let latestManualQuote = null;
     let manualOrderPreview = null;
+    let botLogRows = [];
+    let selectedBotLog = '';
+    const defaultTradingRules = [
+      '先确认风险，再考虑收益；没有计划的单不下。',
+      '亏损达到规则就执行，不和市场讲道理。',
+      '盈利时分批落袋，剩余仓位交给趋势。',
+      '状态不好时减仓或休息，现金也是仓位。'
+    ];
+    const tradingRulesStorageKey = 'cszy2000.life.trading_rules';
+    const journalStorageKey = 'cszy2000.life.journals';
+    const legacyJournalStorageKey = 'cszy2000.life.journal';
+    let selectedJournalDate = '';
     async function api(path) {
       const r = await fetch(path);
       if (r.status === 401) { location.reload(); return {ok:false, error:'unauthorized'}; }
@@ -2274,73 +2424,273 @@ INDEX_HTML = r"""<!doctype html>
     function togglePhasePopover() {
       document.getElementById('phasePopover').classList.toggle('show');
     }
-    function toggleTradeFocus() {
-      const active = !document.body.classList.contains('trade-focus');
-      document.body.classList.toggle('trade-focus', active);
-      document.body.classList.remove('log-focus');
-      const btn = document.getElementById('tradeFocusBtn');
-      if (btn) {
-        btn.classList.toggle('active', active);
-        btn.textContent = active ? '总览' : '交易';
-      }
-      const logBtn = document.getElementById('logFocusBtn');
-      if (logBtn) {
-        logBtn.classList.remove('active');
-        logBtn.textContent = '日志';
-      }
-      if (active) {
-        document.getElementById('phasePopover')?.classList.remove('show');
-        setLowerView('holdings');
-        document.querySelector('.holdings-panel')?.scrollIntoView({block:'start'});
-      } else if (manualQuoteInterval) {
-        clearInterval(manualQuoteInterval);
-        manualQuoteInterval = null;
-      }
+    function setFocusMode(mode) {
+      const trade = mode === 'trade';
+      const logs = mode === 'logs';
+      const life = mode === 'life';
+      document.body.classList.toggle('trade-focus', trade);
+      document.body.classList.toggle('log-focus', logs);
+      document.body.classList.toggle('life-focus', life);
+      document.getElementById('overviewFocusBtn')?.classList.toggle('active', !trade && !logs && !life);
+      document.getElementById('tradeFocusBtn')?.classList.toggle('active', trade);
+      document.getElementById('logFocusBtn')?.classList.toggle('active', logs);
+      document.getElementById('lifeFocusBtn')?.classList.toggle('active', life);
     }
-    function toggleLogFocus() {
-      const active = !document.body.classList.contains('log-focus');
-      document.body.classList.toggle('log-focus', active);
-      document.body.classList.remove('trade-focus');
-      const btn = document.getElementById('logFocusBtn');
-      if (btn) {
-        btn.classList.toggle('active', active);
-        btn.textContent = active ? '总览' : '日志';
-      }
-      const tradeBtn = document.getElementById('tradeFocusBtn');
-      if (tradeBtn) {
-        tradeBtn.classList.remove('active');
-        tradeBtn.textContent = '交易';
-      }
+    function showOverview() {
+      setFocusMode('overview');
       if (manualQuoteInterval) {
         clearInterval(manualQuoteInterval);
         manualQuoteInterval = null;
       }
-      if (active) {
-        document.getElementById('phasePopover')?.classList.remove('show');
-        loadBotLogs();
-        document.getElementById('logFocusPanel')?.scrollIntoView({block:'start'});
+      document.getElementById('phasePopover')?.classList.remove('show');
+    }
+    function toggleTradeFocus() {
+      setFocusMode('trade');
+      document.getElementById('phasePopover')?.classList.remove('show');
+      setLowerView('holdings');
+    }
+    function toggleLogFocus() {
+      setFocusMode('logs');
+      if (manualQuoteInterval) {
+        clearInterval(manualQuoteInterval);
+        manualQuoteInterval = null;
+      }
+      document.getElementById('phasePopover')?.classList.remove('show');
+      loadBotLogs();
+    }
+    function toggleLifeFocus() {
+      setFocusMode('life');
+      if (manualQuoteInterval) {
+        clearInterval(manualQuoteInterval);
+        manualQuoteInterval = null;
+      }
+      document.getElementById('phasePopover')?.classList.remove('show');
+      loadJournal();
+    }
+    function updateLifeDate() {
+      const el = document.getElementById('lifeDateText');
+      if (!el) return;
+      el.textContent = new Date().toLocaleDateString('zh-CN', {year:'numeric', month:'long', day:'numeric', weekday:'long'});
+    }
+    function todayKey() {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    }
+    function journalDateLabel(key) {
+      const [y, m, d] = String(key || '').split('-').map(Number);
+      if (!y || !m || !d) return key || '--';
+      return new Date(y, m - 1, d).toLocaleDateString('zh-CN', {month:'long', day:'numeric', weekday:'short'});
+    }
+    function readJournals() {
+      try {
+        const rows = JSON.parse(localStorage.getItem(journalStorageKey) || '{}') || {};
+        const legacy = localStorage.getItem(legacyJournalStorageKey);
+        if (legacy && !rows[todayKey()]) {
+          rows[todayKey()] = legacy;
+          localStorage.setItem(journalStorageKey, JSON.stringify(rows));
+          localStorage.removeItem(legacyJournalStorageKey);
+        }
+        return rows;
+      } catch (_) {
+        return {};
       }
     }
+    function writeJournals(rows) {
+      localStorage.setItem(journalStorageKey, JSON.stringify(rows || {}));
+    }
+    function readTradingRules() {
+      try {
+        const rows = JSON.parse(localStorage.getItem(tradingRulesStorageKey) || 'null');
+        if (Array.isArray(rows)) {
+          const cleaned = rows.map(v => String(v || '').trim()).filter(Boolean);
+          if (cleaned.length) return cleaned;
+        }
+      } catch (_) {}
+      return [...defaultTradingRules];
+    }
+    function writeTradingRules(rows) {
+      localStorage.setItem(tradingRulesStorageKey, JSON.stringify(rows || []));
+    }
+    function renderTradingRules() {
+      const list = document.getElementById('tradingRuleList');
+      const editor = document.getElementById('tradingRuleEditor');
+      if (!list) return;
+      const rows = readTradingRules();
+      list.innerHTML = rows.map((rule, idx) => `<li><span>${idx + 1}</span><div>${esc(rule)}</div></li>`).join('');
+      list.style.display = '';
+      if (editor) editor.classList.remove('open');
+    }
+    function editTradingRules() {
+      const list = document.getElementById('tradingRuleList');
+      const editor = document.getElementById('tradingRuleEditor');
+      const text = document.getElementById('tradingRulesText');
+      if (!editor || !text) return;
+      text.value = readTradingRules().join('\n');
+      if (list) list.style.display = 'none';
+      editor.classList.add('open');
+      text.focus();
+    }
+    function cancelTradingRuleEdit() {
+      renderTradingRules();
+    }
+    function saveTradingRules() {
+      const text = document.getElementById('tradingRulesText');
+      if (!text) return;
+      const rows = text.value.split(/\n+/).map(v => v.trim()).filter(Boolean);
+      writeTradingRules(rows.length ? rows : defaultTradingRules);
+      renderTradingRules();
+    }
+    function renderJournalDates() {
+      const box = document.getElementById('journalDateList');
+      if (!box) return;
+      const rows = readJournals();
+      const keys = Object.keys(rows).sort().reverse();
+      if (!keys.includes(selectedJournalDate)) selectedJournalDate = keys[0] || todayKey();
+      box.innerHTML = keys.length ? keys.map(key => {
+        const preview = String(rows[key] || '').trim().split(/\s+/).slice(0, 8).join(' ') || '空白日记';
+        return `<button class="journal-date-btn ${key === selectedJournalDate ? 'active' : ''}" onclick="selectJournalDate('${key}')"><span>${journalDateLabel(key)}</span><span class="date-note">${esc(preview)}</span></button>`;
+      }).join('') : '<div class="small-muted">保存后会出现日期</div>';
+    }
+    function selectJournalDate(key) {
+      selectedJournalDate = key || todayKey();
+      loadJournal(selectedJournalDate);
+    }
+    function newTodayJournal() {
+      selectedJournalDate = todayKey();
+      loadJournal(selectedJournalDate);
+      document.getElementById('journalText')?.focus();
+    }
+    function loadJournal(dateKey=null) {
+      updateLifeDate();
+      renderTradingRules();
+      selectedJournalDate = dateKey || selectedJournalDate || todayKey();
+      const text = document.getElementById('journalText');
+      if (!text) return;
+      const rows = readJournals();
+      text.value = rows[selectedJournalDate] || '';
+      const title = document.querySelector('.journal-title');
+      if (title) title.textContent = `${journalDateLabel(selectedJournalDate)} · 今天写点什么`;
+      const status = document.getElementById('journalStatus');
+      if (status) status.textContent = text.value ? '已加载' : '未保存';
+      renderJournalDates();
+    }
+    function saveJournal() {
+      const text = document.getElementById('journalText');
+      if (!text) return;
+      selectedJournalDate = selectedJournalDate || todayKey();
+      const rows = readJournals();
+      rows[selectedJournalDate] = text.value || '';
+      writeJournals(rows);
+      const status = document.getElementById('journalStatus');
+      if (status) status.textContent = `已保存 ${new Date().toLocaleTimeString()}`;
+      renderJournalDates();
+    }
+    function clearJournal() {
+      if (!confirm('确认清空当前日期的日记？')) return;
+      const text = document.getElementById('journalText');
+      if (text) text.value = '';
+      const rows = readJournals();
+      delete rows[selectedJournalDate || todayKey()];
+      writeJournals(rows);
+      const status = document.getElementById('journalStatus');
+      if (status) status.textContent = '已清空';
+      renderJournalDates();
+    }
+    function appendJournalPrompt(promptText) {
+      const text = document.getElementById('journalText');
+      if (!text) return;
+      const prefix = text.value.trim() ? '\n\n' : '';
+      text.value += `${prefix}${promptText}\n`;
+      text.focus();
+      text.selectionStart = text.selectionEnd = text.value.length;
+      const status = document.getElementById('journalStatus');
+      if (status) status.textContent = '未保存';
+    }
     function renderBotLogs(payload) {
-      const rows = payload?.rows || [];
+      const groupPriority = name => {
+        const n = String(name || '').toLowerCase();
+        if (n.startsWith('b_')) return 10;
+        if (n.startsWith('d_')) return 20;
+        if (n === 'ac_bot') return 30;
+        if (n.startsWith('q_')) return 40;
+        if (n.startsWith('f_')) return 50;
+        return 90;
+      };
+      const botPriority = name => {
+        const n = String(name || '').toLowerCase();
+        if (n.includes('_buy_')) return 1;
+        if (n.includes('_sell_')) return 2;
+        return 3;
+      };
+      const groupLabel = name => {
+        const n = String(name || '').toLowerCase();
+        if (n.startsWith('b_')) return 'B 策略';
+        if (n.startsWith('d_')) return 'D 策略';
+        if (n === 'ac_bot') return 'AC 做T';
+        if (n.startsWith('q_')) return 'Q 期权';
+        if (n.startsWith('f_')) return 'F 策略';
+        return '其它';
+      };
+      const rows = [...(payload?.rows || [])].sort((a, b) => {
+        const ga = groupPriority(a.bot_name), gb = groupPriority(b.bot_name);
+        if (ga !== gb) return ga - gb;
+        const ba = botPriority(a.bot_name), bb = botPriority(b.bot_name);
+        if (ba !== bb) return ba - bb;
+        return String(a.bot_name || '').localeCompare(String(b.bot_name || ''));
+      });
+      botLogRows = rows;
       const grid = document.getElementById('botLogGrid');
+      const nav = document.getElementById('botLogNav');
       const meta = document.getElementById('botLogsMeta');
       if (meta) meta.textContent = `${rows.length} 个机器人 · ${new Date().toLocaleTimeString()}`;
+      if (!rows.length) {
+        if (nav) nav.innerHTML = '';
+        if (grid) grid.innerHTML = '<div class="empty-state">暂无机器人日志</div>';
+        return;
+      }
+      if (!rows.some(r => r.bot_name === selectedBotLog)) selectedBotLog = rows[0].bot_name;
+      let lastGroup = '';
+      if (nav) {
+        nav.innerHTML = rows.map(row => {
+          const group = groupLabel(row.bot_name);
+          const label = group !== lastGroup ? `<div class="bot-log-group-label">${esc(group)}</div>` : '';
+          lastGroup = group;
+          const running = row.running ? 'running' : '';
+          const status = row.running ? '运行' : '停';
+          const path = row.log_path || 'fallback';
+          return `${label}<button class="bot-log-nav-btn ${row.bot_name === selectedBotLog ? 'active' : ''}" onclick="selectBotLog('${esc(row.bot_name)}')">
+            <span class="bot-log-nav-name">${esc(row.bot_name)}</span>
+            <span class="bot-log-nav-status ${running}">${status}</span>
+            <span class="bot-log-nav-sub">${esc(path.split('/').pop() || path)}</span>
+          </button>`;
+        }).join('');
+      }
+      renderSelectedBotLog();
+    }
+    function selectBotLog(botName) {
+      selectedBotLog = botName;
+      renderBotLogs({rows: botLogRows});
+    }
+    function renderSelectedBotLog() {
+      const grid = document.getElementById('botLogGrid');
       if (!grid) return;
-      grid.innerHTML = rows.map(row => {
-        const lines = (row.lines || []).join('\n') || '暂无日志';
-        const running = row.running ? 'running' : '';
-        const status = row.running ? `运行中${row.pid ? ' pid=' + row.pid : ''}` : '未运行';
-        const path = row.log_path || 'fallback';
-        return `<div class="bot-log-window">
-          <div class="bot-log-title">
-            <span>${esc(row.bot_name)}</span>
-            <span class="bot-log-status ${running}">${esc(status)}</span>
-          </div>
-          <div class="bot-log-meta" title="${esc(path)}">${esc(path)}</div>
-          <pre class="bot-log-body">${esc(lines)}</pre>
-        </div>`;
-      }).join('') || '<div class="empty-state">暂无机器人日志</div>';
+      const row = botLogRows.find(r => r.bot_name === selectedBotLog) || botLogRows[0];
+      if (!row) {
+        grid.innerHTML = '<div class="empty-state">暂无机器人日志</div>';
+        return;
+      }
+      const lines = (row.lines || []).join('\n') || '暂无日志';
+      const running = row.running ? 'running' : '';
+      const status = row.running ? `运行中${row.pid ? ' pid=' + row.pid : ''}` : '未运行';
+      const path = row.log_path || 'fallback';
+      grid.innerHTML = `<div class="bot-log-window">
+        <div class="bot-log-title">
+          <span>${esc(row.bot_name)}</span>
+          <span class="bot-log-status ${running}">${esc(status)}</span>
+        </div>
+        <div class="bot-log-meta" title="${esc(path)}">${esc(path)}</div>
+        <pre class="bot-log-body">${esc(lines)}</pre>
+      </div>`;
     }
     async function loadBotLogs() {
       const meta = document.getElementById('botLogsMeta');
@@ -3179,6 +3529,12 @@ INDEX_HTML = r"""<!doctype html>
         if (btn) { btn.classList.remove('loading'); btn.textContent = oldText || '同步仓位'; }
       }
     }
+    updateLifeDate();
+    loadJournal();
+    document.getElementById('journalText')?.addEventListener('input', () => {
+      const status = document.getElementById('journalStatus');
+      if (status) status.textContent = '未保存';
+    });
     loadAll();
     setInterval(loadAll, 30000);
   </script>
