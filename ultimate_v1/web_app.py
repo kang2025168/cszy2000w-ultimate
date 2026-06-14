@@ -146,6 +146,8 @@ def _allocation_payload() -> dict:
         "base_targets": allocation.base_targets,
         "base_percents": allocation.base_percents,
         "pool_risk_percents": allocation.pool_risk_percents,
+        "pool_brokers": allocation.pool_brokers,
+        "broker_snapshots": allocation.broker_snapshots,
         "used": used,
         "available": available,
         "defensive_pools": defensive_pools,
@@ -331,6 +333,116 @@ def _risk_payload() -> dict:
         "account_metrics_source": state.account_metrics_source,
         "vix_source": state.vix_source,
     }
+
+
+STRATEGY_2_CONFIG_KEY = "STRATEGY_2_CONFIG"
+
+
+STRATEGY_2_DEFAULT_CONFIG = {
+    "version": "2.0",
+    "capital": {
+        "title": "资金 1:1",
+        "desc": "Alpaca 主账户按 B/C 各 50% 独立计算；A 用 Fidelity，D 日内用 Webull。",
+        "rules": [
+            {"key": "b_capital_pct", "label": "B 资金占比", "value": 50, "unit": "%", "enabled": True},
+            {"key": "c_capital_pct", "label": "C 资金占比", "value": 50, "unit": "%", "enabled": True},
+            {"key": "auto_execute", "label": "机器人自动执行", "value": "准备中", "unit": "", "enabled": False},
+        ],
+    },
+    "strategies": [
+        {
+            "key": "B",
+            "name": "B 股票动量",
+            "broker": "Alpaca",
+            "capital": "50%",
+            "mission": "从强势股票里筛出确认度足够的进攻买点，买入后必须由 B 卖出机器人执行止损和分批止盈。",
+            "select_rules": [
+                {"key": "b_min_up_pct", "label": "日内最低涨幅", "value": 3, "unit": "%", "enabled": True},
+                {"key": "b_max_buy_up_pct", "label": "买入最高涨幅", "value": 10, "unit": "%", "enabled": True},
+                {"key": "b_min_price", "label": "最低股价", "value": 5, "unit": "$", "enabled": True},
+                {"key": "b_score_top_n", "label": "每轮 Top N", "value": 3, "unit": "只", "enabled": True},
+                {"key": "b_score_confirmations", "label": "Top 确认次数", "value": 3, "unit": "次", "enabled": True},
+            ],
+            "buy_rules": [
+                {"key": "b_buy_window", "label": "买入窗口", "value": "06:50-10:40", "unit": "LA", "enabled": True},
+                {"key": "b_max_positions", "label": "最大持仓数", "value": 4, "unit": "只", "enabled": True},
+                {"key": "b_trade_notional", "label": "单笔目标金额", "value": 2500, "unit": "$", "enabled": True},
+            ],
+            "sell_rules": [
+                {"key": "b_initial_stop", "label": "初始止损", "value": 2, "unit": "%", "enabled": True},
+                {"key": "b_trailing_stop", "label": "动态止损", "value": "按 stage 阶梯收紧", "unit": "", "enabled": True},
+                {"key": "b_take_profit", "label": "分批止盈", "value": "盈利后阶梯减仓", "unit": "", "enabled": True},
+            ],
+        },
+        {
+            "key": "C",
+            "name": "C 长期成长 / AC 做T",
+            "broker": "Alpaca",
+            "capital": "50%",
+            "mission": "围绕长期成长核心仓做日内T，不做期权；上涨只卖新增仓，下跌临时卖核心仓时必须在收盘前恢复，避免隔夜丢失核心仓。",
+            "select_rules": [
+                {"key": "c_ac_enabled", "label": "显式启用 AC_T", "value": "ac_t_enabled=1", "unit": "", "enabled": True},
+                {"key": "c_ac_type", "label": "长期成长核心仓", "value": "ac_t_type=C", "unit": "", "enabled": True},
+                {"key": "c_up_trigger", "label": "上涨做T触发", "value": 1, "unit": "%", "enabled": True},
+                {"key": "c_down_trigger", "label": "下跌做T触发", "value": 1, "unit": "%", "enabled": True},
+            ],
+            "buy_rules": [
+                {"key": "c_trade_start", "label": "开始交易时间", "value": "06:40", "unit": "LA", "enabled": True},
+                {"key": "c_rebound_buy", "label": "低开/下跌反弹买回", "value": 1, "unit": "%", "enabled": True},
+                {"key": "c_buy_limit_buffer", "label": "买入限价缓冲", "value": 0.2, "unit": "%", "enabled": True},
+                {"key": "c_min_hold_minutes", "label": "单腿最短持有", "value": 30, "unit": "分钟", "enabled": True},
+            ],
+            "sell_rules": [
+                {"key": "c_up_pullback_sell", "label": "上涨回落卖新增仓", "value": 1, "unit": "%", "enabled": True},
+                {"key": "c_gap_pullback_sell", "label": "高开回撤临时卖出", "value": 1, "unit": "%", "enabled": True},
+                {"key": "c_force_recover", "label": "收盘前强制恢复核心仓", "value": "12:55", "unit": "LA", "enabled": True},
+                {"key": "c_sell_limit_buffer", "label": "卖出限价缓冲", "value": 0.2, "unit": "%", "enabled": True},
+            ],
+        },
+    ],
+}
+
+
+def _deep_merge_strategy_config(default: dict, saved: dict) -> dict:
+    if not isinstance(saved, dict):
+        return default
+    merged = json.loads(json.dumps(default, ensure_ascii=False))
+    if isinstance(saved.get("capital"), dict):
+        merged["capital"].update(saved["capital"])
+    saved_by_key = {str(s.get("key")): s for s in saved.get("strategies", []) if isinstance(s, dict)}
+    for strategy in merged["strategies"]:
+        override = saved_by_key.get(strategy["key"])
+        if not override:
+            continue
+        if strategy["key"] == "C" and "期权" in json.dumps(override, ensure_ascii=False):
+            continue
+        for field in ("name", "broker", "capital", "mission"):
+            if field in override:
+                strategy[field] = override[field]
+        for section in ("select_rules", "buy_rules", "sell_rules"):
+            override_rules = {str(r.get("key")): r for r in override.get(section, []) if isinstance(r, dict)}
+            for rule in strategy.get(section, []):
+                if rule.get("key") in override_rules:
+                    rule.update(override_rules[rule["key"]])
+    return merged
+
+
+def _strategy_2_config_payload() -> dict:
+    raw = get_app_setting(STRATEGY_2_CONFIG_KEY, "")
+    try:
+        saved = json.loads(raw) if raw else {}
+    except Exception:
+        saved = {}
+    config = _deep_merge_strategy_config(STRATEGY_2_DEFAULT_CONFIG, saved)
+    return {"ok": True, "config": config}
+
+
+def _save_strategy_2_config(payload: dict) -> dict:
+    config = payload.get("config")
+    if not isinstance(config, dict):
+        return {"ok": False, "error": "配置格式错误"}
+    set_app_setting(STRATEGY_2_CONFIG_KEY, json.dumps(config, ensure_ascii=False))
+    return {"ok": True, "config": config}
 
 
 def _event_date(value) -> date | None:
@@ -615,7 +727,94 @@ def _holdings_payload() -> dict:
         LIMIT 500
         """
     )
-    return {"ok": True, "rows": _enrich_holdings_rows(list(rows or []))}
+    holdings = list(rows or [])
+    held_keys = {
+        (str(row.get("symbol") or "").strip().upper(), str(row.get("strategy_group") or "").strip().upper())
+        for row in holdings
+        if str(row.get("status") or "").lower() == "open" and _safe_float(row.get("qty")) > 0
+    }
+    try:
+        pool_rows = fetch_all(
+            """
+            SELECT id AS operation_id,
+                   UPPER(stock_code) AS symbol,
+                   CASE
+                       WHEN COALESCE(NULLIF(strategy_group,''), stock_type) IN ('A','B','C','D','F')
+                           THEN COALESCE(NULLIF(strategy_group,''), stock_type)
+                       ELSE stock_type
+                   END AS strategy_group,
+                   stock_type,
+                   'candidate' AS status,
+                   0 AS qty,
+                   COALESCE(trigger_price, entry_open, close_price) AS initial_entry_price,
+                   COALESCE(cost_price, trigger_price, entry_open, close_price) AS avg_entry_price,
+                   COALESCE(current_price, close_price, trigger_price, entry_close) AS current_price,
+                   0 AS market_value,
+                   0 AS cost_basis,
+                   0 AS unrealized_pnl,
+                   0 AS unrealized_pnl_pct,
+                   0 AS realized_pnl,
+                   entry_date AS entry_time,
+                   NULL AS exit_time,
+                   0 AS holding_days,
+                   stop_loss_price,
+                   take_profit_price,
+                   b_stage,
+                   capital_pool,
+                   margin_used,
+                   last_order_side,
+                   updated_at AS last_update_time,
+                   'stock_operations' AS row_source,
+                   can_buy,
+                   can_sell,
+                   is_bought
+            FROM stock_operations
+            WHERE COALESCE(is_bought, 0)=0
+              AND COALESCE(can_buy, 1)=1
+            ORDER BY FIELD(strategy_group, 'A','B','C','D','F'), stock_type, updated_at DESC, id DESC
+            LIMIT 500
+            """
+        )
+        for row in pool_rows:
+            key = (
+                str(row.get("symbol") or "").strip().upper(),
+                str(row.get("strategy_group") or "").strip().upper(),
+            )
+            if key in held_keys:
+                continue
+            holdings.append(row)
+    except Exception as exc:
+        print(f"[WEB HOLDINGS] stock_operations candidate pool unavailable: {exc}", flush=True)
+    return {"ok": True, "rows": _enrich_holdings_rows(holdings)}
+
+
+def _delete_stock_pool_payload(payload: dict) -> dict:
+    """手动从 stock_operations 删除不符合要求的入选池股票。"""
+    try:
+        operation_id = int(payload.get("operation_id") or 0)
+    except Exception:
+        operation_id = 0
+    if operation_id <= 0:
+        return {"ok": False, "error": "缺少入选池记录 id"}
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, stock_code, COALESCE(NULLIF(strategy_group,''), stock_type) AS strategy_group,
+                       is_bought, can_buy
+                FROM stock_operations
+                WHERE id=%s
+                """,
+                (operation_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return {"ok": False, "error": "入选池记录不存在"}
+            if int(row.get("is_bought") or 0) != 0:
+                return {"ok": False, "error": "已买入记录不能在这里删除"}
+            cur.execute("DELETE FROM stock_operations WHERE id=%s", (operation_id,))
+        conn.commit()
+    return {"ok": True, "operation_id": operation_id}
 
 
 def _state_payload() -> dict:
@@ -857,6 +1056,25 @@ def _bot_logs_payload(lines: int = 120) -> dict:
             }
         )
     return {"ok": True, "rows": rows}
+
+
+def _clear_bot_log_payload(payload: dict) -> dict:
+    """清空指定机器人的日志文件，只允许操作受管机器人自己的日志。"""
+    bot_name = str(payload.get("bot_name") or "").strip()
+    if bot_name not in managed_bot_names():
+        return {"ok": False, "error": "不支持的机器人"}
+    path = _bot_log_path(bot_name)
+    if not path:
+        return {"ok": False, "error": "这个机器人暂时没有可清空的日志文件"}
+    try:
+        resolved = path.resolve()
+        allowed_dirs = [directory.resolve() for directory in _candidate_log_dirs() if directory.exists()]
+        if not any(resolved.parent == directory for directory in allowed_dirs):
+            return {"ok": False, "error": "日志路径不在允许目录内"}
+        resolved.write_text("", encoding="utf-8")
+    except Exception as exc:
+        return {"ok": False, "error": f"清空日志失败：{exc}"}
+    return {"ok": True, "bot_name": bot_name, "log_path": str(path)}
 
 
 def _now_market_tz() -> datetime:
@@ -1480,6 +1698,7 @@ INDEX_HTML = r"""<!doctype html>
     .life-date { color:var(--muted); font-size:12px; font-weight:850; }
     .life-layout { display:grid; grid-template-columns:minmax(280px,.42fr) minmax(520px,1fr); gap:14px; align-items:stretch; }
     .life-rules { display:grid; gap:12px; align-content:start; }
+    .life-main { min-width:0; display:flex; flex-direction:column; gap:12px; }
     .life-card { border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); padding:14px; box-shadow:0 8px 20px rgba(15,23,42,.035); }
     .life-card h3 { margin:0 0 10px; font-size:15px; color:var(--ink); }
     .life-card-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
@@ -1502,6 +1721,17 @@ INDEX_HTML = r"""<!doctype html>
     .life-rule-list { display:grid; gap:9px; margin:0; padding:0; list-style:none; }
     .life-rule-list li { display:grid; grid-template-columns:24px 1fr; gap:8px; align-items:start; color:#344054; font-size:13px; font-weight:800; line-height:1.45; }
     .life-rule-list span { width:24px; height:24px; border-radius:8px; display:grid; place-items:center; background:#eef6ff; color:#075985; font-size:12px; font-weight:950; }
+    .five-year-plan { border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,.035); }
+    .five-year-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:11px 12px; border-bottom:1px solid #e8eef6; }
+    .five-year-copy { display:grid; gap:3px; min-width:0; }
+    .five-year-title { color:var(--ink); font-size:15px; font-weight:950; }
+    .five-year-sub { color:var(--muted); font-size:11px; font-weight:800; }
+    .five-year-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+    .five-year-status { color:var(--muted); font-size:11px; font-weight:800; min-width:54px; text-align:right; }
+    .five-year-btn { height:30px; border-radius:8px; font-size:12px; font-weight:850; }
+    .five-year-btn.primary { border:0; background:#101828; color:#fff; }
+    .five-year-textarea { width:100%; min-height:112px; border:0; outline:0; resize:vertical; padding:14px 16px; color:#17202a; background:#fff; font:13px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .five-year-textarea:focus { box-shadow:inset 0 0 0 3px rgba(37,99,235,.08); }
     .life-journal { display:flex; flex-direction:column; min-height:620px; border:1px solid #d8e4f0; border-radius:8px; background:#fff; overflow:hidden; box-shadow:0 10px 24px rgba(15,23,42,.045); }
     .journal-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px; border-bottom:1px solid #e8eef6; background:linear-gradient(180deg,#fff,#f8fbff); }
     .journal-toolbar-left { display:grid; gap:3px; min-width:0; }
@@ -1533,13 +1763,28 @@ INDEX_HTML = r"""<!doctype html>
     .bot-log-nav-status.running::before { background:var(--green); box-shadow:0 0 0 3px rgba(21,147,106,.10); }
     .bot-log-nav-btn.active .bot-log-nav-status { color:#fff; }
     .bot-log-grid { min-width:0; }
+    .bot-log-stack { min-height:100%; display:grid; grid-template-rows:minmax(360px,1fr) auto; gap:12px; }
     .bot-log-window { min-height:100%; border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,.04); display:flex; flex-direction:column; }
+    .bot-log-stack .bot-log-window { min-height:0; }
+    .bot-log-window.important { border-color:#fed7aa; background:linear-gradient(180deg,#fffaf2,#fff); }
     .bot-log-title { min-height:42px; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-bottom:1px solid #e8eef6; font-size:12px; font-weight:950; color:var(--ink); }
+    .bot-log-title-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+    .bot-log-clear-btn { height:28px; border:1px solid #fecaca; border-radius:8px; background:#fff5f5; color:#b42318; font-size:11px; font-weight:950; padding:0 9px; }
+    .bot-log-clear-btn:hover { background:#fee2e2; border-color:#fca5a5; }
     .bot-log-meta { padding:7px 12px; color:var(--muted); font-size:11px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-bottom:1px solid #eef2f6; }
     .bot-log-status { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:11px; font-weight:900; }
     .bot-log-status::before { content:""; width:8px; height:8px; border-radius:999px; background:var(--red); box-shadow:0 0 0 3px rgba(198,40,40,.10); }
     .bot-log-status.running::before { background:var(--green); box-shadow:0 0 0 3px rgba(21,147,106,.10); }
     .bot-log-body { flex:1; margin:0; padding:14px 16px; min-height:520px; max-height:calc(100vh - 318px); overflow:auto; background:#0b1220; color:#d1e3ff; font:12px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; white-space:pre-wrap; word-break:break-word; }
+    .bot-log-stack .bot-log-body { min-height:340px; max-height:calc(100vh - 456px); }
+    .bot-log-window.important .bot-log-body { min-height:170px; max-height:240px; background:#111827; color:#fde68a; }
+    .bot-log-window.important .bot-log-meta { background:#fff7ed; color:#9a3412; }
+    .bot-log-fold { margin-top:6px; border-top:1px dashed #d8e4f0; padding-top:8px; }
+    .bot-log-fold summary { cursor:pointer; margin:0 4px 6px; color:var(--muted); font-size:11px; font-weight:950; list-style:none; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .bot-log-fold summary::-webkit-details-marker { display:none; }
+    .bot-log-fold summary::after { content:"展开"; color:#075985; font-size:11px; }
+    .bot-log-fold[open] summary::after { content:"收起"; }
+    .bot-log-fold-list { display:grid; gap:8px; }
     .side-pill { border-radius:999px; padding:3px 7px; font-weight:850; font-size:11px; }
     .side-pill.buy { background:#e7f6ef; color:#08734f; }
     .side-pill.sell { background:#fee2e2; color:#b42318; }
@@ -1560,7 +1805,10 @@ INDEX_HTML = r"""<!doctype html>
     .holding-status::before { content:""; width:7px; height:7px; border-radius:50%; background:currentColor; flex:0 0 auto; }
     .holding-status.open { color:#08734f; background:#e7f6ef; }
     .holding-status.watch { color:#9a5b00; background:#fff7e6; }
+    .holding-status.candidate { color:#075985; background:#e0f2fe; }
     .holding-status.closed { color:#667085; background:#eef2f6; }
+    .pool-delete-btn { min-width:42px; height:28px; border:1px solid #fecaca; border-radius:8px; background:#fff5f5; color:#b42318; font-size:12px; font-weight:950; }
+    .pool-delete-btn:hover { background:#fee2e2; border-color:#fca5a5; }
     .neg { color:var(--red); }
     .pos { color:var(--green); }
     .scroll { overflow:auto; border-radius:8px; }
@@ -1612,11 +1860,39 @@ INDEX_HTML = r"""<!doctype html>
     .holding-tabs, .sync-positions-btn { transition:opacity .18s ease, filter .18s ease; }
     .holdings-panel.market-view .holding-tabs, .holdings-panel.market-view .sync-positions-btn { opacity:.18; pointer-events:none; filter:grayscale(.2); }
     .lower-slider { overflow:hidden; touch-action:pan-y; }
-    .lower-track { display:flex; width:400%; transition:transform .32s cubic-bezier(.22,.61,.36,1); }
-    .lower-track.market { transform:translateX(-25%); }
-    .lower-track.d { transform:translateX(-50%); }
-    .lower-track.trades { transform:translateX(-75%); }
-    .lower-page { width:25%; flex:0 0 25%; padding:0 2px; }
+    .lower-track { display:flex; width:500%; transition:transform .32s cubic-bezier(.22,.61,.36,1); }
+    .lower-track.market { transform:translateX(-20%); }
+    .lower-track.d { transform:translateX(-40%); }
+    .lower-track.trades { transform:translateX(-60%); }
+    .lower-track.strategy { transform:translateX(-80%); }
+    .lower-page { width:20%; flex:0 0 20%; padding:0 2px; }
+    .strategy2-page { display:grid; gap:12px; }
+    .strategy2-hero { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; padding:14px; border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(135deg,#fff,#f4f9ff); }
+    .strategy2-title { display:grid; gap:4px; min-width:0; }
+    .strategy2-title h3 { margin:0; color:var(--ink); font-size:18px; font-weight:950; }
+    .strategy2-title p { margin:0; color:var(--muted); font-size:12px; font-weight:800; line-height:1.45; }
+    .strategy2-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .strategy2-actions button { height:34px; border-radius:8px; font-weight:900; }
+    .strategy2-actions .primary { border:0; background:#101828; color:#fff; }
+    .strategy2-capital { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+    .strategy2-capital-card { padding:10px; border:1px solid #dbe6f2; border-radius:8px; background:#fff; display:grid; gap:6px; }
+    .strategy2-capital-label { color:var(--muted); font-size:11px; font-weight:900; }
+    .strategy2-capital-value { color:var(--ink); font-size:18px; font-weight:950; }
+    .strategy2-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .strategy-card { border:1px solid #d8e4f0; border-radius:8px; background:#fff; overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,.035); }
+    .strategy-card-head { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; padding:12px; background:linear-gradient(180deg,#fff,#f7fbff); border-bottom:1px solid #e8eef6; }
+    .strategy-card h3 { margin:0; color:var(--ink); font-size:17px; font-weight:950; }
+    .strategy-card-meta { color:var(--muted); font-size:12px; font-weight:850; margin-top:3px; }
+    .strategy-badge { display:inline-flex; align-items:center; height:28px; padding:0 10px; border-radius:999px; background:#101828; color:#fff; font-size:12px; font-weight:950; white-space:nowrap; }
+    .strategy-mission { margin:0; padding:11px 12px; color:#344054; font-size:12px; font-weight:800; line-height:1.45; border-bottom:1px solid #eef2f6; }
+    .rule-section { padding:10px 12px 12px; display:grid; gap:7px; }
+    .rule-section-title { color:var(--ink); font-size:13px; font-weight:950; }
+    .rule-row { display:grid; grid-template-columns:22px minmax(100px,.8fr) minmax(120px,1fr) 48px; gap:7px; align-items:center; }
+    .rule-row input[type="checkbox"] { width:18px; height:18px; accent-color:#101828; }
+    .rule-label { color:#344054; font-size:12px; font-weight:850; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .rule-row input[type="text"], .rule-row input[type="number"] { width:100%; height:32px; border:1px solid #d6e2ef; border-radius:8px; padding:0 9px; color:var(--ink); font-weight:850; background:#fff; }
+    .rule-unit { color:var(--muted); font-size:11px; font-weight:850; }
+    .strategy2-status { color:var(--muted); font-size:12px; font-weight:850; min-width:120px; text-align:right; }
     .market-toolbar { display:grid; grid-template-columns:minmax(260px,1fr) auto; gap:10px; align-items:center; margin-bottom:10px; }
     .market-select { width:100%; height:38px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:0 10px; font-weight:750; color:var(--ink); box-shadow:0 6px 14px rgba(15,23,42,.035); }
     .market-meta { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
@@ -1769,6 +2045,8 @@ INDEX_HTML = r"""<!doctype html>
       .trade-records th, .trade-records td { padding:8px 7px; font-size:11px; }
       .life-layout { grid-template-columns:1fr; }
       .life-head { flex-direction:column; }
+      .five-year-head { flex-direction:column; align-items:stretch; }
+      .five-year-actions { justify-content:flex-end; flex-wrap:wrap; }
       .journal-prompts { grid-template-columns:1fr; }
       .life-journal { min-height:520px; }
       .journal-textarea { min-height:420px; }
@@ -1812,6 +2090,10 @@ INDEX_HTML = r"""<!doctype html>
       .d-grid, .d-option-layout, .d-preview-grid, .d-help-grid { grid-template-columns:1fr; }
       .d-subpanel { padding:12px; }
       .d-option-scroll { max-height:520px; }
+      .strategy2-hero { flex-direction:column; }
+      .strategy2-actions { width:100%; justify-content:flex-start; }
+      .strategy2-capital, .strategy2-grid { grid-template-columns:1fr; }
+      .rule-row { grid-template-columns:22px minmax(88px,.8fr) minmax(0,1fr) 40px; }
     }
   </style>
 </head>
@@ -2041,6 +2323,7 @@ INDEX_HTML = r"""<!doctype html>
             <button class="holding-tab" data-holding="D">D</button>
             <button class="holding-tab" data-holding="Q">Q</button>
             <button class="holding-tab" data-holding="TRADES">交易</button>
+            <button class="holding-tab config-tab" data-holding="CONFIG">配置</button>
           </div>
         </div>
         <div class="holding-right-tools">
@@ -2110,6 +2393,23 @@ INDEX_HTML = r"""<!doctype html>
               </div>
             </div>
           </div>
+          <div class="lower-page">
+            <div class="strategy2-page" id="strategy2Page">
+              <div class="strategy2-hero">
+                <div class="strategy2-title">
+                  <h3>策略 2.0 · B/C 自动执行准备</h3>
+                  <p id="strategy2Desc">B/C 资金各 50%，所有买卖规则先在这里可视化和配置，后续再接入机器人执行。</p>
+                </div>
+                <div class="strategy2-actions">
+                  <span class="strategy2-status" id="strategy2Status">未加载</span>
+                  <button onclick="loadStrategy2Config()">重载</button>
+                  <button class="primary" onclick="saveStrategy2Config()">保存配置</button>
+                </div>
+              </div>
+              <div class="strategy2-capital" id="strategy2Capital"></div>
+              <div class="strategy2-grid" id="strategy2Grid"></div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -2156,6 +2456,21 @@ INDEX_HTML = r"""<!doctype html>
             <button class="journal-new-day" onclick="newTodayJournal()">写今天</button>
           </div>
         </div>
+        <div class="life-main">
+          <div class="five-year-plan">
+            <div class="five-year-head">
+              <div class="five-year-copy">
+                <div class="five-year-title">5年计划</div>
+                <div class="five-year-sub">写下长期目标、阶段路径、关键约束；可以随时手动编辑。</div>
+              </div>
+              <div class="five-year-actions">
+                <span class="five-year-status" id="fiveYearStatus">未保存</span>
+                <button class="five-year-btn" onclick="clearFiveYearPlan()">清空</button>
+                <button class="five-year-btn primary" onclick="saveFiveYearPlan()">保存</button>
+              </div>
+            </div>
+            <textarea class="five-year-textarea" id="fiveYearPlanText" placeholder="例如：2026-2031 的资金目标、事业节奏、健康计划、家庭安排、每年必须完成的里程碑。"></textarea>
+          </div>
         <div class="life-journal">
           <div class="journal-toolbar">
             <div class="journal-toolbar-left">
@@ -2174,6 +2489,7 @@ INDEX_HTML = r"""<!doctype html>
             <button class="journal-prompt" onclick="appendJournalPrompt('今天需要避免重复的错误：')">需要避免的错误</button>
             <button class="journal-prompt" onclick="appendJournalPrompt('明天只做这一件事：')">明天一件事</button>
           </div>
+        </div>
         </div>
       </div>
     </section>
@@ -2247,6 +2563,7 @@ INDEX_HTML = r"""<!doctype html>
     let manualQuoteInterval = null;
     let latestManualQuote = null;
     let manualOrderPreview = null;
+    let strategy2Config = null;
     let botLogRows = [];
     let selectedBotLog = '';
     const defaultTradingRules = [
@@ -2256,6 +2573,7 @@ INDEX_HTML = r"""<!doctype html>
       '状态不好时减仓或休息，现金也是仓位。'
     ];
     const tradingRulesStorageKey = 'cszy2000.life.trading_rules';
+    const fiveYearPlanStorageKey = 'cszy2000.life.five_year_plan';
     const journalStorageKey = 'cszy2000.life.journals';
     const legacyJournalStorageKey = 'cszy2000.life.journal';
     let selectedJournalDate = '';
@@ -2288,6 +2606,7 @@ INDEX_HTML = r"""<!doctype html>
       const s = String(status || '').toLowerCase();
       if (s === 'open') return '持仓';
       if (s === 'needs_review') return '观察';
+      if (s === 'candidate') return '候选';
       if (s === 'closed') return '已清';
       return status || '--';
     }
@@ -2295,6 +2614,7 @@ INDEX_HTML = r"""<!doctype html>
       const s = String(status || '').toLowerCase();
       if (s === 'open') return 'open';
       if (s === 'needs_review') return 'watch';
+      if (s === 'candidate') return 'candidate';
       if (s === 'closed') return 'closed';
       return 'closed';
     }
@@ -2341,6 +2661,14 @@ INDEX_HTML = r"""<!doctype html>
       if (!result.ok) { alert(result.error || '年度任务更新失败'); return; }
       await loadAll();
     }
+    function brokerLabel(value) {
+      const key = String(value || '').toLowerCase();
+      if (key === 'fidelity') return 'Fidelity';
+      if (key === 'robinhood') return 'Robinhood';
+      if (key === 'alpaca') return 'Alpaca';
+      if (key === 'webull') return 'Webull';
+      return value || '--';
+    }
     function poolCard(g, cap) {
       const defensive = cap.defensive_pools?.[g];
       if (defensive) {
@@ -2358,7 +2686,8 @@ INDEX_HTML = r"""<!doctype html>
       const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
       const riskPct = Number(cap.total_risk_percent || 0) * Number(cap.pool_risk_percents?.[g] || 0) * 100;
-      return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池</div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>月度目标 ${money(displayTarget)}</span><span>可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
+      const broker = brokerLabel(cap.pool_brokers?.[g]);
+      return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池 <span class="pool-label">${broker}</span></div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>月度目标 ${money(displayTarget)}</span><span>可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
     function poolRow(g, cap) {
       const riskTarget = Number(cap.targets?.[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
@@ -2367,7 +2696,8 @@ INDEX_HTML = r"""<!doctype html>
       const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
       const riskPct = Number(cap.total_risk_percent || 0) * Number(cap.pool_risk_percents?.[g] || 0) * 100;
-      return `<div class="hero-pool-row"><div class="hero-pool-top"><div><div class="hero-pool-name">${g} 资金池</div><div class="hero-pool-meta">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><span class="small-muted">${w.toFixed(1)}%</span></div><div class="hero-pool-mid"><span class="hero-pool-used">${money(used)}</span><span class="hero-pool-available">可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
+      const broker = brokerLabel(cap.pool_brokers?.[g]);
+      return `<div class="hero-pool-row"><div class="hero-pool-top"><div><div class="hero-pool-name">${g} 资金池 <span class="pool-label">${broker}</span></div><div class="hero-pool-meta">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><span class="small-muted">${w.toFixed(1)}%</span></div><div class="hero-pool-mid"><span class="hero-pool-used">${money(used)}</span><span class="hero-pool-available">可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
     function drawDonutOn(canvasId, legendId, cap) {
       const canvas = document.getElementById(canvasId);
@@ -2489,6 +2819,7 @@ INDEX_HTML = r"""<!doctype html>
         manualQuoteInterval = null;
       }
       document.getElementById('phasePopover')?.classList.remove('show');
+      loadFiveYearPlan();
       loadJournal();
     }
     function updateLifeDate() {
@@ -2521,6 +2852,30 @@ INDEX_HTML = r"""<!doctype html>
     }
     function writeJournals(rows) {
       localStorage.setItem(journalStorageKey, JSON.stringify(rows || {}));
+    }
+    function loadFiveYearPlan() {
+      const text = document.getElementById('fiveYearPlanText');
+      if (!text) return;
+      text.value = localStorage.getItem(fiveYearPlanStorageKey) || '';
+      const status = document.getElementById('fiveYearStatus');
+      if (status) status.textContent = text.value.trim() ? '已加载' : '未保存';
+    }
+    function saveFiveYearPlan() {
+      const text = document.getElementById('fiveYearPlanText');
+      if (!text) return;
+      localStorage.setItem(fiveYearPlanStorageKey, text.value || '');
+      const status = document.getElementById('fiveYearStatus');
+      if (status) status.textContent = '已保存';
+    }
+    function clearFiveYearPlan() {
+      if (!confirm('确认清空 5 年计划？')) return;
+      const text = document.getElementById('fiveYearPlanText');
+      if (!text) return;
+      text.value = '';
+      localStorage.removeItem(fiveYearPlanStorageKey);
+      const status = document.getElementById('fiveYearStatus');
+      if (status) status.textContent = '未保存';
+      text.focus();
     }
     function ensureJournalDate(key) {
       const day = key || todayKey();
@@ -2647,11 +3002,11 @@ INDEX_HTML = r"""<!doctype html>
       const groupPriority = name => {
         const n = String(name || '').toLowerCase();
         if (n.startsWith('b_')) return 10;
-        if (n.startsWith('d_')) return 20;
-        if (n === 'ac_bot') return 30;
-        if (n.startsWith('q_')) return 40;
-        if (n.startsWith('f_')) return 50;
-        return 90;
+        if (n === 'ac_bot') return 20;
+        if (n.startsWith('d_')) return 90;
+        if (n.startsWith('q_')) return 91;
+        if (n.startsWith('f_')) return 92;
+        return 50;
       };
       const botPriority = name => {
         const n = String(name || '').toLowerCase();
@@ -2667,6 +3022,20 @@ INDEX_HTML = r"""<!doctype html>
         if (n.startsWith('q_')) return 'Q 期权';
         if (n.startsWith('f_')) return 'F 策略';
         return '其它';
+      };
+      const foldedBot = name => {
+        const n = String(name || '').toLowerCase();
+        return n.startsWith('d_') || n.startsWith('q_') || n.startsWith('f_');
+      };
+      const navButton = row => {
+        const running = row.running ? 'running' : '';
+        const status = row.running ? '运行' : '停';
+        const path = row.log_path || 'fallback';
+        return `<button class="bot-log-nav-btn ${row.bot_name === selectedBotLog ? 'active' : ''}" onclick="selectBotLog('${esc(row.bot_name)}')">
+          <span class="bot-log-nav-name">${esc(row.bot_name)}</span>
+          <span class="bot-log-nav-status ${running}">${status}</span>
+          <span class="bot-log-nav-sub">${esc(path.split('/').pop() || path)}</span>
+        </button>`;
       };
       const rows = [...(payload?.rows || [])].sort((a, b) => {
         const ga = groupPriority(a.bot_name), gb = groupPriority(b.bot_name);
@@ -2688,25 +3057,67 @@ INDEX_HTML = r"""<!doctype html>
       if (!rows.some(r => r.bot_name === selectedBotLog)) selectedBotLog = rows[0].bot_name;
       let lastGroup = '';
       if (nav) {
-        nav.innerHTML = rows.map(row => {
+        const mainRows = rows.filter(row => !foldedBot(row.bot_name));
+        const foldedRows = rows.filter(row => foldedBot(row.bot_name));
+        const mainHtml = mainRows.map(row => {
           const group = groupLabel(row.bot_name);
           const label = group !== lastGroup ? `<div class="bot-log-group-label">${esc(group)}</div>` : '';
           lastGroup = group;
-          const running = row.running ? 'running' : '';
-          const status = row.running ? '运行' : '停';
-          const path = row.log_path || 'fallback';
-          return `${label}<button class="bot-log-nav-btn ${row.bot_name === selectedBotLog ? 'active' : ''}" onclick="selectBotLog('${esc(row.bot_name)}')">
-            <span class="bot-log-nav-name">${esc(row.bot_name)}</span>
-            <span class="bot-log-nav-status ${running}">${status}</span>
-            <span class="bot-log-nav-sub">${esc(path.split('/').pop() || path)}</span>
-          </button>`;
+          return `${label}${navButton(row)}`;
         }).join('');
+        const foldedOpen = foldedRows.some(row => row.bot_name === selectedBotLog) ? 'open' : '';
+        const foldedHtml = foldedRows.length ? `<details class="bot-log-fold" ${foldedOpen}>
+          <summary>D / Q / F 机器人</summary>
+          <div class="bot-log-fold-list">${foldedRows.map(navButton).join('')}</div>
+        </details>` : '';
+        nav.innerHTML = `${mainHtml}${foldedHtml}`;
       }
       renderSelectedBotLog();
     }
     function selectBotLog(botName) {
       selectedBotLog = botName;
       renderBotLogs({rows: botLogRows});
+    }
+    function isBBotLog(row) {
+      const name = String(row?.bot_name || '').toLowerCase();
+      return name.startsWith('b_');
+    }
+    function hasImportantLogWindow(row) {
+      const name = String(row?.bot_name || '').toLowerCase();
+      return name.startsWith('b_') || name === 'ac_bot';
+    }
+    function importantBotLogLines(row) {
+      const include = /(符合|买入|卖出|需要卖出|止损|止盈|下单|开仓|平仓|减仓|加仓|buy\b|sell\b|order|submit|signal|candidate|trigger|stop|take profit)/i;
+      const noise = /(market closed|sleep|heartbeat|using key|key_prefix|^\s*\d{4}-\d{2}-\d{2}.*\[(ENV|BP|BUY_GATE)\]|split .* bot start|split .* bot stopped)/i;
+      return (row?.lines || [])
+        .map(line => String(line || ''))
+        .filter(line => line.trim() && include.test(line) && !noise.test(line))
+        .slice(-120);
+    }
+    function botLogWindowHtml({title, status, running, meta, lines, important=false, clearable=false}) {
+      const clearButton = clearable ? '<button class="bot-log-clear-btn" onclick="clearSelectedBotLog()">删除日志</button>' : '';
+      return `<div class="bot-log-window ${important ? 'important' : ''}">
+        <div class="bot-log-title">
+          <span>${esc(title)}</span>
+          <span class="bot-log-title-actions">
+            ${clearButton}
+            <span class="bot-log-status ${running}">${esc(status)}</span>
+          </span>
+        </div>
+        <div class="bot-log-meta" title="${esc(meta)}">${esc(meta)}</div>
+        <pre class="bot-log-body">${esc(lines)}</pre>
+      </div>`;
+    }
+    async function clearSelectedBotLog() {
+      const row = botLogRows.find(r => r.bot_name === selectedBotLog) || botLogRows[0];
+      if (!row) return;
+      if (!confirm(`确认删除 ${row.bot_name} 的当前日志内容？`)) return;
+      const result = await postJson('/api/bot_logs/delete', {bot_name: row.bot_name});
+      if (!result.ok) {
+        alert(result.error || '删除日志失败');
+        return;
+      }
+      await loadBotLogs();
     }
     function renderSelectedBotLog() {
       const grid = document.getElementById('botLogGrid');
@@ -2720,14 +3131,15 @@ INDEX_HTML = r"""<!doctype html>
       const running = row.running ? 'running' : '';
       const status = row.running ? `运行中${row.pid ? ' pid=' + row.pid : ''}` : '未运行';
       const path = row.log_path || 'fallback';
-      grid.innerHTML = `<div class="bot-log-window">
-        <div class="bot-log-title">
-          <span>${esc(row.bot_name)}</span>
-          <span class="bot-log-status ${running}">${esc(status)}</span>
-        </div>
-        <div class="bot-log-meta" title="${esc(path)}">${esc(path)}</div>
-        <pre class="bot-log-body">${esc(lines)}</pre>
-      </div>`;
+      if (hasImportantLogWindow(row)) {
+        const important = importantBotLogLines(row).join('\n') || '暂无买卖关键日志。机器人写入“符合 / 买入 / 卖出 / 止损 / 止盈 / 下单”等关键词后，会自动显示在这里。';
+        grid.innerHTML = `<div class="bot-log-stack">
+          ${botLogWindowHtml({title: `${row.bot_name} · 全部日志`, status, running, meta: path, lines, clearable: true})}
+          ${botLogWindowHtml({title: `${row.bot_name} · 重要日志`, status: '关键买卖记录', running: '', meta: '只显示符合条件、买入、卖出、止损、止盈、下单等关键记录', lines: important, important: true})}
+        </div>`;
+        return;
+      }
+      grid.innerHTML = botLogWindowHtml({title: row.bot_name, status, running, meta: path, lines, clearable: true});
     }
     async function loadBotLogs() {
       const meta = document.getElementById('botLogsMeta');
@@ -3277,18 +3689,33 @@ INDEX_HTML = r"""<!doctype html>
     function renderHoldings() {
       const holdingGroup = currentHolding === 'Q' ? 'D' : currentHolding;
       const rows = holdingGroup === 'ALL'
-        ? latestHoldings
+        ? latestHoldings.filter(r => String(r.status || '').toLowerCase() !== 'candidate')
         : latestHoldings.filter(r => String(r.strategy_group || '').toUpperCase() === holdingGroup);
       document.querySelectorAll('.holding-tab').forEach(b => b.classList.toggle('active', b.dataset.holding === currentHolding));
-      const colCount = 14;
+      const colCount = 15;
       const blanks = Array.from({length: Math.max(0, 10 - rows.length)}, () => `<tr>${Array.from({length: colCount}, (_, i) => `<td>${i === 0 ? '&nbsp;' : ''}</td>`).join('')}</tr>`).join('');
-      document.getElementById('holdings').innerHTML = `<thead><tr>${['代码','策略组','状态','日涨跌','现价','数量','初始成本','均价','持仓市值','浮盈亏','浮盈亏%','已实现','持仓天数','更新时间'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
+      document.getElementById('holdings').innerHTML = `<thead><tr>${['代码','策略组','状态','日涨跌','现价','数量','初始成本','均价','持仓市值','浮盈亏','浮盈亏%','已实现','持仓天数','更新时间','操作'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
         rows.map(r => {
           const day = Number(r.day_change_pct || 0);
           const status = String(r.status || '');
-          return `<tr><td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td><td>${r.strategy_group}</td><td><span class="holding-status ${holdingStatusClass(status)}">${holdingStatusLabel(status)}</span></td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${Number(r.qty||0).toFixed(4)}</td><td>${maybeMoney(r.initial_entry_price || r.avg_entry_price)}</td><td>${money(r.avg_entry_price)}</td><td>${money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${money(r.realized_pnl)}</td><td>${r.holding_days || 0}</td><td>${r.last_update_time || ''}</td></tr>`;
+          const candidate = status.toLowerCase() === 'candidate';
+          const action = candidate && r.operation_id
+            ? `<button class="pool-delete-btn" onclick="deleteStockPoolCandidate(${Number(r.operation_id)})">删</button>`
+            : '';
+          return `<tr><td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td><td>${r.strategy_group}</td><td><span class="holding-status ${holdingStatusClass(status)}">${holdingStatusLabel(status)}</span></td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${candidate ? '--' : Number(r.qty||0).toFixed(4)}</td><td>${maybeMoney(r.initial_entry_price || r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${candidate ? '--' : money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${candidate ? '--' : pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${candidate ? '--' : money(r.realized_pnl)}</td><td>${candidate ? '--' : (r.holding_days || 0)}</td><td>${r.last_update_time || ''}</td><td>${action}</td></tr>`;
         }).join('') +
         blanks + `</tbody>`;
+    }
+    async function deleteStockPoolCandidate(operationId) {
+      const row = latestHoldings.find(item => Number(item.operation_id || 0) === Number(operationId || 0));
+      const symbol = row?.symbol || '这只股票';
+      if (!confirm(`确认从入选池删除 ${symbol}？\\n只会删除 stock_operations 里的候选记录。`)) return;
+      const result = await postJson('/api/stock_pool/delete', {operation_id: operationId});
+      if (!result.ok) {
+        alert(result.error || '删除失败');
+        return;
+      }
+      await loadAll();
     }
     function isDSectionHolding(value=currentHolding) {
       return value === 'D' || value === 'Q';
@@ -3303,28 +3730,131 @@ INDEX_HTML = r"""<!doctype html>
       if (intradayPanel) intradayPanel.hidden = !intraday;
       if (optionPanel) optionPanel.hidden = intraday;
     }
+    function ruleInput(strategyKey, section, rule) {
+      const value = rule.value ?? '';
+      const type = typeof value === 'number' ? 'number' : 'text';
+      return `
+        <div class="rule-row" data-strategy="${strategyKey}" data-section="${section}" data-key="${esc(rule.key)}">
+          <input type="checkbox" class="rule-enabled" ${rule.enabled === false ? '' : 'checked'} />
+          <div class="rule-label" title="${esc(rule.label)}">${esc(rule.label)}</div>
+          <input class="rule-value" type="${type}" value="${esc(value)}" />
+          <div class="rule-unit">${esc(rule.unit || '')}</div>
+        </div>`;
+    }
+    function renderStrategy2Config(config) {
+      strategy2Config = config;
+      const desc = document.getElementById('strategy2Desc');
+      if (desc) desc.textContent = config?.capital?.desc || 'B/C 资金各 50%，规则可配置。';
+      const status = document.getElementById('strategy2Status');
+      if (status) status.textContent = '已加载';
+      const capital = document.getElementById('strategy2Capital');
+      if (capital) {
+        const rules = config?.capital?.rules || [];
+        capital.innerHTML = rules.map(rule => `
+          <div class="strategy2-capital-card" data-capital-key="${esc(rule.key)}">
+            <div class="strategy2-capital-label">${esc(rule.label)}</div>
+            <div class="strategy2-capital-value">${esc(rule.value)}${esc(rule.unit || '')}</div>
+            <label class="small-muted"><input type="checkbox" class="capital-enabled" ${rule.enabled === false ? '' : 'checked'} /> 启用</label>
+          </div>
+        `).join('');
+      }
+      const grid = document.getElementById('strategy2Grid');
+      if (!grid) return;
+      grid.innerHTML = (config?.strategies || []).map(strategy => `
+        <div class="strategy-card" data-strategy-card="${esc(strategy.key)}">
+          <div class="strategy-card-head">
+            <div>
+              <h3>${esc(strategy.key)} · ${esc(strategy.name)}</h3>
+              <div class="strategy-card-meta">${esc(strategy.broker)} · 资金 ${esc(strategy.capital)}</div>
+            </div>
+            <span class="strategy-badge">${esc(strategy.key === 'B' ? '股票' : '长期')}</span>
+          </div>
+          <p class="strategy-mission">${esc(strategy.mission)}</p>
+          <div class="rule-section">
+            <div class="rule-section-title">选股/候选条件</div>
+            ${(strategy.select_rules || []).map(rule => ruleInput(strategy.key, 'select_rules', rule)).join('')}
+          </div>
+          <div class="rule-section">
+            <div class="rule-section-title">买入/开仓规则</div>
+            ${(strategy.buy_rules || []).map(rule => ruleInput(strategy.key, 'buy_rules', rule)).join('')}
+          </div>
+          <div class="rule-section">
+            <div class="rule-section-title">卖出/止损规则</div>
+            ${(strategy.sell_rules || []).map(rule => ruleInput(strategy.key, 'sell_rules', rule)).join('')}
+          </div>
+        </div>
+      `).join('');
+    }
+    async function loadStrategy2Config() {
+      const status = document.getElementById('strategy2Status');
+      if (status) status.textContent = '加载中...';
+      const result = await api('/api/strategy_2_config');
+      if (!result.ok) {
+        if (status) status.textContent = result.error || '加载失败';
+        return;
+      }
+      renderStrategy2Config(result.config);
+    }
+    function collectStrategy2Config() {
+      const config = JSON.parse(JSON.stringify(strategy2Config || {version:'2.0', capital:{rules:[]}, strategies:[]}));
+      const capitalMap = Object.fromEntries((config.capital?.rules || []).map(rule => [rule.key, rule]));
+      document.querySelectorAll('[data-capital-key]').forEach(card => {
+        const key = card.getAttribute('data-capital-key');
+        if (capitalMap[key]) capitalMap[key].enabled = Boolean(card.querySelector('.capital-enabled')?.checked);
+      });
+      const strategyMap = Object.fromEntries((config.strategies || []).map(strategy => [strategy.key, strategy]));
+      document.querySelectorAll('.rule-row[data-strategy]').forEach(row => {
+        const strategy = strategyMap[row.getAttribute('data-strategy') || ''];
+        const section = row.getAttribute('data-section') || '';
+        const key = row.getAttribute('data-key') || '';
+        const rule = (strategy?.[section] || []).find(item => item.key === key);
+        if (!rule) return;
+        const input = row.querySelector('.rule-value');
+        const raw = input?.value ?? '';
+        rule.value = input?.type === 'number' ? Number(raw || 0) : raw;
+        rule.enabled = Boolean(row.querySelector('.rule-enabled')?.checked);
+      });
+      return config;
+    }
+    async function saveStrategy2Config() {
+      if (!strategy2Config) await loadStrategy2Config();
+      const config = collectStrategy2Config();
+      const status = document.getElementById('strategy2Status');
+      if (status) status.textContent = '保存中...';
+      const result = await postJson('/api/strategy_2_config', {config});
+      if (!result.ok) {
+        if (status) status.textContent = result.error || '保存失败';
+        return;
+      }
+      renderStrategy2Config(result.config);
+      if (status) status.textContent = '已保存';
+    }
     function renderLowerView() {
       const holdingsMode = lowerView === 'holdings';
       const marketMode = lowerView === 'market';
       const dMode = lowerView === 'd';
       const tradesMode = lowerView === 'trades';
-      document.getElementById('lowerPanelTitle').textContent = tradesMode ? '今日交易记录' : dMode ? (dSection === 'intraday' ? 'D 日内交易' : 'Q 期权交易') : (marketMode ? '行情分析' : '持仓');
-      document.getElementById('viewToggleBtn').textContent = marketMode ? (isDSectionHolding() ? '看D' : isTradesHolding() ? '看交易' : '看持仓') : '看行情';
+      const strategyMode = lowerView === 'strategy';
+      document.getElementById('lowerPanelTitle').textContent = strategyMode ? '策略 2.0' : tradesMode ? '今日交易记录' : dMode ? (dSection === 'intraday' ? 'D 日内交易' : 'Q 期权交易') : (marketMode ? '行情分析' : '持仓');
+      document.getElementById('viewToggleBtn').textContent = strategyMode ? '看持仓' : marketMode ? (isDSectionHolding() ? '看D' : isTradesHolding() ? '看交易' : '看持仓') : '看行情';
       document.querySelector('.holdings-panel').classList.toggle('market-view', marketMode);
       document.querySelector('.holdings-panel').classList.toggle('d-view', dMode);
       document.querySelector('.holdings-panel').classList.toggle('trades-view', tradesMode);
+      document.querySelector('.holdings-panel').classList.toggle('strategy-view', strategyMode);
       const track = document.getElementById('lowerTrack');
       track.classList.toggle('market', marketMode);
       track.classList.toggle('d', dMode);
       track.classList.toggle('trades', tradesMode);
+      track.classList.toggle('strategy', strategyMode);
       document.getElementById('dotHoldings').classList.toggle('active', holdingsMode);
       document.getElementById('dotMarket').classList.toggle('active', marketMode);
       document.getElementById('dotD').classList.toggle('active', dMode);
       document.getElementById('dotTrades').classList.toggle('active', tradesMode);
+      document.querySelector('.holding-tab[data-holding="CONFIG"]')?.classList.toggle('active', strategyMode);
       renderDSection();
     }
     function setLowerView(view) {
-      lowerView = view === 'market' ? 'market' : view === 'd' ? 'd' : view === 'trades' ? 'trades' : 'holdings';
+      lowerView = view === 'market' ? 'market' : view === 'd' ? 'd' : view === 'trades' ? 'trades' : view === 'strategy' ? 'strategy' : 'holdings';
       if (lowerView === 'trades') currentHolding = 'TRADES';
       if (lowerView === 'holdings' && isTradesHolding()) currentHolding = 'ALL';
       renderHoldings();
@@ -3332,8 +3862,11 @@ INDEX_HTML = r"""<!doctype html>
       if (lowerView === 'market') loadMarketCategories(currentCategory);
       if (lowerView === 'd') loadDTactical();
       if (lowerView === 'trades') loadTradeRecords();
+      if (lowerView === 'strategy' && !strategy2Config) loadStrategy2Config();
     }
     function toggleLowerView() {
+      if (lowerView === 'strategy') setLowerView('holdings');
+      else
       if (lowerView === 'market') setLowerView(isDSectionHolding() ? 'd' : 'holdings');
       else setLowerView('market');
     }
@@ -3444,21 +3977,28 @@ INDEX_HTML = r"""<!doctype html>
     function renderBrokerBalances(cap, risk) {
       const el = document.getElementById('brokerBalances');
       if (!el) return;
-      const dailyPct = Number(risk?.daily_pnl_pct || 0);
-      const equity = Number(cap?.equity || cap?.portfolio_value || 0);
-      const dailyChange = equity > 0 && Number.isFinite(dailyPct) ? equity * dailyPct : null;
-      const dailyClass = dailyChange === null ? '' : dailyChange < 0 ? 'neg' : dailyChange > 0 ? 'pos' : '';
-      const dailyText = dailyChange === null ? '--' : money(dailyChange);
-      el.innerHTML = [
-        ['Buying Power', money(cap?.buying_power || 0), ''],
-        ['Cash', money(cap?.cash || 0), Number(cap?.cash || 0) < 0 ? 'neg' : Number(cap?.cash || 0) > 0 ? 'pos' : ''],
-        ['Daily Change', dailyText, dailyClass],
-      ].map(([label, value, valueClass]) => `
+      const brokers = cap?.broker_snapshots || {};
+      const rows = [
+        ['Fidelity · A', brokers.fidelity],
+        ['Alpaca · B/C', brokers.alpaca],
+        ['Webull · D 日内', brokers.webull],
+      ];
+      el.innerHTML = rows.map(([label, snap]) => {
+        const equity = Number(snap?.equity || 0);
+        const buyingPower = Number(snap?.buying_power || 0);
+        const cash = Number(snap?.cash || 0);
+        const valueClass = cash < 0 ? 'neg' : equity > 0 ? 'pos' : '';
+        const value = equity > 0
+          ? `${money(equity)}`
+          : '--';
+        const sub = equity > 0 ? `BP ${money(buyingPower)} · Cash ${money(cash)}` : '未配置账户余额';
+        return `
         <div class="broker-balance-item">
           <div class="broker-balance-label">${label}</div>
           <div class="broker-balance-value ${valueClass}">${value}</div>
+          <div class="small-muted">${sub}</div>
         </div>
-      `).join('');
+      `}).join('');
     }
     async function updateRiskPreference(value) {
       const result = await postJson('/api/risk_settings', {risk_preference:value});
@@ -3515,6 +4055,7 @@ INDEX_HTML = r"""<!doctype html>
       renderHoldings();
       renderLowerView();
       if (lowerView === 'market') await loadMarketCategories(currentCategory);
+      if (lowerView === 'strategy') await loadStrategy2Config();
       if (document.body.classList.contains('log-focus')) await loadBotLogs();
       await loadCurve(currentPeriod);
       } finally {
@@ -3523,7 +4064,12 @@ INDEX_HTML = r"""<!doctype html>
     }
     document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => loadCurve(b.dataset.period)));
     document.querySelectorAll('.holding-tab').forEach(b => b.addEventListener('click', () => {
-      currentHolding = b.dataset.holding;
+      const nextHolding = b.dataset.holding;
+      if (nextHolding === 'CONFIG') {
+        setLowerView('strategy');
+        return;
+      }
+      currentHolding = nextHolding;
       if (currentHolding === 'D') dSection = 'intraday';
       if (currentHolding === 'Q') dSection = 'options';
       renderHoldings();
@@ -3546,8 +4092,8 @@ INDEX_HTML = r"""<!doctype html>
       const dx = endX - lowerTouchX;
       lowerTouchX = null;
       if (Math.abs(dx) < 48) return;
-      if (dx < 0) setLowerView(lowerView === 'market' ? 'd' : lowerView === 'd' ? 'trades' : 'market');
-      else setLowerView('holdings');
+      if (dx < 0) setLowerView(lowerView === 'holdings' ? 'market' : lowerView === 'market' ? 'd' : lowerView === 'd' ? 'trades' : 'strategy');
+      else setLowerView(lowerView === 'strategy' ? 'trades' : lowerView === 'trades' ? 'd' : lowerView === 'd' ? 'market' : 'holdings');
     }, {passive:true});
     function openClearModal() {
       document.getElementById('clearPassword').value = '';
@@ -3588,6 +4134,11 @@ INDEX_HTML = r"""<!doctype html>
     }
     updateLifeDate();
     loadJournal();
+    loadFiveYearPlan();
+    document.getElementById('fiveYearPlanText')?.addEventListener('input', () => {
+      const status = document.getElementById('fiveYearStatus');
+      if (status) status.textContent = '未保存';
+    });
     document.getElementById('journalText')?.addEventListener('input', () => {
       const status = document.getElementById('journalStatus');
       if (status) status.textContent = '未保存';
@@ -3813,6 +4364,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/stock_quote":
                 symbol = parse_qs(parsed.query).get("symbol", [""])[0]
                 self._send_json(_stock_quote_payload(symbol))
+            elif path == "/api/strategy_2_config":
+                self._send_json(_strategy_2_config_payload())
             elif path == "/api/rebalance":
                 self._send_json({"ok": True, "rows": generate_rebalance_report()})
             else:
@@ -3889,6 +4442,14 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     response["exposure_refresh_error"] = str(exc)[:180]
                 self._send_json(response)
+            elif path == "/api/strategy_2_config":
+                self._send_json(_save_strategy_2_config(payload))
+            elif path == "/api/bot_logs/delete":
+                result = _clear_bot_log_payload(payload)
+                self._send_json(result, 200 if result.get("ok") else 400)
+            elif path == "/api/stock_pool/delete":
+                result = _delete_stock_pool_payload(payload)
+                self._send_json(result, 200 if result.get("ok") else 400)
             elif path == "/api/sync_positions":
                 ok = sync_all_positions()
                 if not ok:

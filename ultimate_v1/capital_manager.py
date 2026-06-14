@@ -34,6 +34,8 @@ class CapitalAllocation:
     pool_risk_percents: dict[str, float]
     used: dict[str, float]
     available: dict[str, float]
+    pool_brokers: dict[str, str]
+    broker_snapshots: dict[str, dict]
 
     def target_for(self, strategy_group: str) -> float:
         return float(getattr(self, f"{strategy_group.upper()}_target", 0.0))
@@ -41,6 +43,77 @@ class CapitalAllocation:
 
 def get_account_snapshot():
     return alpaca_gateway.get_account_snapshot()
+
+
+POOL_BROKERS = {
+    "A": "fidelity",
+    "B": "alpaca",
+    "C": "alpaca",
+    "D": "webull",
+}
+
+
+def _manual_account_snapshot(prefix: str) -> alpaca_gateway.AccountSnapshot:
+    """读取非 Alpaca 账户的手工资金快照。
+
+    Fidelity / Webull 当前没有接入真实网关，先用环境变量隔离资金池。
+    例如 FIDELITY_EQUITY、FIDELITY_BUYING_POWER、FIDELITY_CASH。
+    """
+    name = prefix.upper()
+    equity = env_float(f"{name}_EQUITY", 0.0)
+    portfolio_value = env_float(f"{name}_PORTFOLIO_VALUE", equity)
+    cash = env_float(f"{name}_CASH", equity)
+    buying_power = env_float(f"{name}_BUYING_POWER", cash)
+    return alpaca_gateway.AccountSnapshot(
+        equity=max(0.0, equity),
+        buying_power=max(0.0, buying_power),
+        cash=cash,
+        portfolio_value=max(0.0, portfolio_value),
+    )
+
+
+def get_broker_account_snapshots() -> dict[str, alpaca_gateway.AccountSnapshot]:
+    """按券商读取资金快照；A/D 与 Alpaca 互不借用余额。"""
+    alpaca = get_account_snapshot()
+    if alpaca is None:
+        alpaca = alpaca_gateway.AccountSnapshot(0.0, 0.0, 0.0, 0.0, account_blocked=True, trading_blocked=True)
+    return {
+        "alpaca": alpaca,
+        "fidelity": _manual_account_snapshot("FIDELITY"),
+        "webull": _manual_account_snapshot("WEBULL"),
+    }
+
+
+def _aggregate_account_snapshot(snaps: dict[str, alpaca_gateway.AccountSnapshot]) -> alpaca_gateway.AccountSnapshot:
+    """合并展示用账户快照，交易阻断状态只继承 Alpaca 实盘通道。"""
+    alpaca = snaps.get("alpaca") or alpaca_gateway.AccountSnapshot(0.0, 0.0, 0.0, 0.0)
+    equity = sum(float(s.equity or 0) for s in snaps.values())
+    buying_power = sum(float(s.buying_power or 0) for s in snaps.values())
+    cash = sum(float(s.cash or 0) for s in snaps.values())
+    portfolio_value = sum(float(s.portfolio_value or 0) for s in snaps.values())
+    return alpaca_gateway.AccountSnapshot(
+        equity=equity,
+        buying_power=buying_power,
+        cash=cash,
+        portfolio_value=portfolio_value,
+        trading_blocked=alpaca.trading_blocked,
+        account_blocked=alpaca.account_blocked,
+        trade_suspended_by_user=alpaca.trade_suspended_by_user,
+        pattern_day_trader=alpaca.pattern_day_trader,
+        daytrade_count=alpaca.daytrade_count,
+    )
+
+
+def _snapshot_payload(snap: alpaca_gateway.AccountSnapshot) -> dict:
+    return {
+        "equity": snap.equity,
+        "buying_power": snap.buying_power,
+        "cash": snap.cash,
+        "portfolio_value": snap.portfolio_value,
+        "trading_blocked": snap.trading_blocked,
+        "account_blocked": snap.account_blocked,
+        "trade_suspended_by_user": snap.trade_suspended_by_user,
+    }
 
 
 def _month_start(today: date | None = None) -> date:
@@ -108,20 +181,31 @@ def _risk_percents() -> tuple[float, dict[str, float]]:
     return total_pct, pool_pct
 
 
-def _ensure_monthly_capital_pools(mode: str, snap) -> date:
+def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpaca_gateway.AccountSnapshot]) -> date:
     """当月没有资金池记录时，按当月账户资金和模式比例写入一次。"""
     month = _month_start()
     weights, _allow_d = _mode_weights(mode)
+    pool_base_percents = {
+        "A": env_float("A_ACCOUNT_CAPITAL_PCT", 1.0),
+        "B": env_float("B_ACCOUNT_CAPITAL_PCT", 0.5),
+        "C": env_float("C_ACCOUNT_CAPITAL_PCT", 0.5),
+        "D": env_float("D_ACCOUNT_CAPITAL_PCT", 1.0),
+    }
+
+    def pool_snapshot(group: str) -> alpaca_gateway.AccountSnapshot:
+        return broker_snaps.get(POOL_BROKERS[group]) or snap
+
     base_targets = {
-        "A": snap.equity * weights["A"],
-        "B": snap.equity * weights["B"],
-        "C": snap.equity * weights["C"],
-        "D": snap.buying_power * weights["D"],
+        "A": pool_snapshot("A").equity * pool_base_percents["A"],
+        "B": pool_snapshot("B").equity * pool_base_percents["B"],
+        "C": pool_snapshot("C").equity * pool_base_percents["C"],
+        "D": pool_snapshot("D").buying_power * pool_base_percents["D"],
     }
     total_pct, pool_pct = _risk_percents()
     with db_conn() as conn:
         with conn.cursor() as cur:
             for group in ("A", "B", "C", "D"):
+                group_snap = pool_snapshot(group)
                 risk_target = base_targets[group] * pool_pct[group] if group == "D" else base_targets[group] * total_pct * pool_pct[group]
                 cur.execute(
                     """
@@ -136,15 +220,15 @@ def _ensure_monthly_capital_pools(mode: str, snap) -> date:
                         month,
                         group,
                         mode,
-                        weights[group],
+                        pool_base_percents[group],
                         base_targets[group],
                         total_pct,
                         pool_pct[group],
                         risk_target,
                         risk_target,
-                        snap.equity,
-                        snap.buying_power,
-                        "monthly allocation auto-created",
+                        group_snap.equity,
+                        group_snap.buying_power,
+                        f"monthly allocation auto-created broker={POOL_BROKERS[group]}",
                     ),
                 )
                 # 如果本月资金池已经存在，但策略比例规则升级了，只修正比例变化的行。
@@ -153,13 +237,33 @@ def _ensure_monthly_capital_pools(mode: str, snap) -> date:
                     """
                     UPDATE capital_pools
                     SET mode=%s, base_percent=%s, base_target_capital=%s,
+                        source_equity=%s, source_buying_power=%s,
                         notes='monthly allocation policy upgraded',
                         updated_at=NOW()
                     WHERE allocation_month=%s
                       AND strategy_group=%s
-                      AND (mode<>%s OR ABS(base_percent - %s) > 0.0001)
+                      AND (
+                        mode<>%s
+                        OR ABS(base_percent - %s) > 0.0001
+                        OR (%s IN ('A','D') AND ABS(COALESCE(source_equity, 0) - %s) > 0.01)
+                        OR (%s IN ('A','D') AND ABS(COALESCE(source_buying_power, 0) - %s) > 0.01)
+                      )
                     """,
-                    (mode, weights[group], base_targets[group], month, group, mode, weights[group]),
+                    (
+                        mode,
+                        pool_base_percents[group],
+                        base_targets[group],
+                        group_snap.equity,
+                        group_snap.buying_power,
+                        month,
+                        group,
+                        mode,
+                        pool_base_percents[group],
+                        group,
+                        group_snap.equity,
+                        group,
+                        group_snap.buying_power,
+                    ),
                 )
     return month
 
@@ -218,13 +322,14 @@ def refresh_capital_pool_usage(month: date | None = None) -> list[dict]:
 def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
     """读取月度资金池表，并用真实持仓金额刷新已用资金。"""
     s = settings()
-    snap = get_account_snapshot()
-    if snap is None:
+    broker_snaps = get_broker_account_snapshots()
+    snap = _aggregate_account_snapshot(broker_snaps)
+    if snap is None or all(float(b.equity or 0) <= 0 for b in broker_snaps.values()):
         return None
     if mode is None:
         mode = get_risk_state().mode
     mode = (mode or s.capital_mode or "NORMAL").upper()
-    month = _ensure_monthly_capital_pools(mode, snap)
+    month = _ensure_monthly_capital_pools(mode, snap, broker_snaps)
     rows = refresh_capital_pool_usage(month)
     by_group = {str(row["strategy_group"]).upper(): row for row in rows}
     targets = {group: float((by_group.get(group) or {}).get("risk_target_capital") or 0) for group in ("A", "B", "C", "D")}
@@ -254,6 +359,8 @@ def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
         pool_risk_percents=pool_risk_percents,
         used=used,
         available=available,
+        pool_brokers=POOL_BROKERS.copy(),
+        broker_snapshots={name: _snapshot_payload(value) for name, value in broker_snaps.items()},
     )
 
 
@@ -347,11 +454,13 @@ def can_open_new_position(strategy_group: str, estimated_notional: float) -> tup
         allocation = get_capital_allocation()
         if allocation is None:
             return False, "account_snapshot_failed"
-        if allocation.account_blocked:
+        broker = allocation.pool_brokers.get(group, "alpaca")
+        broker_snapshot = allocation.broker_snapshots.get(broker, {})
+        if broker_snapshot.get("account_blocked"):
             return False, "account_blocked"
-        if allocation.trading_blocked:
+        if broker_snapshot.get("trading_blocked"):
             return False, "trading_blocked"
-        if allocation.trade_suspended_by_user:
+        if broker_snapshot.get("trade_suspended_by_user"):
             return False, "trade_suspended_by_user"
         target = allocation.target_for(group)
         used = allocation.used.get(group, get_strategy_used_capital(group))
