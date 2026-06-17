@@ -1763,11 +1763,15 @@ INDEX_HTML = r"""<!doctype html>
     .bot-log-nav-status.running::before { background:var(--green); box-shadow:0 0 0 3px rgba(21,147,106,.10); }
     .bot-log-nav-btn.active .bot-log-nav-status { color:#fff; }
     .bot-log-grid { min-width:0; }
-    .bot-log-stack { min-height:100%; display:grid; grid-template-rows:minmax(360px,1fr) auto; gap:12px; }
     .bot-log-window { min-height:100%; border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,.04); display:flex; flex-direction:column; }
-    .bot-log-stack .bot-log-window { min-height:0; }
     .bot-log-window.important { border-color:#fed7aa; background:linear-gradient(180deg,#fffaf2,#fff); }
     .bot-log-title { min-height:42px; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-bottom:1px solid #e8eef6; font-size:12px; font-weight:950; color:var(--ink); }
+    .bot-log-title-left { min-width:0; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .bot-log-name { color:var(--ink); font-size:13px; font-weight:950; }
+    .bot-log-mode-tabs { display:inline-flex; align-items:center; gap:4px; padding:3px; border:1px solid #dbe6f2; border-radius:8px; background:#f8fbff; }
+    .bot-log-mode-tab { height:28px; min-width:64px; padding:0 10px; border:0; border-radius:6px; background:transparent; color:#667085; font-size:12px; font-weight:950; }
+    .bot-log-mode-tab.active { background:#101828; color:#fff; box-shadow:0 5px 12px rgba(15,23,42,.12); }
+    .bot-log-mode-tab.important.active { background:#b45309; color:#fff; }
     .bot-log-title-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
     .bot-log-clear-btn { height:28px; border:1px solid #fecaca; border-radius:8px; background:#fff5f5; color:#b42318; font-size:11px; font-weight:950; padding:0 9px; }
     .bot-log-clear-btn:hover { background:#fee2e2; border-color:#fca5a5; }
@@ -1776,8 +1780,7 @@ INDEX_HTML = r"""<!doctype html>
     .bot-log-status::before { content:""; width:8px; height:8px; border-radius:999px; background:var(--red); box-shadow:0 0 0 3px rgba(198,40,40,.10); }
     .bot-log-status.running::before { background:var(--green); box-shadow:0 0 0 3px rgba(21,147,106,.10); }
     .bot-log-body { flex:1; margin:0; padding:14px 16px; min-height:520px; max-height:calc(100vh - 318px); overflow:auto; background:#0b1220; color:#d1e3ff; font:12px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; white-space:pre-wrap; word-break:break-word; }
-    .bot-log-stack .bot-log-body { min-height:340px; max-height:calc(100vh - 456px); }
-    .bot-log-window.important .bot-log-body { min-height:170px; max-height:240px; background:#111827; color:#fde68a; }
+    .bot-log-window.important .bot-log-body { background:#111827; color:#fde68a; }
     .bot-log-window.important .bot-log-meta { background:#fff7ed; color:#9a3412; }
     .bot-log-fold { margin-top:6px; border-top:1px dashed #d8e4f0; padding-top:8px; }
     .bot-log-fold summary { cursor:pointer; margin:0 4px 6px; color:var(--muted); font-size:11px; font-weight:950; list-style:none; display:flex; align-items:center; justify-content:space-between; gap:8px; }
@@ -2252,10 +2255,8 @@ INDEX_HTML = r"""<!doctype html>
             <div class="manual-field">
               <label for="manualBuyPool">资金池</label>
               <select id="manualBuyPool" onchange="updateManualPoolAvailable()">
-                <option value="A">A 资金池 · 可买入 --</option>
                 <option value="B">B 资金池 · 可买入 --</option>
                 <option value="C" selected>C 资金池 · 可买入 --</option>
-                <option value="D">D 资金池 · 可买入 --</option>
               </select>
             </div>
             <div class="manual-field">
@@ -2317,11 +2318,8 @@ INDEX_HTML = r"""<!doctype html>
           <button class="sync-positions-btn" id="syncPositionsBtn" onclick="syncPositions()">同步仓位</button>
           <div class="holding-tabs" id="holdingTabs">
             <button class="holding-tab active" data-holding="ALL">总</button>
-            <button class="holding-tab" data-holding="A">A</button>
-            <button class="holding-tab" data-holding="C">C</button>
             <button class="holding-tab" data-holding="B">B</button>
-            <button class="holding-tab" data-holding="D">D</button>
-            <button class="holding-tab" data-holding="Q">Q</button>
+            <button class="holding-tab" data-holding="C">C</button>
             <button class="holding-tab" data-holding="TRADES">交易</button>
             <button class="holding-tab config-tab" data-holding="CONFIG">配置</button>
           </div>
@@ -2330,7 +2328,6 @@ INDEX_HTML = r"""<!doctype html>
           <div class="page-dots">
             <button class="page-dot active" id="dotHoldings" onclick="setLowerView('holdings')" title="持仓"></button>
             <button class="page-dot" id="dotMarket" onclick="setLowerView('market')" title="行情分析"></button>
-            <button class="page-dot" id="dotD" onclick="setLowerView('d')" title="D 战术仓"></button>
             <button class="page-dot" id="dotTrades" onclick="setLowerView('trades')" title="交易记录"></button>
           </div>
           <button class="view-toggle-btn" id="viewToggleBtn" onclick="toggleLowerView()">看行情</button>
@@ -2566,6 +2563,7 @@ INDEX_HTML = r"""<!doctype html>
     let strategy2Config = null;
     let botLogRows = [];
     let selectedBotLog = '';
+    let selectedBotLogMode = 'all';
     const defaultTradingRules = [
       '先确认风险，再考虑收益；没有计划的单不下。',
       '亏损达到规则就执行，不和市场讲道理。',
@@ -2729,8 +2727,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     function renderBots(bots, controls) {
       const botPages = [
-        ['rebalance_bot','b_buy_bot','b_sell_bot','d_buy_bot','d_sell_bot'],
-        ['dashboard_bot','risk_bot','ac_bot','q_sell_bot'],
+        ['rebalance_bot','b_buy_bot','b_sell_bot'],
+        ['dashboard_bot','risk_bot','ac_bot'],
         ['f_buy_bot','f_sell_bot']
       ];
       botPage = Math.max(0, Math.min(botPage, botPages.length - 1));
@@ -3078,10 +3076,6 @@ INDEX_HTML = r"""<!doctype html>
       selectedBotLog = botName;
       renderBotLogs({rows: botLogRows});
     }
-    function isBBotLog(row) {
-      const name = String(row?.bot_name || '').toLowerCase();
-      return name.startsWith('b_');
-    }
     function hasImportantLogWindow(row) {
       const name = String(row?.bot_name || '').toLowerCase();
       return name.startsWith('b_') || name === 'ac_bot';
@@ -3094,11 +3088,21 @@ INDEX_HTML = r"""<!doctype html>
         .filter(line => line.trim() && include.test(line) && !noise.test(line))
         .slice(-120);
     }
-    function botLogWindowHtml({title, status, running, meta, lines, important=false, clearable=false}) {
+    function botLogModeTabs(activeMode) {
+      return `<span class="bot-log-mode-tabs">
+        <button class="bot-log-mode-tab ${activeMode === 'all' ? 'active' : ''}" onclick="setBotLogMode('all')">全部日志</button>
+        <button class="bot-log-mode-tab important ${activeMode === 'important' ? 'active' : ''}" onclick="setBotLogMode('important')">重要日志</button>
+      </span>`;
+    }
+    function setBotLogMode(mode) {
+      selectedBotLogMode = mode === 'important' ? 'important' : 'all';
+      renderSelectedBotLog();
+    }
+    function botLogWindowHtml({title, status, running, meta, lines, important=false, clearable=false, tabs=''}) {
       const clearButton = clearable ? '<button class="bot-log-clear-btn" onclick="clearSelectedBotLog()">删除日志</button>' : '';
       return `<div class="bot-log-window ${important ? 'important' : ''}">
         <div class="bot-log-title">
-          <span>${esc(title)}</span>
+          <span class="bot-log-title-left"><span class="bot-log-name">${esc(title)}</span>${tabs}</span>
           <span class="bot-log-title-actions">
             ${clearButton}
             <span class="bot-log-status ${running}">${esc(status)}</span>
@@ -3132,11 +3136,18 @@ INDEX_HTML = r"""<!doctype html>
       const status = row.running ? `运行中${row.pid ? ' pid=' + row.pid : ''}` : '未运行';
       const path = row.log_path || 'fallback';
       if (hasImportantLogWindow(row)) {
+        const mode = selectedBotLogMode === 'important' ? 'important' : 'all';
         const important = importantBotLogLines(row).join('\n') || '暂无买卖关键日志。机器人写入“符合 / 买入 / 卖出 / 止损 / 止盈 / 下单”等关键词后，会自动显示在这里。';
-        grid.innerHTML = `<div class="bot-log-stack">
-          ${botLogWindowHtml({title: `${row.bot_name} · 全部日志`, status, running, meta: path, lines, clearable: true})}
-          ${botLogWindowHtml({title: `${row.bot_name} · 重要日志`, status: '关键买卖记录', running: '', meta: '只显示符合条件、买入、卖出、止损、止盈、下单等关键记录', lines: important, important: true})}
-        </div>`;
+        grid.innerHTML = botLogWindowHtml({
+          title: row.bot_name,
+          status: mode === 'important' ? '关键买卖记录' : status,
+          running: mode === 'important' ? '' : running,
+          meta: mode === 'important' ? '只显示符合条件、买入、卖出、止损、止盈、下单等关键记录' : path,
+          lines: mode === 'important' ? important : lines,
+          important: mode === 'important',
+          clearable: true,
+          tabs: botLogModeTabs(mode)
+        });
         return;
       }
       grid.innerHTML = botLogWindowHtml({title: row.bot_name, status, running, meta: path, lines, clearable: true});
@@ -3176,7 +3187,7 @@ INDEX_HTML = r"""<!doctype html>
     function updateManualPoolAvailable() {
       const select = document.getElementById('manualBuyPool');
       if (!select) return;
-      ['A','B','C','D'].forEach(pool => {
+      ['B','C'].forEach(pool => {
         const opt = Array.from(select.options).find(o => o.value === pool);
         const amount = Number(window.latestCapitalPayload?.available?.[pool] || 0);
         if (opt) opt.textContent = `${pool} 资金池 · 可买入 ${money(amount)}`;
@@ -3689,7 +3700,7 @@ INDEX_HTML = r"""<!doctype html>
     function renderHoldings() {
       const holdingGroup = currentHolding === 'Q' ? 'D' : currentHolding;
       const rows = holdingGroup === 'ALL'
-        ? latestHoldings.filter(r => String(r.status || '').toLowerCase() !== 'candidate')
+        ? latestHoldings.filter(r => String(r.status || '').toLowerCase() === 'open' && Number(r.qty || 0) > 0)
         : latestHoldings.filter(r => String(r.strategy_group || '').toUpperCase() === holdingGroup);
       document.querySelectorAll('.holding-tab').forEach(b => b.classList.toggle('active', b.dataset.holding === currentHolding));
       const colCount = 15;
@@ -3848,13 +3859,13 @@ INDEX_HTML = r"""<!doctype html>
       track.classList.toggle('strategy', strategyMode);
       document.getElementById('dotHoldings').classList.toggle('active', holdingsMode);
       document.getElementById('dotMarket').classList.toggle('active', marketMode);
-      document.getElementById('dotD').classList.toggle('active', dMode);
+      document.getElementById('dotD')?.classList.toggle('active', dMode);
       document.getElementById('dotTrades').classList.toggle('active', tradesMode);
       document.querySelector('.holding-tab[data-holding="CONFIG"]')?.classList.toggle('active', strategyMode);
       renderDSection();
     }
     function setLowerView(view) {
-      lowerView = view === 'market' ? 'market' : view === 'd' ? 'd' : view === 'trades' ? 'trades' : view === 'strategy' ? 'strategy' : 'holdings';
+      lowerView = view === 'market' ? 'market' : view === 'trades' ? 'trades' : view === 'strategy' ? 'strategy' : 'holdings';
       if (lowerView === 'trades') currentHolding = 'TRADES';
       if (lowerView === 'holdings' && isTradesHolding()) currentHolding = 'ALL';
       renderHoldings();
@@ -3867,7 +3878,7 @@ INDEX_HTML = r"""<!doctype html>
     function toggleLowerView() {
       if (lowerView === 'strategy') setLowerView('holdings');
       else
-      if (lowerView === 'market') setLowerView(isDSectionHolding() ? 'd' : 'holdings');
+      if (lowerView === 'market') setLowerView('holdings');
       else setLowerView('market');
     }
     function renderMarketCategories(payload) {
@@ -4092,8 +4103,8 @@ INDEX_HTML = r"""<!doctype html>
       const dx = endX - lowerTouchX;
       lowerTouchX = null;
       if (Math.abs(dx) < 48) return;
-      if (dx < 0) setLowerView(lowerView === 'holdings' ? 'market' : lowerView === 'market' ? 'd' : lowerView === 'd' ? 'trades' : 'strategy');
-      else setLowerView(lowerView === 'strategy' ? 'trades' : lowerView === 'trades' ? 'd' : lowerView === 'd' ? 'market' : 'holdings');
+      if (dx < 0) setLowerView(lowerView === 'holdings' ? 'market' : lowerView === 'market' ? 'trades' : 'strategy');
+      else setLowerView(lowerView === 'strategy' ? 'trades' : lowerView === 'trades' ? 'market' : 'holdings');
     }, {passive:true});
     function openClearModal() {
       document.getElementById('clearPassword').value = '';

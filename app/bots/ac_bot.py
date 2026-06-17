@@ -21,12 +21,12 @@ def run_once(action: str = "scan", symbol: str | None = None, group: str | None 
         return None
     heartbeat(BOT_NAME, "running", f"action={action}")
     if action == "scan":
-        return run_strategy_ac_t_once(symbol=symbol)
+        return run_strategy_ac_t_once(symbol=symbol, group=group or "C")
     if action in {"buy", "sell"}:
         if not symbol:
             raise ValueError("A/C manual pass needs --symbol")
         print(f"[AC BOT] action={action} is handled by AC_T state machine for {symbol}", flush=True)
-        return run_strategy_ac_t_once(symbol=symbol)
+        return run_strategy_ac_t_once(symbol=symbol, group=group or "C")
     raise ValueError("ac_bot only supports scan/buy/sell")
 
 

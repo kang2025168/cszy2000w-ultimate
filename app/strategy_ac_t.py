@@ -176,9 +176,13 @@ def _reset_to_idle_fields(extra: dict | None = None) -> dict:
     return fields
 
 
-def load_ac_t_rows(conn, symbol: str | None = None) -> list[dict]:
+def load_ac_t_rows(conn, symbol: str | None = None, group: str | None = "C") -> list[dict]:
     args: list = []
     symbol_filter = ""
+    group = str(group or "C").strip().upper()
+    if group not in {"A", "C"}:
+        group = "C"
+    args.append(group)
     if symbol:
         symbol_filter = "AND stock_code=%s"
         args.append(symbol.upper())
@@ -189,7 +193,7 @@ def load_ac_t_rows(conn, symbol: str | None = None) -> list[dict]:
             FROM `{TABLE}`
             WHERE COALESCE(ac_t_enabled, 1)=1
               -- 必须显式标记 ac_t_type，避免误扫旧 C 策略或普通 A/C 记录。
-              AND UPPER(COALESCE(NULLIF(ac_t_type, ''), '')) IN ('A','C')
+              AND UPPER(COALESCE(NULLIF(ac_t_type, ''), ''))=%s
               {symbol_filter}
             ORDER BY stock_code
             """,
@@ -1009,12 +1013,12 @@ def process_ac_t_symbol(conn, client, row: dict) -> str:
     return f"reset:unknown_state:{state}"
 
 
-def run_strategy_ac_t_once(symbol: str | None = None) -> list[dict]:
+def run_strategy_ac_t_once(symbol: str | None = None, group: str | None = "C") -> list[dict]:
     ensure_schema()
     client = trading_client()
     results: list[dict] = []
     with db_conn() as conn:
-        rows = load_ac_t_rows(conn, symbol=symbol)
+        rows = load_ac_t_rows(conn, symbol=symbol, group=group)
         for row in rows:
             sym = str(row.get("stock_code") or "").strip().upper()
             try:
