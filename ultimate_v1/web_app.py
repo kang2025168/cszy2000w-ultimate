@@ -697,86 +697,16 @@ def _enrich_holdings_rows(rows: list[dict]) -> list[dict]:
 
 def _holdings_payload() -> dict:
     """读取持仓展示表，供前端表格渲染。"""
-    rows = fetch_all(
-        """
-        SELECT symbol, normalized_group AS strategy_group, stock_type, status, qty,
-               initial_entry_price, avg_entry_price,
-               (
-                   SELECT so.trigger_price
-                   FROM stock_operations so
-                   WHERE UPPER(so.stock_code)=UPPER(ranked.symbol)
-                     AND UPPER(COALESCE(NULLIF(so.strategy_group,''), so.stock_type))=UPPER(ranked.normalized_group)
-                     AND so.trigger_price IS NOT NULL
-                   ORDER BY so.id DESC
-                   LIMIT 1
-               ) AS trigger_price,
-               current_price, market_value, cost_basis, unrealized_pnl,
-               unrealized_pnl_pct, realized_pnl, entry_time, exit_time,
-               holding_days, stop_loss_price, take_profit_price, b_stage,
-               capital_pool, margin_used, last_order_side, last_update_time
-        FROM (
-            SELECT h.*,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY UPPER(symbol), normalized_group
-                       ORDER BY FIELD(status, 'open', 'needs_review', 'closed'),
-                                ABS(COALESCE(qty, 0)) DESC,
-                                id DESC
-                   ) AS rn
-            FROM (
-                SELECT position_holdings.*,
-                       CASE
-                           WHEN strategy_group IN ('A','B','C','D','F') THEN strategy_group
-                           WHEN stock_type IN ('A','B','C','D','F') THEN stock_type
-                           ELSE strategy_group
-                       END AS normalized_group
-                FROM position_holdings
-            ) h
-        ) ranked
-        WHERE rn=1
-        ORDER BY FIELD(status, 'open', 'needs_review', 'closed'), strategy_group, symbol
-        LIMIT 500
-        """
-    )
-    holdings = list(rows or [])
-    c_operation_symbols = {
-        str(row.get("symbol") or "").strip().upper()
-        for row in fetch_all(
-            """
-            SELECT DISTINCT UPPER(stock_code) AS symbol
-            FROM stock_operations
-            WHERE UPPER(stock_type)='C'
-            """
-        )
-    }
-    if c_operation_symbols:
-        holdings = [
-            row for row in holdings
-            if str(row.get("strategy_group") or "").strip().upper() != "C"
-            or str(row.get("symbol") or "").strip().upper() in c_operation_symbols
-        ]
-    else:
-        holdings = [
-            row for row in holdings
-            if str(row.get("strategy_group") or "").strip().upper() != "C"
-        ]
-    held_keys = {
-        (str(row.get("symbol") or "").strip().upper(), str(row.get("strategy_group") or "").strip().upper())
-        for row in holdings
-        if str(row.get("status") or "").lower() == "open" and _safe_float(row.get("qty")) > 0
-    }
+    holdings = []
     try:
-        pool_rows = fetch_all(
+        holdings = list(fetch_all(
             """
             SELECT id AS operation_id,
                    UPPER(stock_code) AS symbol,
+                   UPPER(stock_type) AS strategy_group,
+                   UPPER(stock_type) AS stock_type,
                    CASE
-                       WHEN COALESCE(NULLIF(strategy_group,''), stock_type) IN ('A','B','C','D','F')
-                           THEN COALESCE(NULLIF(strategy_group,''), stock_type)
-                       ELSE stock_type
-                   END AS strategy_group,
-                   stock_type,
-                   CASE
-                       WHEN COALESCE(is_bought, 0)=1 THEN 'open'
+                       WHEN COALESCE(is_bought, 0)=1 OR COALESCE(qty, 0)>0 THEN 'open'
                        WHEN UPPER(stock_type)='C' THEN 'needs_review'
                        ELSE 'candidate'
                    END AS status,
@@ -792,7 +722,10 @@ def _holdings_payload() -> dict:
                    0 AS realized_pnl,
                    entry_date AS entry_time,
                    NULL AS exit_time,
-                   0 AS holding_days,
+                   CASE
+                       WHEN entry_date IS NOT NULL THEN GREATEST(DATEDIFF(CURDATE(), entry_date), 0)
+                       ELSE 0
+                   END AS holding_days,
                    stop_loss_price,
                    take_profit_price,
                    b_stage,
@@ -805,25 +738,19 @@ def _holdings_payload() -> dict:
                    can_sell,
                    is_bought
             FROM stock_operations
-            WHERE (
-                    COALESCE(is_bought, 0)=0
-                    AND COALESCE(can_buy, 1)=1
-                  )
-               OR UPPER(stock_type)='C'
-            ORDER BY FIELD(strategy_group, 'A','B','C','D','F'), stock_type, updated_at DESC, id DESC
+            WHERE UPPER(stock_type) IN ('B','C')
+              AND (
+                    COALESCE(is_bought, 0)=1
+                 OR COALESCE(qty, 0)>0
+                 OR COALESCE(can_buy, 0)=1
+                 OR UPPER(stock_type)='C'
+              )
+            ORDER BY FIELD(UPPER(stock_type), 'B','C'), updated_at DESC, id DESC
             LIMIT 500
             """
-        )
-        for row in pool_rows:
-            key = (
-                str(row.get("symbol") or "").strip().upper(),
-                str(row.get("strategy_group") or "").strip().upper(),
-            )
-            if key in held_keys:
-                continue
-            holdings.append(row)
+        ) or [])
     except Exception as exc:
-        print(f"[WEB HOLDINGS] stock_operations candidate pool unavailable: {exc}", flush=True)
+        print(f"[WEB HOLDINGS] stock_operations unavailable: {exc}", flush=True)
     return {"ok": True, "rows": _enrich_holdings_rows(holdings)}
 
 
