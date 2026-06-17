@@ -192,8 +192,8 @@ def load_ac_t_rows(conn, symbol: str | None = None, group: str | None = "C") -> 
             SELECT *
             FROM `{TABLE}`
             WHERE COALESCE(ac_t_enabled, 1)=1
-              -- 必须显式标记 ac_t_type，避免误扫旧 C 策略或普通 A/C 记录。
-              AND UPPER(COALESCE(NULLIF(ac_t_type, ''), ''))=%s
+              -- C 机器人按 stock_operations.stock_type 分组，避免依赖旧 ac_t_type 标记。
+              AND UPPER(stock_type)=%s
               {symbol_filter}
             ORDER BY stock_code
             """,
@@ -490,7 +490,7 @@ def _state(row: dict) -> str:
 
 
 def _ac_type(row: dict) -> str:
-    return str(row.get("ac_t_type") or row.get("stock_type") or "").strip().upper()
+    return str(row.get("stock_type") or row.get("ac_t_type") or "").strip().upper()
 
 
 def _same_day(value) -> bool:

@@ -382,7 +382,7 @@ STRATEGY_2_DEFAULT_CONFIG = {
             "mission": "围绕长期成长核心仓做日内T，不做期权；上涨只卖新增仓，下跌临时卖核心仓时必须在收盘前恢复，避免隔夜丢失核心仓。",
             "select_rules": [
                 {"key": "c_ac_enabled", "label": "显式启用 AC_T", "value": "ac_t_enabled=1", "unit": "", "enabled": True},
-                {"key": "c_ac_type", "label": "长期成长核心仓", "value": "ac_t_type=C", "unit": "", "enabled": True},
+                {"key": "c_stock_type", "label": "长期成长核心仓", "value": "stock_type=C", "unit": "", "enabled": True},
                 {"key": "c_up_trigger", "label": "上涨做T触发", "value": 1, "unit": "%", "enabled": True},
                 {"key": "c_down_trigger", "label": "下跌做T触发", "value": 1, "unit": "%", "enabled": True},
             ],
@@ -738,6 +738,27 @@ def _holdings_payload() -> dict:
         """
     )
     holdings = list(rows or [])
+    c_operation_symbols = {
+        str(row.get("symbol") or "").strip().upper()
+        for row in fetch_all(
+            """
+            SELECT DISTINCT UPPER(stock_code) AS symbol
+            FROM stock_operations
+            WHERE UPPER(stock_type)='C'
+            """
+        )
+    }
+    if c_operation_symbols:
+        holdings = [
+            row for row in holdings
+            if str(row.get("strategy_group") or "").strip().upper() != "C"
+            or str(row.get("symbol") or "").strip().upper() in c_operation_symbols
+        ]
+    else:
+        holdings = [
+            row for row in holdings
+            if str(row.get("strategy_group") or "").strip().upper() != "C"
+        ]
     held_keys = {
         (str(row.get("symbol") or "").strip().upper(), str(row.get("strategy_group") or "").strip().upper())
         for row in holdings
@@ -754,8 +775,12 @@ def _holdings_payload() -> dict:
                        ELSE stock_type
                    END AS strategy_group,
                    stock_type,
-                   'candidate' AS status,
-                   0 AS qty,
+                   CASE
+                       WHEN COALESCE(is_bought, 0)=1 THEN 'open'
+                       WHEN UPPER(stock_type)='C' THEN 'needs_review'
+                       ELSE 'candidate'
+                   END AS status,
+                   COALESCE(qty, 0) AS qty,
                    trigger_price,
                    COALESCE(trigger_price, entry_open, close_price) AS initial_entry_price,
                    COALESCE(cost_price, trigger_price, entry_open, close_price) AS avg_entry_price,
@@ -780,8 +805,11 @@ def _holdings_payload() -> dict:
                    can_sell,
                    is_bought
             FROM stock_operations
-            WHERE COALESCE(is_bought, 0)=0
-              AND COALESCE(can_buy, 1)=1
+            WHERE (
+                    COALESCE(is_bought, 0)=0
+                    AND COALESCE(can_buy, 1)=1
+                  )
+               OR UPPER(stock_type)='C'
             ORDER BY FIELD(strategy_group, 'A','B','C','D','F'), stock_type, updated_at DESC, id DESC
             LIMIT 500
             """
