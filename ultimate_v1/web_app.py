@@ -706,7 +706,7 @@ def _holdings_payload() -> dict:
                    UPPER(stock_type) AS strategy_group,
                    UPPER(stock_type) AS stock_type,
                    CASE
-                       WHEN COALESCE(is_bought, 0)=1 OR COALESCE(qty, 0)>0 THEN 'open'
+                       WHEN COALESCE(is_bought, 0)=1 THEN 'open'
                        WHEN UPPER(stock_type)='C' THEN 'needs_review'
                        ELSE 'candidate'
                    END AS status,
@@ -741,7 +741,6 @@ def _holdings_payload() -> dict:
             WHERE UPPER(stock_type) IN ('B','C')
               AND (
                     COALESCE(is_bought, 0)=1
-                 OR COALESCE(qty, 0)>0
                  OR COALESCE(can_buy, 0)=1
                  OR UPPER(stock_type)='C'
               )
@@ -3666,7 +3665,7 @@ INDEX_HTML = r"""<!doctype html>
     function renderHoldings() {
       const holdingGroup = currentHolding === 'Q' ? 'D' : currentHolding;
       const rows = holdingGroup === 'ALL'
-        ? latestHoldings.filter(r => String(r.status || '').toLowerCase() === 'open' && Number(r.qty || 0) > 0)
+        ? latestHoldings.filter(r => Number(r.is_bought || 0) === 1)
         : latestHoldings.filter(r => String(r.strategy_group || '').toUpperCase() === holdingGroup);
       document.querySelectorAll('.holding-tab').forEach(b => b.classList.toggle('active', b.dataset.holding === currentHolding));
       const colCount = 16;
