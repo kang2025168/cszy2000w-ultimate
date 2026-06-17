@@ -276,6 +276,17 @@ def load_bot_control(conn):
     with conn.cursor() as cur:
         cur.execute("SELECT * FROM bot_control WHERE id=1 LIMIT 1;")
         row = cur.fetchone() or {}
+        cur.execute(
+            """
+            SELECT bot_name, enabled
+            FROM bot_controls
+            WHERE bot_name IN ('b_buy_bot', 'f_buy_bot')
+            """
+        )
+        process_controls = {
+            str(r.get("bot_name") or ""): int(r.get("enabled") or 0)
+            for r in (cur.fetchall() or [])
+        }
 
     _CONTROL = {
         "global_buy_enabled": int(row.get("global_buy_enabled") or 0),
@@ -284,6 +295,12 @@ def load_bot_control(conn):
         "sell_only_mode": int(row.get("sell_only_mode") or 0),
         "emergency_stop": int(row.get("emergency_stop") or 0),
     }
+    if "b_buy_bot" in process_controls:
+        _CONTROL["strategy_b_enabled"] = process_controls["b_buy_bot"]
+    if "f_buy_bot" in process_controls:
+        _CONTROL["strategy_f_enabled"] = process_controls["f_buy_bot"]
+    if _CONTROL["strategy_b_enabled"] == 1 or _CONTROL["strategy_f_enabled"] == 1:
+        _CONTROL["global_buy_enabled"] = 1
     return _CONTROL
 
 

@@ -8,6 +8,7 @@ class FakeCursor:
     def __init__(self, conn):
         self.conn = conn
         self.rowcount = 1
+        self._last_sql = ""
 
     def __enter__(self):
         return self
@@ -16,6 +17,7 @@ class FakeCursor:
         return False
 
     def execute(self, sql, args=()):
+        self._last_sql = str(sql)
         self.conn.executed.append((sql, args))
 
     def executemany(self, sql, args=()):
@@ -25,14 +27,17 @@ class FakeCursor:
         return self.conn.fetchone_result
 
     def fetchall(self):
+        if "FROM bot_controls" in self._last_sql:
+            return self.conn.bot_controls_result
         return self.conn.fetchall_result
 
 
 class FakeConn:
-    def __init__(self, fetchone_result=None, fetchall_result=None):
+    def __init__(self, fetchone_result=None, fetchall_result=None, bot_controls_result=None):
         self.executed = []
         self.fetchone_result = fetchone_result or {"n": 1}
         self.fetchall_result = fetchall_result or []
+        self.bot_controls_result = bot_controls_result or []
         self.commits = 0
 
     def cursor(self, *_args, **_kwargs):
@@ -182,6 +187,29 @@ class BCStrategyFlowTests(unittest.TestCase):
             sc._buy_one = originals["_buy_one"]
             sc.t.sleep = originals["sleep"]
             sc.random.uniform = originals["uniform"]
+
+    def test_b_buy_switch_overrides_legacy_bot_control(self):
+        import app.bots.runtime_core as tb
+
+        conn = FakeConn(
+            fetchone_result={
+                "global_buy_enabled": 0,
+                "strategy_b_enabled": 0,
+                "strategy_f_enabled": 0,
+                "sell_only_mode": 0,
+                "emergency_stop": 0,
+            },
+            bot_controls_result=[
+                {"bot_name": "b_buy_bot", "enabled": 1},
+                {"bot_name": "f_buy_bot", "enabled": 0},
+            ],
+        )
+
+        control = tb.load_bot_control(conn)
+
+        self.assertEqual(1, control["global_buy_enabled"])
+        self.assertEqual(1, control["strategy_b_enabled"])
+        self.assertEqual(0, control["strategy_f_enabled"])
 
     def test_c_idle_state_buys_extra_lot_when_up_trigger_hits(self):
         import app.strategy_ac_t as ac

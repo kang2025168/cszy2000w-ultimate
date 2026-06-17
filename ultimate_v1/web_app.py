@@ -845,6 +845,55 @@ def _state_payload() -> dict:
     }
 
 
+def _sync_buy_bot_control(bot_name: str, enabled: bool) -> None:
+    """让网页机器人开关同步旧买入总控，避免进程开着但策略仍被 bot_control 挡住。"""
+    if bot_name not in {"b_buy_bot", "f_buy_bot"}:
+        return
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_control (
+                    id INT NOT NULL PRIMARY KEY DEFAULT 1,
+                    global_buy_enabled TINYINT NOT NULL DEFAULT 1,
+                    strategy_b_enabled TINYINT NOT NULL DEFAULT 1,
+                    strategy_f_enabled TINYINT NOT NULL DEFAULT 1,
+                    sell_only_mode TINYINT NOT NULL DEFAULT 0,
+                    emergency_stop TINYINT NOT NULL DEFAULT 0,
+                    note VARCHAR(255) NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            cur.execute("INSERT IGNORE INTO bot_control (id) VALUES (1)")
+            if bot_name == "b_buy_bot":
+                cur.execute("UPDATE bot_control SET strategy_b_enabled=%s WHERE id=1", (1 if enabled else 0,))
+            elif bot_name == "f_buy_bot":
+                cur.execute("UPDATE bot_control SET strategy_f_enabled=%s WHERE id=1", (1 if enabled else 0,))
+            cur.execute(
+                """
+                SELECT bot_name, enabled
+                FROM bot_controls
+                WHERE bot_name IN ('b_buy_bot', 'f_buy_bot')
+                """
+            )
+            buy_controls = {str(r.get("bot_name") or ""): int(r.get("enabled") or 0) for r in (cur.fetchall() or [])}
+            any_buy_enabled = int(buy_controls.get("b_buy_bot", 0) == 1 or buy_controls.get("f_buy_bot", 0) == 1)
+            if any_buy_enabled:
+                cur.execute(
+                    """
+                    UPDATE bot_control
+                    SET global_buy_enabled=1,
+                        sell_only_mode=0,
+                        emergency_stop=0
+                    WHERE id=1
+                    """
+                )
+            else:
+                cur.execute("UPDATE bot_control SET global_buy_enabled=0 WHERE id=1")
+        conn.commit()
+
+
 def _exposure_payload() -> dict:
     """读取自动调仓机器人最新状态。"""
     return {
@@ -4438,6 +4487,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 enabled = bool(enabled_raw is True or str(enabled_raw).lower() in {"1", "true", "yes", "on"})
                 running = set_bot_runtime(bot_name, enabled)
+                _sync_buy_bot_control(bot_name, enabled)
                 self._send_json({"ok": True, "bot_name": bot_name, "enabled": enabled, "running": running})
             elif path == "/api/risk_settings":
                 risk_preference = str(payload.get("risk_preference") or "").strip()
