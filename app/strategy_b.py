@@ -2152,7 +2152,6 @@ def strategy_B_buy(code: str) -> bool:
         required_bp = max(
             float(B_MIN_BUYING_POWER),
             float(B_MIN_OPEN_BUYING_POWER),
-            target_notional / max(float(B_BP_USE_RATIO), 0.01),
         )
         if buying_power < required_bp:
             print(
@@ -2168,7 +2167,14 @@ def strategy_B_buy(code: str) -> bool:
             target = min(target_notional, float(B_MAX_NOTIONAL_USD), float(max_use))
         if target < target_notional:
             print(
-                f"[B BUY] {code} skip: target={target:.2f} < target_notional={target_notional:.2f}",
+                f"[B BUY] {code} downsize: target={target:.2f} < target_notional={target_notional:.2f} "
+                f"buying_power={buying_power:.2f}",
+                flush=True,
+            )
+        if target < float(B_DYNAMIC_MIN_TRADE_NOTIONAL):
+            print(
+                f"[B BUY] {code} skip: target={target:.2f} "
+                f"< min_trade_notional={float(B_DYNAMIC_MIN_TRADE_NOTIONAL):.2f}",
                 flush=True,
             )
             return False
