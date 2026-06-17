@@ -651,23 +651,24 @@ def _latest_price_meta(symbols: list[str]) -> dict[str, dict]:
         latest = _safe_float(bucket.get("latest_close"))
         prev = _safe_float(bucket.get("prev_close"))
         bucket["day_change_pct"] = (latest - prev) / prev if latest > 0 and prev > 0 else None
-    missing = [symbol for symbol in symbols if _safe_float((out.get(symbol) or {}).get("latest_close")) <= 0]
-    cached = _quote_cache(missing)
-    stale_missing = [symbol for symbol in missing if symbol not in cached]
-    _refresh_missing_quotes(stale_missing)
-    if stale_missing:
-        cached = _quote_cache(missing)
+    cached = _quote_cache(symbols)
+    stale_symbols = [symbol for symbol in symbols if symbol not in cached]
+    _refresh_missing_quotes(stale_symbols)
+    if stale_symbols:
+        cached = _quote_cache(symbols)
     for symbol, row in cached.items():
-        if _safe_float((out.get(symbol) or {}).get("latest_close")) > 0:
-            continue
         current = _safe_float(row.get("current_price"))
         prev = _safe_float(row.get("prev_close"))
-        out[symbol] = {
-            "latest_close": current,
-            "prev_close": prev,
-            "day_change_pct": row.get("day_change_pct") if row.get("day_change_pct") is not None else ((current - prev) / prev if current > 0 and prev > 0 else None),
-            "latest_date": row.get("fetched_at"),
-        }
+        if current <= 0:
+            continue
+        bucket = out.setdefault(symbol, {})
+        bucket["latest_close"] = current
+        if prev > 0:
+            bucket["prev_close"] = prev
+        else:
+            prev = _safe_float(bucket.get("prev_close"))
+        bucket["day_change_pct"] = row.get("day_change_pct") if row.get("day_change_pct") is not None else ((current - prev) / prev if current > 0 and prev > 0 else bucket.get("day_change_pct"))
+        bucket["latest_date"] = row.get("fetched_at")
     return out
 
 
@@ -680,7 +681,7 @@ def _enrich_holdings_rows(rows: list[dict]) -> list[dict]:
         symbol = str(row.get("symbol") or "").strip().upper()
         meta = price_meta.get(symbol) or {}
         latest = _safe_float(meta.get("latest_close"))
-        current = _safe_float(row.get("current_price")) or latest
+        current = latest or _safe_float(row.get("current_price"))
         prev = _safe_float(meta.get("prev_close"))
         day_change_pct = (current - prev) / prev if current > 0 and prev > 0 else meta.get("day_change_pct")
         qty = _safe_float(row.get("qty"))
@@ -700,6 +701,15 @@ def _holdings_payload() -> dict:
         """
         SELECT symbol, normalized_group AS strategy_group, stock_type, status, qty,
                initial_entry_price, avg_entry_price,
+               (
+                   SELECT so.trigger_price
+                   FROM stock_operations so
+                   WHERE UPPER(so.stock_code)=UPPER(ranked.symbol)
+                     AND UPPER(COALESCE(NULLIF(so.strategy_group,''), so.stock_type))=UPPER(ranked.normalized_group)
+                     AND so.trigger_price IS NOT NULL
+                   ORDER BY so.id DESC
+                   LIMIT 1
+               ) AS trigger_price,
                current_price, market_value, cost_basis, unrealized_pnl,
                unrealized_pnl_pct, realized_pnl, entry_time, exit_time,
                holding_days, stop_loss_price, take_profit_price, b_stage,
@@ -746,6 +756,7 @@ def _holdings_payload() -> dict:
                    stock_type,
                    'candidate' AS status,
                    0 AS qty,
+                   trigger_price,
                    COALESCE(trigger_price, entry_open, close_price) AS initial_entry_price,
                    COALESCE(cost_price, trigger_price, entry_open, close_price) AS avg_entry_price,
                    COALESCE(current_price, close_price, trigger_price, entry_close) AS current_price,
@@ -3703,9 +3714,9 @@ INDEX_HTML = r"""<!doctype html>
         ? latestHoldings.filter(r => String(r.status || '').toLowerCase() === 'open' && Number(r.qty || 0) > 0)
         : latestHoldings.filter(r => String(r.strategy_group || '').toUpperCase() === holdingGroup);
       document.querySelectorAll('.holding-tab').forEach(b => b.classList.toggle('active', b.dataset.holding === currentHolding));
-      const colCount = 15;
+      const colCount = 16;
       const blanks = Array.from({length: Math.max(0, 10 - rows.length)}, () => `<tr>${Array.from({length: colCount}, (_, i) => `<td>${i === 0 ? '&nbsp;' : ''}</td>`).join('')}</tr>`).join('');
-      document.getElementById('holdings').innerHTML = `<thead><tr>${['代码','策略组','状态','日涨跌','现价','数量','初始成本','均价','持仓市值','浮盈亏','浮盈亏%','已实现','持仓天数','更新时间','操作'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
+      document.getElementById('holdings').innerHTML = `<thead><tr>${['代码','策略组','状态','日涨跌','现价','触发价','数量','初始成本','均价','持仓市值','浮盈亏','浮盈亏%','已实现','持仓天数','更新时间','操作'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
         rows.map(r => {
           const day = Number(r.day_change_pct || 0);
           const status = String(r.status || '');
@@ -3713,7 +3724,7 @@ INDEX_HTML = r"""<!doctype html>
           const action = candidate && r.operation_id
             ? `<button class="pool-delete-btn" onclick="deleteStockPoolCandidate(${Number(r.operation_id)})">删</button>`
             : '';
-          return `<tr><td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td><td>${r.strategy_group}</td><td><span class="holding-status ${holdingStatusClass(status)}">${holdingStatusLabel(status)}</span></td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${candidate ? '--' : Number(r.qty||0).toFixed(4)}</td><td>${maybeMoney(r.initial_entry_price || r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${candidate ? '--' : money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${candidate ? '--' : pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${candidate ? '--' : money(r.realized_pnl)}</td><td>${candidate ? '--' : (r.holding_days || 0)}</td><td>${r.last_update_time || ''}</td><td>${action}</td></tr>`;
+          return `<tr><td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td><td>${r.strategy_group}</td><td><span class="holding-status ${holdingStatusClass(status)}">${holdingStatusLabel(status)}</span></td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${maybeMoney(r.trigger_price)}</td><td>${candidate ? '--' : Number(r.qty||0).toFixed(4)}</td><td>${maybeMoney(r.initial_entry_price || r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${candidate ? '--' : money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${candidate ? '--' : pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${candidate ? '--' : money(r.realized_pnl)}</td><td>${candidate ? '--' : (r.holding_days || 0)}</td><td>${r.last_update_time || ''}</td><td>${action}</td></tr>`;
         }).join('') +
         blanks + `</tbody>`;
     }
