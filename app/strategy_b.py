@@ -1904,6 +1904,46 @@ def strategy_B_rank_and_confirm(codes) -> list[str]:
         confirmed = [str(r.get("symbol") or "").upper() for r in rows if r.get("symbol")]
         if confirmed:
             print(f"[B SCORE] confirmed={','.join(confirmed)}", flush=True)
+        else:
+            pending_sql = f"""
+            SELECT
+                s.symbol,
+                COUNT(DISTINCT s.bucket_time) AS hits,
+                MAX(CASE WHEN s.bucket_time=(SELECT MAX(bucket_time) FROM `{B_SCORE_TABLE}`) THEN s.rank_no END) AS latest_rank,
+                AVG(s.score) AS avg_score
+            FROM `{B_SCORE_TABLE}` s
+            JOIN (
+                SELECT DISTINCT bucket_time
+                FROM `{B_SCORE_TABLE}`
+                WHERE bucket_time >= DATE_SUB(%s, INTERVAL %s MINUTE)
+                ORDER BY bucket_time DESC
+                LIMIT %s
+            ) b
+              ON b.bucket_time = s.bucket_time
+            GROUP BY s.symbol
+            HAVING latest_rank IS NOT NULL
+            ORDER BY latest_rank ASC, hits DESC, avg_score DESC
+            LIMIT %s;
+            """
+            with conn.cursor() as cur:
+                cur.execute(
+                    pending_sql,
+                    (
+                        bucket_time,
+                        int(B_SCORE_LOOKBACK_MINUTES),
+                        int(B_SCORE_CONFIRMATIONS),
+                        max(int(B_SCORE_TOP_N), 1),
+                    ),
+                )
+                pending_rows = cur.fetchall() or []
+            pending = [
+                f"{str(r.get('symbol') or '').upper()}:{int(r.get('hits') or 0)}/{int(B_SCORE_CONFIRMATIONS)}"
+                f"#{int(r.get('latest_rank') or 0)}"
+                for r in pending_rows
+                if r.get("symbol")
+            ]
+            if pending:
+                print(f"[B SCORE] pending={','.join(pending)}", flush=True)
         return confirmed
 
     except Exception as e:
