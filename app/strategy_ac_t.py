@@ -12,7 +12,6 @@ C = 长期成长股核心仓。
 
 import argparse
 import math
-import re
 import time as sleep_time
 import traceback
 from dataclasses import dataclass
@@ -30,7 +29,6 @@ from ultimate_v1.schema import ensure_schema
 TABLE = settings().ops_table
 PRICES_TABLE = env_str("AC_T_PRICES_TABLE", env_str("B_PRICES_TABLE", "stock_prices_pool"))
 LA_TZ = ZoneInfo(settings().timezone or "America/Los_Angeles")
-OCC_OPTION_SYMBOL_RE = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
 
 MARKET_OPEN = time(6, 30)        # 06:30-06:40 只观察开盘，不交易
 TRADE_START = time(6, 40)        # 06:40 后才允许新开做T动作
@@ -194,9 +192,8 @@ def load_ac_t_rows(conn, symbol: str | None = None, group: str | None = "C") -> 
             SELECT *
             FROM `{TABLE}`
             WHERE COALESCE(ac_t_enabled, 1)=1
-              -- C 机器人按 stock_operations.stock_type 分组，避免依赖旧 ac_t_type 标记。
-              AND UPPER(stock_type)=%s
-              AND UPPER(stock_code) NOT REGEXP '^[A-Z]{{1,6}}[0-9]{{6}}[CP][0-9]{{8}}$'
+              -- 必须显式标记 ac_t_type，避免误扫旧 C 策略或普通 A/C 记录。
+              AND UPPER(COALESCE(NULLIF(ac_t_type, ''), ''))=%s
               {symbol_filter}
             ORDER BY stock_code
             """,
@@ -493,7 +490,7 @@ def _state(row: dict) -> str:
 
 
 def _ac_type(row: dict) -> str:
-    return str(row.get("stock_type") or row.get("ac_t_type") or "").strip().upper()
+    return str(row.get("ac_t_type") or row.get("stock_type") or "").strip().upper()
 
 
 def _same_day(value) -> bool:
@@ -972,8 +969,6 @@ def process_ac_t_symbol(conn, client, row: dict) -> str:
     symbol = str(row.get("stock_code") or "").strip().upper()
     if not symbol:
         return "skip:empty_symbol"
-    if OCC_OPTION_SYMBOL_RE.match(symbol):
-        return "skip:option_symbol"
     row["stock_code"] = symbol
     ac_type = _ac_type(row)
     params = AC_T_PARAMS.get(ac_type)
