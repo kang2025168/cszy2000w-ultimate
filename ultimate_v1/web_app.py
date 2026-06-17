@@ -739,6 +739,7 @@ def _holdings_payload() -> dict:
                    is_bought
             FROM stock_operations
             WHERE UPPER(stock_type) IN ('B','C')
+              AND UPPER(stock_code) NOT REGEXP '^[A-Z]{1,6}[0-9]{6}[CP][0-9]{8}$'
               AND (
                     COALESCE(is_bought, 0)=1
                  OR COALESCE(can_buy, 0)=1

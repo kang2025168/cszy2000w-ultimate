@@ -304,6 +304,7 @@ def load_rows(conn, mode: str):
         SELECT stock_code, stock_type, is_bought, can_sell, can_buy
         FROM `{TABLE}`
         WHERE stock_type IN ('A','B','D','E','F')
+          AND UPPER(stock_code) NOT REGEXP '^[A-Z]{1,6}[0-9]{6}[CP][0-9]{8}$'
           AND is_bought=1 AND can_sell=1
         ORDER BY stock_type, stock_code
         """
@@ -312,6 +313,7 @@ def load_rows(conn, mode: str):
         SELECT stock_code, stock_type, is_bought, can_sell, can_buy
         FROM `{TABLE}`
         WHERE stock_type IN ('A','B','D','E','F')
+          AND UPPER(stock_code) NOT REGEXP '^[A-Z]{1,6}[0-9]{6}[CP][0-9]{8}$'
           AND can_buy=1 AND (is_bought IS NULL OR is_bought<>1)
         ORDER BY stock_type, stock_code
         """

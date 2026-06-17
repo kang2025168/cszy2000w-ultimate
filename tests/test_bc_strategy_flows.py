@@ -295,10 +295,26 @@ class BCStrategyFlowTests(unittest.TestCase):
         rows = ac.load_ac_t_rows(conn)
         self.assertEqual([{"stock_code": "MOCKC", "ac_t_type": "C"}], rows)
         self.assertEqual(("C",), conn.executed[-1][1])
+        self.assertIn("NOT REGEXP", conn.executed[-1][0])
 
         conn = FakeConn(fetchall_result=[])
         ac.load_ac_t_rows(conn, symbol="mockc", group="C")
         self.assertEqual(("C", "MOCKC"), conn.executed[-1][1])
+
+    def test_c_state_machine_skips_occ_option_symbols(self):
+        import app.strategy_ac_t as ac
+
+        row = {
+            "id": 1,
+            "stock_code": "MX260918C00007500",
+            "stock_type": "C",
+            "ac_t_type": "C",
+            "qty": 1,
+            "ac_t_core_qty": 1,
+            "ac_t_state": ac.STATE_IDLE,
+        }
+
+        self.assertEqual("skip:option_symbol", ac.process_ac_t_symbol(FakeConn(), FakeClient(), row))
 
 
 if __name__ == "__main__":
