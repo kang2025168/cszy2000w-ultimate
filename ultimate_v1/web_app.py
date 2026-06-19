@@ -24,6 +24,7 @@ from .config import env_str, settings
 from .db import db_conn, fetch_all
 from .d_tactical import d_tactical_payload, option_preview, submit_option_combo
 from .exposure_manager import latest_exposure_state, latest_rebalance_actions, refresh_exposure_plan
+from app.quick_trade import latest_events as latest_quick_trade_events
 from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import CAPITAL_MODE_LABELS, get_risk_state
 from .schema import ensure_schema
@@ -482,6 +483,14 @@ def _major_events_payload() -> dict:
             })
     events.sort(key=lambda e: (e.get("date") or "9999-12-31", {"宏观": 0, "IPO": 1, "财报": 2, "个股": 3}.get(e.get("type"), 9), e.get("symbol") or ""))
     return {"ok": True, "rows": events[:10], "path": str(csv_path)}
+
+
+def _quick_trade_payload() -> dict:
+    """快交易机器人最近事件，供终端式页面展示。"""
+    try:
+        return {"ok": True, "events": latest_quick_trade_events(30)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "events": []}
 
 
 def _ensure_stock_quote_cache() -> None:
@@ -1581,20 +1590,25 @@ INDEX_HTML = r"""<!doctype html>
     body.trade-focus main { max-width:none; gap:12px; }
     body.trade-focus .dash { display:block; }
     body.trade-focus .left-stack { display:block; }
-    body.trade-focus .right-stack, body.trade-focus .capital-hero, body.trade-focus .phase-popover, body.trade-focus .log-focus-panel, body.trade-focus .life-focus-panel { display:none !important; }
+    body.trade-focus .right-stack, body.trade-focus .capital-hero, body.trade-focus .phase-popover, body.trade-focus .log-focus-panel, body.trade-focus .life-focus-panel, body.trade-focus .quick-trade-panel { display:none !important; }
     body.trade-focus .holdings-panel { display:block; margin-top:12px; min-height:calc(100vh - 116px); }
     body.trade-focus .holdings-panel .scroll { max-height:calc(100vh - 238px); }
     body.trade-focus .manual-buy-entry { display:grid; }
     body.log-focus main { max-width:none; gap:12px; }
     body.log-focus .dash { display:block; }
     body.log-focus .left-stack { display:block; }
-    body.log-focus .right-stack, body.log-focus .capital-hero, body.log-focus .holdings-panel, body.log-focus .phase-popover, body.log-focus .life-focus-panel { display:none !important; }
+    body.log-focus .right-stack, body.log-focus .capital-hero, body.log-focus .holdings-panel, body.log-focus .phase-popover, body.log-focus .life-focus-panel, body.log-focus .quick-trade-panel { display:none !important; }
     body.log-focus .log-focus-panel { display:block; min-height:calc(100vh - 116px); margin-top:12px; }
     body.life-focus main { max-width:none; gap:12px; }
     body.life-focus .dash { display:block; }
     body.life-focus .left-stack { display:block; }
-    body.life-focus .right-stack, body.life-focus .capital-hero, body.life-focus .holdings-panel, body.life-focus .phase-popover, body.life-focus .log-focus-panel { display:none !important; }
+    body.life-focus .right-stack, body.life-focus .capital-hero, body.life-focus .holdings-panel, body.life-focus .phase-popover, body.life-focus .log-focus-panel, body.life-focus .quick-trade-panel { display:none !important; }
     body.life-focus .life-focus-panel { display:block; min-height:calc(100vh - 116px); margin-top:12px; }
+    body.quick-focus main { max-width:none; gap:12px; }
+    body.quick-focus .dash { display:block; }
+    body.quick-focus .left-stack { display:block; }
+    body.quick-focus .right-stack, body.quick-focus .capital-hero, body.quick-focus .holdings-panel, body.quick-focus .phase-popover, body.quick-focus .log-focus-panel, body.quick-focus .life-focus-panel { display:none !important; }
+    body.quick-focus .quick-trade-panel { display:block; min-height:calc(100vh - 116px); margin-top:12px; }
     .capital-hero { flex:0 0 auto; }
     .hero-top { display:grid; grid-template-columns:minmax(340px,1fr) minmax(300px,.78fr); gap:12px; align-items:start; padding:14px; border:1px solid #c5d5e6; border-radius:8px; background:linear-gradient(145deg,#eef5fb 0%,#f8fbff 45%,#edf4fa 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.86), 0 10px 26px rgba(15,23,42,.06); }
     .hero-top:before { content:""; grid-column:1 / -1; height:3px; border-radius:999px; background:linear-gradient(90deg,#15936a,#2563eb,#d97706); opacity:.72; margin:-2px 0 0; }
@@ -1907,6 +1921,57 @@ INDEX_HTML = r"""<!doctype html>
     .manual-quote-value { color:var(--ink); font-size:12px; font-weight:950; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .manual-quote-card.primary .manual-quote-value { color:#08734f; }
     .manual-quote-card.fresh { animation:freshPulse .55s ease-out 1; }
+    .quick-trade-panel { display:none; padding:10px; background:#030407; border-color:#12151d; color:#c7ceda; box-shadow:0 18px 44px rgba(2,6,23,.34); }
+    .quick-terminal { display:grid; grid-template-rows:auto 1.1fr auto 1.35fr auto auto; gap:4px; min-height:calc(100vh - 144px); font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing:.01em; }
+    .quick-tape { display:flex; align-items:center; gap:14px; min-height:28px; padding:5px 8px; border:1px solid #171922; background:#09080d; overflow:hidden; color:#6f7480; font-size:11px; text-transform:uppercase; }
+    .quick-tape b { color:#d8dee8; }
+    .quick-tape .pos { color:#8df7a2; }
+    .quick-tape .neg { color:#ff8585; }
+    .quick-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:4px; min-height:180px; }
+    .quick-card { border:1px solid #171922; border-radius:0; background:#07070c; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
+    .quick-card-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:7px 8px; border-bottom:1px solid #171922; color:#8f96a5; font-size:11px; font-weight:950; text-transform:uppercase; }
+    .quick-card-body { padding:9px; display:grid; gap:8px; }
+    .quick-terminal-body { min-height:122px; white-space:pre-wrap; color:#737b8b; font-size:11px; line-height:1.55; }
+    .quick-terminal-body b { color:#dbe4f1; }
+    .quick-terminal-body .profit { color:#d8f99d; }
+    .quick-terminal-body .loss { color:#ff9a9a; }
+    .quick-pnl-grid { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); border:1px solid #171922; border-top:0; background:#07070c; }
+    .quick-pnl-box { min-height:62px; display:grid; place-items:center; gap:3px; padding:8px; border-right:1px solid #171922; }
+    .quick-pnl-box:last-child { border-right:0; }
+    .quick-pnl-label { color:#6f7480; font-size:10px; font-weight:950; text-transform:uppercase; }
+    .quick-big { color:#f3f6fb; font-size:21px; font-weight:950; line-height:1; letter-spacing:0; }
+    .quick-profit { color:#f4f4f5; }
+    .quick-loss { color:#ff8585; }
+    .quick-trade-form { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:5px; align-items:center; }
+    #quickLimitPrice { grid-column:1 / -1; }
+    .quick-symbol-row { display:contents; }
+    .quick-input, .quick-select { width:100%; height:28px; border:1px solid #252833; border-radius:0; background:#080a10; color:#e5e7eb; padding:0 8px; font-size:11px; font-weight:900; outline:0; font-family:inherit; }
+    .quick-input:focus, .quick-select:focus { border-color:#6b7280; box-shadow:0 0 0 1px rgba(255,255,255,.08); }
+    .quick-quote-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:4px; }
+    .quick-quote { min-height:44px; display:grid; align-content:center; gap:3px; padding:7px; border:1px solid #171922; background:#080a10; }
+    .quick-label { color:#676d7a; font-size:10px; font-weight:950; text-transform:uppercase; }
+    .quick-value { color:#e7edf7; font-size:13px; font-weight:950; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .quick-actions { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:4px; }
+    .quick-action { height:28px; border:1px solid #252833; border-radius:0; color:#d7dce7; background:#0b0e15; font-size:11px; font-weight:950; font-family:inherit; text-transform:uppercase; }
+    .quick-action.buy { color:#d8f99d; }
+    .quick-action.sell { color:#ff9a9a; }
+    .quick-action.preview { background:#1d4ed8; }
+    .quick-action:active { transform:scale(.98); }
+    .quick-main { display:grid; grid-template-columns:1.1fr .9fr; gap:4px; min-height:0; }
+    .quick-stack { display:grid; gap:4px; align-content:stretch; min-width:0; }
+    .quick-table-wrap { overflow:auto; max-height:calc(100vh - 562px); min-height:220px; border-top:1px solid #171922; }
+    .quick-table { width:100%; border:0; background:#05070b; }
+    .quick-table th, .quick-table td { border-bottom:1px solid #171922; background:transparent; color:#aeb7c7; font-size:11px; padding:6px 7px; }
+    .quick-table th { color:#747b89; background:#090b11; text-transform:uppercase; }
+    .quick-log { min-height:220px; max-height:calc(100vh - 562px); overflow:auto; padding:10px; background:#05070b; color:#9ca6b8; border-top:1px solid #171922; white-space:pre-wrap; line-height:1.55; font-size:11px; }
+    .quick-hint { color:#d8f99d; font-size:11px; font-weight:900; line-height:1.45; }
+    .quick-analyst { display:grid; grid-template-columns:92px minmax(0,1fr); gap:6px; align-items:center; padding:7px 8px; border:1px solid #171922; background:#05070b; color:#777e8d; font-size:11px; }
+    .quick-analyst-input { height:28px; border:0; border-left:1px solid #171922; background:transparent; color:#d6dce8; padding:0 10px; outline:0; font:inherit; }
+    .quick-controls { display:flex; align-items:center; gap:6px; min-height:32px; padding:5px 8px; border:1px solid #171922; background:#05070b; color:#7d8492; font-size:11px; }
+    .quick-control-btn { height:24px; min-width:66px; border:1px solid #252833; border-radius:0; background:#10131b; color:#d4d9e4; font:inherit; font-weight:950; }
+    .quick-control-btn.stop { background:#d9d9d9; color:#05070b; }
+    .quick-control-btn.danger { color:#ff9a9a; }
+    .quick-equity-canvas { width:100%; height:220px; display:block; background:#05070b; border-top:1px solid #171922; }
     .holding-head { gap:16px; margin:6px 0 14px; min-height:42px; }
     .holding-left-tools { display:flex; align-items:center; gap:12px; min-width:0; flex:1 1 auto; }
     .holding-left-tools h2 { flex:0 0 6em; width:6em; margin:0; white-space:nowrap; }
@@ -2046,7 +2111,7 @@ INDEX_HTML = r"""<!doctype html>
       .annual-panel { order:2; }
       .chart-panel { order:3; }
       .holdings-panel { order:5; }
-      .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .annual-panel { width:100%; }
+      .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .annual-panel, .quick-trade-panel { width:100%; }
       .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:center; }
       .brand-lockup { gap:8px; flex:1 1 auto; }
       .brand-logo { width:38px; height:38px; border-radius:8px; }
@@ -2109,6 +2174,17 @@ INDEX_HTML = r"""<!doctype html>
       .trade-records-scroll { height:260px; overflow:auto; }
       .trade-records table { min-width:980px; }
       .trade-records th, .trade-records td { padding:8px 7px; font-size:11px; }
+      .quick-trade-panel { margin-top:12px; padding:10px; border-radius:10px; }
+      .quick-terminal { min-height:calc(100vh - 126px); grid-template-rows:auto auto auto; }
+      .quick-tape { overflow:auto; white-space:nowrap; }
+      .quick-grid, .quick-main { grid-template-columns:1fr; }
+      .quick-pnl-grid { grid-template-columns:repeat(2, minmax(0,1fr)); }
+      .quick-card-body { padding:10px; }
+      .quick-big { font-size:23px; }
+      .quick-table-wrap, .quick-log { max-height:320px; }
+      .quick-trade-form, .quick-actions { grid-template-columns:1fr; }
+      .quick-symbol-row { display:grid; grid-template-columns:1fr; }
+      .quick-equity-canvas { height:240px; }
       .life-layout { grid-template-columns:1fr; }
       .life-head { flex-direction:column; }
       .five-year-head { flex-direction:column; align-items:stretch; }
@@ -2174,6 +2250,7 @@ INDEX_HTML = r"""<!doctype html>
           <button class="trade-focus-btn active" id="overviewFocusBtn" onclick="showOverview()">总览</button>
           <button class="trade-focus-btn" id="lifeFocusBtn" onclick="toggleLifeFocus()">生活</button>
           <button class="trade-focus-btn" id="tradeFocusBtn" onclick="toggleTradeFocus()">交易</button>
+          <button class="trade-focus-btn" id="quickFocusBtn" onclick="toggleQuickFocus()">快交易</button>
           <button class="trade-focus-btn" id="logFocusBtn" onclick="toggleLogFocus()">日志</button>
           <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
           <button class="refresh-btn" onclick="loadAll()">刷新</button>
@@ -2284,6 +2361,96 @@ INDEX_HTML = r"""<!doctype html>
             </div>
             <canvas id="equityChart" width="760" height="260"></canvas>
           </div>
+        </div>
+      </div>
+    </section>
+    <section class="panel quick-trade-panel">
+      <div class="quick-terminal">
+        <div class="quick-tape" id="quickTape">
+          <span><b>ALGO TERMINAL</b></span>
+          <span>BTC <b id="quickTapeBtc">--</b></span>
+          <span>QQQ <b id="quickTapeQqq">--</b></span>
+          <span>B 池 <b id="quickTapeB">--</b></span>
+          <span>C 池 <b id="quickTapeC">--</b></span>
+          <span>VIX <b id="quickTapeVix">--</b></span>
+        </div>
+        <div class="quick-grid">
+          <div class="quick-card">
+            <div class="quick-card-head"><span>MACD · B BREAKOUT</span><span id="quickBStatus">--</span></div>
+            <div class="quick-card-body">
+              <div class="quick-terminal-body" id="quickBSignal">等待 B 买入机器人信号。</div>
+            </div>
+          </div>
+          <div class="quick-card">
+            <div class="quick-card-head"><span>RSI + VWAP · C CORE/T</span><span id="quickCStatus">--</span></div>
+            <div class="quick-card-body">
+              <div class="quick-terminal-body" id="quickCSignal">C 对应长期交易和 AC 做T。</div>
+            </div>
+          </div>
+          <div class="quick-card">
+            <div class="quick-card-head"><span>ORDER TICKET</span><span id="quickQuoteTime">--</span></div>
+            <div class="quick-card-body">
+              <div class="quick-symbol-row">
+                <input class="quick-input" id="quickSymbol" placeholder="输入股票代码" autocomplete="off" oninput="handleQuickSymbolInput(this)" />
+                <select class="quick-select" id="quickPool">
+                  <option value="B">B</option>
+                  <option value="C" selected>C</option>
+                </select>
+              </div>
+              <div class="quick-quote-grid">
+                <div class="quick-quote"><span class="quick-label">LAST</span><span class="quick-value" id="quickLast">--</span></div>
+                <div class="quick-quote"><span class="quick-label">BID</span><span class="quick-value" id="quickBid">--</span></div>
+                <div class="quick-quote"><span class="quick-label">ASK</span><span class="quick-value" id="quickAsk">--</span></div>
+              </div>
+              <div class="quick-trade-form">
+                <select class="quick-select" id="quickSize">
+                  <option value="1/4">1/4 SIZE</option>
+                  <option value="1/3">1/3 SIZE</option>
+                  <option value="1/2">1/2 SIZE</option>
+                  <option value="full">SELL FULL</option>
+                </select>
+                <select class="quick-select" id="quickOrderType" onchange="toggleQuickLimit()">
+                  <option value="market" selected>MARKET</option>
+                  <option value="limit">LIMIT</option>
+                </select>
+                <input class="quick-input" id="quickLimitPrice" type="number" min="0" step="0.01" placeholder="LIMIT" />
+                <button class="quick-action buy" onclick="previewQuickOrder('buy')">BUY</button>
+                <button class="quick-action sell" onclick="previewQuickOrder('sell')">SELL</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="quick-pnl-grid">
+          <div class="quick-pnl-box"><div class="quick-pnl-label">B PNL</div><div class="quick-big quick-profit" id="quickBPnl">--</div></div>
+          <div class="quick-pnl-box"><div class="quick-pnl-label">C PNL</div><div class="quick-big quick-profit" id="quickCPnl">--</div></div>
+          <div class="quick-pnl-box"><div class="quick-pnl-label">TOTAL PNL</div><div class="quick-big" id="quickTotalPnl">--</div></div>
+          <div class="quick-pnl-box"><div class="quick-pnl-label">EQUITY</div><div class="quick-big" id="quickEquity">--</div></div>
+        </div>
+        <div class="quick-main">
+          <div class="quick-stack">
+            <div class="quick-card">
+              <div class="quick-card-head"><span>RECENT EXECUTIONS</span><span id="quickTradeCount">--</span></div>
+              <div class="quick-table-wrap"><table class="quick-table" id="quickExecutionsTable"></table></div>
+            </div>
+          </div>
+          <div class="quick-card">
+            <div class="quick-card-head"><span>EQUITY CURVE</span><span id="quickHoldingCount">--</span></div>
+            <canvas class="quick-equity-canvas" id="quickEquityCurve" width="740" height="260"></canvas>
+          </div>
+        </div>
+        <div class="quick-card">
+          <div class="quick-card-head"><span>AI ANALYST</span><span id="quickAnalystStatus">READY</span></div>
+          <div class="quick-analyst">
+            <span>QUERY</span>
+            <input class="quick-analyst-input" id="quickAnalystInput" placeholder="Analyze session / Assess risk / Suggest strategy adjustments..." />
+          </div>
+          <pre class="quick-log" id="quickLog">等待刷新...</pre>
+        </div>
+        <div class="quick-controls">
+          <span id="quickRunState">● RUNNING</span>
+          <button class="quick-control-btn stop" onclick="toggleBot('b_buy_bot', false)">■ STOP</button>
+          <button class="quick-control-btn" onclick="loadAll()">↻ RESET</button>
+          <button class="quick-control-btn danger" onclick="openClearModal()">× EMERGENCY STOP</button>
         </div>
       </div>
     </section>
@@ -2611,6 +2778,9 @@ INDEX_HTML = r"""<!doctype html>
     let toolsPage = 'donut';
     let latestHoldings = [];
     let latestMarketMeta = [];
+    let latestTradeRecords = [];
+    let latestQuickTradeEvents = [];
+    let latestEquityCurve = null;
     let latestBotHeartbeats = [];
     let latestBotControls = [];
     let dOptionSymbol = '';
@@ -2621,6 +2791,9 @@ INDEX_HTML = r"""<!doctype html>
     let dOptionScrollMode = 'preserve';
     let manualBuyQuoteTimer = null;
     let manualQuoteInterval = null;
+    let quickQuoteTimer = null;
+    let quickQuoteInterval = null;
+    let latestQuickQuote = null;
     let latestManualQuote = null;
     let manualOrderPreview = null;
     let strategy2Config = null;
@@ -2790,7 +2963,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     function renderBots(bots, controls) {
       const botPages = [
-        ['rebalance_bot','b_buy_bot','b_sell_bot'],
+        ['rebalance_bot','quick_trade_bot','b_buy_bot','b_sell_bot'],
         ['dashboard_bot','risk_bot','ac_bot'],
         ['f_buy_bot','f_sell_bot']
       ];
@@ -2843,11 +3016,14 @@ INDEX_HTML = r"""<!doctype html>
       const trade = mode === 'trade';
       const logs = mode === 'logs';
       const life = mode === 'life';
+      const quick = mode === 'quick';
       document.body.classList.toggle('trade-focus', trade);
       document.body.classList.toggle('log-focus', logs);
       document.body.classList.toggle('life-focus', life);
-      document.getElementById('overviewFocusBtn')?.classList.toggle('active', !trade && !logs && !life);
+      document.body.classList.toggle('quick-focus', quick);
+      document.getElementById('overviewFocusBtn')?.classList.toggle('active', !trade && !logs && !life && !quick);
       document.getElementById('tradeFocusBtn')?.classList.toggle('active', trade);
+      document.getElementById('quickFocusBtn')?.classList.toggle('active', quick);
       document.getElementById('logFocusBtn')?.classList.toggle('active', logs);
       document.getElementById('lifeFocusBtn')?.classList.toggle('active', life);
     }
@@ -2857,6 +3033,10 @@ INDEX_HTML = r"""<!doctype html>
         clearInterval(manualQuoteInterval);
         manualQuoteInterval = null;
       }
+      if (quickQuoteInterval) {
+        clearInterval(quickQuoteInterval);
+        quickQuoteInterval = null;
+      }
       document.getElementById('phasePopover')?.classList.remove('show');
     }
     function toggleTradeFocus() {
@@ -2864,11 +3044,24 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('phasePopover')?.classList.remove('show');
       setLowerView('holdings');
     }
+    function toggleQuickFocus() {
+      setFocusMode('quick');
+      if (manualQuoteInterval) {
+        clearInterval(manualQuoteInterval);
+        manualQuoteInterval = null;
+      }
+      document.getElementById('phasePopover')?.classList.remove('show');
+      renderQuickTrade();
+    }
     function toggleLogFocus() {
       setFocusMode('logs');
       if (manualQuoteInterval) {
         clearInterval(manualQuoteInterval);
         manualQuoteInterval = null;
+      }
+      if (quickQuoteInterval) {
+        clearInterval(quickQuoteInterval);
+        quickQuoteInterval = null;
       }
       document.getElementById('phasePopover')?.classList.remove('show');
       loadBotLogs();
@@ -2878,6 +3071,10 @@ INDEX_HTML = r"""<!doctype html>
       if (manualQuoteInterval) {
         clearInterval(manualQuoteInterval);
         manualQuoteInterval = null;
+      }
+      if (quickQuoteInterval) {
+        clearInterval(quickQuoteInterval);
+        quickQuoteInterval = null;
       }
       document.getElementById('phasePopover')?.classList.remove('show');
       loadFiveYearPlan();
@@ -3062,6 +3259,7 @@ INDEX_HTML = r"""<!doctype html>
     function renderBotLogs(payload) {
       const groupPriority = name => {
         const n = String(name || '').toLowerCase();
+        if (n === 'quick_trade_bot') return 5;
         if (n.startsWith('b_')) return 10;
         if (n === 'ac_bot') return 20;
         if (n.startsWith('d_')) return 90;
@@ -3077,6 +3275,7 @@ INDEX_HTML = r"""<!doctype html>
       };
       const groupLabel = name => {
         const n = String(name || '').toLowerCase();
+        if (n === 'quick_trade_bot') return '快交易';
         if (n.startsWith('b_')) return 'B 策略';
         if (n.startsWith('d_')) return 'D 策略';
         if (n === 'ac_bot') return 'AC 做T';
@@ -3141,7 +3340,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     function hasImportantLogWindow(row) {
       const name = String(row?.bot_name || '').toLowerCase();
-      return name.startsWith('b_') || name === 'ac_bot';
+      return name.startsWith('b_') || name === 'ac_bot' || name === 'quick_trade_bot';
     }
     function importantBotLogLines(row) {
       const include = /(符合|买入|卖出|需要卖出|止损|止盈|下单|开仓|平仓|减仓|加仓|buy\b|sell\b|order|submit|signal|candidate|trigger|stop|take profit)/i;
@@ -3389,6 +3588,187 @@ INDEX_HTML = r"""<!doctype html>
       renderTradeRecords(await api('/api/trade_records'));
       await loadAll();
     }
+    function setQuickQuote(last='--', bid='--', ask='--') {
+      const lastEl = document.getElementById('quickLast');
+      if (!lastEl) return;
+      document.getElementById('quickLast').textContent = last;
+      document.getElementById('quickBid').textContent = bid;
+      document.getElementById('quickAsk').textContent = ask;
+      document.getElementById('quickQuoteTime').textContent = new Date().toLocaleTimeString();
+    }
+    function handleQuickSymbolInput(input) {
+      input.value = input.value.toUpperCase().replace(/[^A-Z.]/g,'');
+      const symbol = input.value.trim();
+      if (quickQuoteInterval) {
+        clearInterval(quickQuoteInterval);
+        quickQuoteInterval = null;
+      }
+      latestQuickQuote = null;
+      setQuickQuote(symbol ? '加载中' : '--', '--', '--');
+      if (quickQuoteTimer) clearTimeout(quickQuoteTimer);
+      if (!symbol) return;
+      quickQuoteTimer = setTimeout(() => {
+        loadQuickQuote(symbol, true);
+        quickQuoteInterval = setInterval(() => loadQuickQuote(symbol, false), 3000);
+      }, 300);
+    }
+    async function loadQuickQuote(symbol, seedLimit=false) {
+      try {
+        const payload = await api(`/api/stock_quote?symbol=${encodeURIComponent(symbol)}`);
+        const current = (document.getElementById('quickSymbol')?.value || '').trim().toUpperCase();
+        if (current !== symbol) return;
+        if (!payload.ok) {
+          setQuickQuote('--', '--', '--');
+          return;
+        }
+        latestQuickQuote = payload;
+        setQuickQuote(
+          Number(payload.last || 0) > 0 ? money(payload.last) : '--',
+          Number(payload.bid || 0) > 0 ? money(payload.bid) : '--',
+          Number(payload.ask || 0) > 0 ? money(payload.ask) : '--'
+        );
+        if (seedLimit && Number(payload.limit_price || payload.last || 0) > 0) {
+          const input = document.getElementById('quickLimitPrice');
+          if (input && !input.value) input.value = Number(payload.limit_price || payload.last || 0).toFixed(2);
+        }
+      } catch (_) {
+        setQuickQuote('--', '--', '--');
+      }
+    }
+    function toggleQuickLimit() {
+      const type = document.getElementById('quickOrderType')?.value || 'market';
+      const input = document.getElementById('quickLimitPrice');
+      if (type === 'limit' && input && !input.value) {
+        const n = Number(latestQuickQuote?.limit_price || latestQuickQuote?.last || 0);
+        if (n > 0) input.value = n.toFixed(2);
+      }
+    }
+    function quickOrderPayload(side, execute=false) {
+      const symbol = (document.getElementById('quickSymbol')?.value || '').trim().toUpperCase();
+      if (!symbol) {
+        alert('先输入股票代码');
+        return null;
+      }
+      const sizeEl = document.getElementById('quickSize');
+      let size = sizeEl?.value || '1/4';
+      if (side === 'buy' && size === 'full') size = '1/2';
+      return {
+        symbol,
+        side,
+        execute,
+        order_type: document.getElementById('quickOrderType')?.value || 'market',
+        pool: document.getElementById('quickPool')?.value || 'C',
+        size,
+        limit_price: document.getElementById('quickLimitPrice')?.value || ''
+      };
+    }
+    async function previewQuickOrder(side) {
+      const req = quickOrderPayload(side, false);
+      if (!req) return;
+      const result = await postJson('/api/manual_stock_order', req);
+      if (!result.ok) { alert(result.error || '预览失败'); return; }
+      manualOrderPreview = req;
+      document.getElementById('manualOrderTitle').textContent = `${side === 'buy' ? '快速买入' : '快速卖出'}预览`;
+      document.getElementById('manualOrderBody').textContent = manualOrderText(result);
+      document.getElementById('manualOrderExecuteBtn').textContent = `确认执行${side === 'buy' ? '买入' : '卖出'}`;
+      document.getElementById('manualOrderModal').classList.add('show');
+    }
+    function renderQuickTrade() {
+      const root = document.querySelector('.quick-trade-panel');
+      if (!root) return;
+      const cap = window.latestCapitalPayload || {};
+      const risk = window.latestRiskPayload || {};
+      const availableB = Number(cap.available?.B || 0);
+      const availableC = Number(cap.available?.C || 0);
+      const qqqText = qqqRiskValue(risk);
+      const vixText = Number(risk.vix || 0) > 0 ? Number(risk.vix || 0).toFixed(1) : '--';
+      const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+      const setHtml = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+      setText('quickTapeQqq', qqqText);
+      setText('quickTapeVix', vixText);
+      setText('quickTapeB', money(availableB));
+      setText('quickTapeC', money(availableC));
+      setText('quickTapeBtc', '--');
+      const bOn = latestBotControls.find(b => b.bot_name === 'b_buy_bot' && Number(b.enabled) === 1);
+      const cOn = latestBotControls.find(b => b.bot_name === 'ac_bot' && Number(b.enabled) === 1);
+      setText('quickBStatus', bOn ? 'RUNNING' : 'STOPPED');
+      setText('quickCStatus', cOn ? 'RUNNING' : 'STOPPED');
+      const toneText = risk.market_trend || '--';
+      const bHoldings = (latestHoldings || []).filter(r => String(r.strategy_group || '').toUpperCase() === 'B');
+      const cHoldings = (latestHoldings || []).filter(r => String(r.strategy_group || '').toUpperCase() === 'C');
+      const sumPnl = rows => rows.reduce((s, r) => s + Number(r.unrealized_pl || 0), 0);
+      const bPnl = sumPnl(bHoldings);
+      const cPnl = sumPnl(cHoldings);
+      const totalPnl = bPnl + cPnl;
+      const equity = Number(cap.equity || 0);
+      setText('quickBPnl', money(bPnl));
+      setText('quickCPnl', money(cPnl));
+      setText('quickTotalPnl', money(totalPnl));
+      setText('quickEquity', equity > 0 ? money(equity) : '--');
+      ['quickBPnl','quickCPnl','quickTotalPnl'].forEach(id => {
+        const el = document.getElementById(id);
+        const value = id === 'quickBPnl' ? bPnl : id === 'quickCPnl' ? cPnl : totalPnl;
+        if (el) el.className = `quick-big ${value < 0 ? 'quick-loss' : 'quick-profit'}`;
+      });
+      setHtml('quickBSignal', [
+        '<b>MACD div</b>',
+        `Market trend: ${esc(toneText)}`,
+        `QQQ: ${esc(qqqText)}   VIX: ${esc(vixText)}`,
+        `LIMIT BUY B ${money(Math.max(availableB / 2, 0))}`,
+        `Available: <span class="profit">${money(availableB)}</span>`,
+        'Death: stop required'
+      ].join('\n'));
+      setHtml('quickCSignal', [
+        '<b>RSI + VWAP</b>',
+        `Risk pref: ${esc(risk.risk_preference || '--')}`,
+        `Target exposure: ${Number(risk.recommended_exposure || 0) ? (Number(risk.recommended_exposure || 0) * 100).toFixed(0) + '%' : '--'}`,
+        `C CORE/T BP: <span class="profit">${money(availableC)}</span>`,
+        'Fetching QQQ/holdings...',
+        'VWAP aligned'
+      ].join('\n'));
+      const holdingRows = (latestHoldings || [])
+        .filter(r => Number(r.is_bought || 0) === 1)
+        .slice(0, 12);
+      setText('quickHoldingCount', `${holdingRows.length} 个`);
+      const tradeRows = (latestTradeRecords || []).slice(0, 18);
+      const quickRows = (latestQuickTradeEvents || []).slice(0, 18);
+      setText('quickTradeCount', `${tradeRows.length} 条`);
+      const execTable = document.getElementById('quickExecutionsTable');
+      if (execTable) {
+        const sourceRows = quickRows.length ? quickRows : tradeRows;
+        execTable.innerHTML = sourceRows.length
+          ? `<thead><tr>${['BOT','TX HASH','SIDE','SIZE','PRICE','STATUS'].map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${sourceRows.map(r => {
+              const side = String(r.action || r.side || '').toUpperCase();
+              const sideClass = side === 'SELL' || side === 'STOP' ? 'quick-loss' : 'quick-profit';
+              const tx = String(r.order_id || r.note || '0x' + String(r.symbol || '----').padEnd(8, '0')).slice(0, 16);
+              const price = Number(r.limit_price || r.price || 0) > 0 ? money(r.limit_price || r.price) : '--';
+              return `<tr><td>${esc(r.stock_type || r.strategy_group || 'BOT')}</td><td>${esc(tx)}</td><td class="${sideClass}">${esc(side || '--')}</td><td>${Number(r.qty || 0).toFixed(2)}</td><td>${price}</td><td>${esc(r.status || r.reason || '--')}</td></tr>`;
+            }).join('')}</tbody>`
+          : `<tbody><tr><td class="small-muted" style="padding:18px;">NO EXECUTIONS</td></tr></tbody>`;
+      }
+      const log = document.getElementById('quickLog');
+      if (log) {
+        const prompt = `Analyze session / Assess risk / Suggest strategy adjustments...\n`;
+        const sourceRows = quickRows.length ? quickRows : tradeRows;
+        log.textContent = prompt + (sourceRows.length
+          ? sourceRows.slice(0, 10).map(r => {
+              const timeText = String(r.created_at || r.event_time || '').slice(11,19) || '--';
+              const side = String(r.action || r.side || '').toUpperCase();
+              const price = Number(r.limit_price || r.price || 0) > 0 ? money(r.limit_price || r.price) : '--';
+              return `${timeText} | ${side.padEnd(5)} | ${(r.stock_type || r.strategy_group || '--').padEnd(3)} | ${(r.symbol || '--').padEnd(8)} | qty=${Number(r.qty || 0).toFixed(2)} | ${price} | ${r.status || r.reason || '--'}`;
+            }).join('\n')
+          : 'NO SIGNALS YET');
+      }
+      setText('quickRunState', bOn || cOn ? '● RUNNING' : '● STOPPED');
+      drawQuickEquityCurve(latestEquityCurve);
+    }
+    function fillQuickSymbol(symbol) {
+      const input = document.getElementById('quickSymbol');
+      const value = String(symbol || '').trim().toUpperCase();
+      if (!input || !value) return;
+      input.value = value;
+      handleQuickSymbolInput(input);
+    }
     function isMobileView() {
       return window.matchMedia('(max-width: 760px)').matches;
     }
@@ -3418,7 +3798,6 @@ INDEX_HTML = r"""<!doctype html>
         canvas.height = Math.floor(rect.height * window.devicePixelRatio);
         ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
         }
-        
         const w = rect.width || 760;
         const h = rect.height || 260;
         
@@ -3527,13 +3906,69 @@ INDEX_HTML = r"""<!doctype html>
         }
         
         // 数据点太少时提示
-        if (points.length === 1) {
-        ctx.fillStyle = '#667085';
-        ctx.font = '12px system-ui';
+	        if (points.length === 1) {
+	        ctx.fillStyle = '#667085';
+	        ctx.font = '12px system-ui';
+	        ctx.textAlign = 'center';
+	        ctx.fillText('当前只有 1 个账户快照，等待更多数据形成曲线', w / 2, h / 2 + 22);
+	        }
+	        }
+    function drawQuickEquityCurve(curve) {
+      const canvas = document.getElementById('quickEquityCurve');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = Math.max(320, rect.width || 740);
+      const cssH = Math.max(180, rect.height || 220);
+      canvas.width = Math.floor(cssW * dpr);
+      canvas.height = Math.floor(cssH * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cssW, cssH);
+      ctx.fillStyle = '#05070b';
+      ctx.fillRect(0, 0, cssW, cssH);
+      const rows = (curve?.rows || []).filter(r => Number(r.equity || r.portfolio_value || 0) > 0).slice(-80);
+      const pad = {l:48, r:14, t:18, b:24};
+      const w = cssW - pad.l - pad.r;
+      const h = cssH - pad.t - pad.b;
+      ctx.strokeStyle = '#171922';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = pad.t + h * i / 4;
+        ctx.beginPath();
+        ctx.moveTo(pad.l, y);
+        ctx.lineTo(cssW - pad.r, y);
+        ctx.stroke();
+      }
+      if (!rows.length) {
+        ctx.fillStyle = '#747b89';
+        ctx.font = '12px ui-monospace, Menlo, monospace';
         ctx.textAlign = 'center';
-        ctx.fillText('当前只有 1 个账户快照，等待更多数据形成曲线', w / 2, h / 2 + 22);
-        }
-        }
+        ctx.fillText('WAITING FOR EQUITY SNAPSHOTS', cssW / 2, cssH / 2);
+        return;
+      }
+      const values = rows.map(r => Number(r.equity || r.portfolio_value || 0));
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const span = Math.max(max - min, 1);
+      ctx.strokeStyle = '#8a8d96';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      values.forEach((v, i) => {
+        const x = pad.l + (rows.length === 1 ? w : w * i / (rows.length - 1));
+        const y = pad.t + h - ((v - min) / span) * h;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      ctx.fillStyle = '#8a8d96';
+      ctx.font = '11px ui-monospace, Menlo, monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(money(max), 4, pad.t + 4);
+      ctx.fillText(money(min), 4, pad.t + h);
+      ctx.textAlign = 'right';
+      ctx.fillText('SHARPE --  PF --', cssW - 10, cssH - 8);
+    }
     function renderTodayPnl(curve) {
       const rows = curve.rows || [];
       const today = new Date();
@@ -3551,6 +3986,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     function renderTradeRecords(payload) {
       const rows = (payload && payload.ok ? payload.rows : []) || [];
+      latestTradeRecords = rows;
+      renderQuickTrade();
       const countEl = document.getElementById('tradeRecordsCount');
       const tableEl = document.getElementById('tradeRecords');
       countEl.textContent = `${rows.length} 条`;
@@ -3582,7 +4019,9 @@ INDEX_HTML = r"""<!doctype html>
         api(`/api/equity_curve?period=${period}`),
         api('/api/trade_records')
       ]);
+      latestEquityCurve = curve;
       drawChart(curve);
+      drawQuickEquityCurve(curve);
       renderTodayPnl(curve);
       renderTradeRecords(trades);
     }
@@ -4088,7 +4527,7 @@ INDEX_HTML = r"""<!doctype html>
       const refreshBtn = document.querySelector('.refresh-btn');
       if (refreshBtn) refreshBtn.classList.add('loading');
       try {
-      const [cap, risk, holdings, state, phase, dTactical] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase'), api('/api/d_tactical')]);
+      const [cap, risk, holdings, state, phase, dTactical, quickTrade] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase'), api('/api/d_tactical'), api('/api/quick_trade')]);
       if (cap.ok) {
         window.latestCapitalPayload = cap;
         document.getElementById('modeValue').textContent = cap.mode_label || cap.mode;
@@ -4103,6 +4542,7 @@ INDEX_HTML = r"""<!doctype html>
         document.getElementById('modeValue').textContent = 'ERROR';
       }
       const tone = riskTone(risk);
+      window.latestRiskPayload = risk;
       const riskSelect = document.getElementById('riskPreferenceSelect');
       if (riskSelect) riskSelect.value = risk.risk_preference || '中性';
       const marketExposure = Number(risk.recommended_exposure || 0);
@@ -4121,12 +4561,14 @@ INDEX_HTML = r"""<!doctype html>
       window.latestBotProcesses = state.bot_processes || [];
       latestBotHeartbeats = state.bot_heartbeats || [];
       latestBotControls = state.bot_controls || [];
+      latestQuickTradeEvents = quickTrade.events || [];
       renderBots(latestBotHeartbeats, latestBotControls);
       renderPhase(phase);
       if (dTactical.ok) renderDTactical(dTactical);
       latestHoldings = holdings.rows || [];
       updateManualHeldQty();
       renderHoldings();
+      renderQuickTrade();
       renderLowerView();
       if (lowerView === 'market') await loadMarketCategories(currentCategory);
       if (lowerView === 'strategy') await loadStrategy2Config();
@@ -4402,6 +4844,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_holdings_payload())
             elif path == "/api/major_events":
                 self._send_json(_major_events_payload())
+            elif path == "/api/quick_trade":
+                self._send_json(_quick_trade_payload())
             elif path == "/api/d_tactical":
                 self._send_json(d_tactical_payload())
             elif path == "/api/d_option_preview":

@@ -24,6 +24,7 @@ BOT_SPECS: dict[str, BotSpec] = {
     "dashboard_bot": BotSpec("app.bots.dashboard_bot", ("--loop", "--interval", str(settings().position_sync_interval_sec))),
     "risk_bot": BotSpec("app.bots.risk_bot", ("--loop", "--interval", "60")),
     "rebalance_bot": BotSpec("app.bots.rebalance_bot", ("--loop", "--interval", environ.get("REBALANCE_INTERVAL_SEC", "900"))),
+    "quick_trade_bot": BotSpec("app.bots.quick_trade_bot", ("--loop", "--interval", environ.get("QUICK_BOT_INTERVAL_SEC", "5"))),
     "ac_bot": BotSpec("app.bots.ac_bot", ("scan", "--loop", "--interval", "300")),
     # B/F 买卖各自用独立入口进程，底层复用 split_core 调度但策略互不混跑。
     "b_buy_bot": BotSpec(

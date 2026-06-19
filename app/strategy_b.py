@@ -3007,7 +3007,7 @@ def strategy_B_sell(code: str) -> bool:
     2) Stage 仅作"分层落袋的触发器",不再控 SL
     3) 普通B用更紧的保护：初始 -2%，涨 3% 后锁 1%
     4) 涨 5% 后启用“最高价回撤保护”，防止利润大幅回吐
-    5) 保留 Stage 分层止盈 / same-day lock / 闪崩 pending stop / 结构退出
+    5) 保留 Stage 分层止盈 / 闪崩 pending stop / 结构退出；不再限制买入当天卖出
 
     搭配建议：
     - 把 B_TARGET_NOTIONAL_USD 抬到 1500-2500（用更大基础仓换金字塔效应）
@@ -3032,6 +3032,8 @@ def strategy_B_sell(code: str) -> bool:
     # - 当前涨幅 >= 3% 后，止损抬到 cost*1.01，锁 1% 利润。
     TRAIL_LOCK_START_PCT = 0.03
     TRAIL_LOCK_SL_MULT = 1.01
+    INITIAL_STOP_GRACE_SECONDS = int(os.getenv("B_INITIAL_STOP_GRACE_SECONDS", "180"))
+    CATASTROPHIC_STOP_LOSS_PCT = float(os.getenv("B_CATASTROPHIC_STOP_LOSS_PCT", "-0.05"))
 
     # 最高价回撤保护：
     # 这不是替代分层止盈，而是保护“已经涨起来但又回落”的剩余仓位。
@@ -3043,7 +3045,8 @@ def strategy_B_sell(code: str) -> bool:
         (0.05, 0.02),   # 最高涨 >=5%，从最高价回撤 2% 卖
     ]
 
-    BLOCK_SAME_DAY_SELL_AFTER_BUY = True
+    # 现在账户不再受日内交易限制，买入后立刻允许按止损/止盈规则卖出。
+    BLOCK_SAME_DAY_SELL_AFTER_BUY = False
     SAME_DAY_FORCE_SELL_LOSS_PCT = -0.05
 
     # Stage 规则：纯减仓阶梯（add_ratio 永远 None,sl_mult 永远 None）
@@ -3146,6 +3149,19 @@ def strategy_B_sell(code: str) -> bool:
             print(f"[B SELL] {code} same-day lock overridden by loss {up_pct_:.2%}", flush=True)
             return True
         return False
+
+    def _initial_stop_grace_active(row_, up_pct_):
+        """买入后短暂忽略普通止损，但灾难止损立即生效。"""
+        if INITIAL_STOP_GRACE_SECONDS <= 0:
+            return False
+        if up_pct_ <= CATASTROPHIC_STOP_LOSS_PCT:
+            return False
+        last_side = str(row_.get("last_order_side") or "").strip().lower()
+        last_time = _parse_dt(row_.get("last_order_time"))
+        if last_side != "buy" or last_time is None:
+            return False
+        elapsed = (datetime.now() - last_time).total_seconds()
+        return 0 <= elapsed < INITIAL_STOP_GRACE_SECONDS
 
     def _latest_row_for_lock(conn_, fallback_row):
         try:
@@ -3425,6 +3441,17 @@ def strategy_B_sell(code: str) -> bool:
         # ----- 4) 硬止损 -----
         if sl > 0 and price <= sl:
             row_now = _latest_row_for_lock(conn, row_now)
+
+            if _initial_stop_grace_active(row_now, up_pct):
+                last_time = _parse_dt(row_now.get("last_order_time"))
+                elapsed = int((datetime.now() - last_time).total_seconds()) if last_time else 0
+                left = max(INITIAL_STOP_GRACE_SECONDS - elapsed, 0)
+                print(
+                    f"[B SELL] {code} initial stop grace: price={price:.2f} <= sl={sl:.2f} "
+                    f"up_pct={up_pct:.2%}, left={left}s, catastrophic={CATASTROPHIC_STOP_LOSS_PCT:.2%}",
+                    flush=True,
+                )
+                return False
 
             if flash_wait_minutes > 0:
                 pending_since2, pending_sl2 = _get_pending_stop_info(row_now)

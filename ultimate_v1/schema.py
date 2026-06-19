@@ -311,10 +311,32 @@ def ensure_control_state_tables() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS quick_trade_events (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  symbol VARCHAR(64) NOT NULL,
+                  stock_type VARCHAR(16) NULL,
+                  action VARCHAR(16) NOT NULL,
+                  status VARCHAR(32) NULL,
+                  reason VARCHAR(128) NULL,
+                  qty DECIMAL(18,6) DEFAULT 0,
+                  last_price DECIMAL(18,6) DEFAULT 0,
+                  limit_price DECIMAL(18,6) DEFAULT 0,
+                  score DECIMAL(14,6) DEFAULT 0,
+                  order_id VARCHAR(128) NULL,
+                  payload JSON NULL,
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  INDEX idx_created_at (created_at),
+                  INDEX idx_symbol_created (symbol, created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
             default_controls = {
                 "dashboard_bot": 1,
                 "risk_bot": 1,
                 "rebalance_bot": 0,
+                "quick_trade_bot": 0,
                 "ac_bot": 1,
                 "b_buy_bot": 1,
                 "b_sell_bot": 1,
