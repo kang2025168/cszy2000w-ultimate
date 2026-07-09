@@ -32,14 +32,15 @@ WHERE is_bought = 1
   AND DATE(last_order_time) <= (CURDATE() - INTERVAL 1 DAY);
 """
 
-# # 删除 entry_date 为 4 天前及更早、且仍未买入的 B 池股票
-# SQL_DELETE_OLD_UNBOUGHT_B = """
-# DELETE FROM stock_operations
-# WHERE is_bought = 0
-#   AND stock_type = 'B'
-#   AND entry_date IS NOT NULL
-#   AND DATE(entry_date) <= (CURDATE() - INTERVAL 4 DAY);
-# """
+# 将 entry_date 为 14 天前及更早、且仍未买入的 B 池股票禁买
+SQL_DISABLE_OLD_UNBOUGHT_B = """
+UPDATE stock_operations
+SET can_buy = 0
+WHERE is_bought = 0
+  AND stock_type = 'B'
+  AND entry_date IS NOT NULL
+  AND DATE(entry_date) <= (CURDATE() - INTERVAL 14 DAY);
+"""
 
 def main():
     conn = pymysql.connect(**MYSQL_CFG)
@@ -51,7 +52,7 @@ def main():
         cursor.execute(SQL_UNLOCK_CAN_SELL)
         n2 = cursor.rowcount
 
-        # cursor.execute(SQL_DELETE_OLD_UNBOUGHT_B)
+        # cursor.execute(SQL_DISABLE_OLD_UNBOUGHT_B)
         # n3 = cursor.rowcount
 
         conn.commit()
@@ -59,7 +60,7 @@ def main():
             f"[UNLOCK] {datetime.now()} "
             f"重置 can_buy=1 行数={n1} | "
             f"解锁 can_sell=1 行数={n2} | "
-            # f"删除 entry_date 4天前未买入B票行数={n3}"
+            # f"禁买 entry_date 14天前未买入B票行数={n3}"
         )
     except Exception as e:
         conn.rollback()
