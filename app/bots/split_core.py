@@ -105,7 +105,7 @@ def _buy_one(code: str, stype: str) -> bool:
                 )
                 return False
             notional = float(plan.get("target_notional") or 0.0)
-            allow, reason = can_open_position("B", notional)
+            allow, reason = can_open_position("B", notional, available_override=float(plan.get("available") or 0.0))
             if not allow:
                 tb.log.info(f"[BUY BOT] V1 gate block B {code}: reason={reason}")
                 return False
