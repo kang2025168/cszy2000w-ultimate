@@ -57,6 +57,7 @@ B_SCORE_TOP_N = int(os.getenv("B_SCORE_TOP_N", "3"))
 B_SCORE_INTERVAL_MINUTES = int(os.getenv("B_SCORE_INTERVAL_MINUTES", "5"))
 B_SCORE_CONFIRMATIONS = int(os.getenv("B_SCORE_CONFIRMATIONS", "3"))
 B_SCORE_LOOKBACK_MINUTES = int(os.getenv("B_SCORE_LOOKBACK_MINUTES", "30"))
+B_SCORE_LOG_EACH_CANDIDATE = int(os.getenv("B_SCORE_LOG_EACH_CANDIDATE", "1"))
 B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "2500"))
 B_MIN_OPEN_BUYING_POWER = float(os.getenv("B_MIN_OPEN_BUYING_POWER", "2500"))
 
@@ -1681,22 +1682,43 @@ def _latest_score_bucket(conn):
     return row.get("bucket_time")
 
 
+def _b_score_log(message: str) -> None:
+    if B_SCORE_LOG_EACH_CANDIDATE == 1:
+        print(message, flush=True)
+
+
+def _score_b_reject(code: str, reason: str) -> None:
+    _b_score_log(f"[B SCORE CHECK] {code} reject: {reason}")
+
+
 def _score_b_candidate(conn, code: str):
     code = (code or "").strip().upper()
+    _b_score_log(f"[B SCORE CHECK] {code} check")
     row = _load_one_b_row(conn, code)
     if not row:
+        _score_b_reject(code, "no B row")
         return None
 
     if int(row.get("can_buy") or 0) != 1:
+        _score_b_reject(code, f"can_buy={int(row.get('can_buy') or 0)}")
         return None
     if int(row.get("is_bought") or 0) == 1:
+        _score_b_reject(code, "already bought")
         return None
     if _is_cooldown(row.get("last_order_time"), row.get("last_order_side")):
+        _score_b_reject(
+            code,
+            f"cooldown last_side={row.get('last_order_side')} last_time={row.get('last_order_time')}",
+        )
         return None
 
     trigger = float(row.get("trigger_price") or 0)
     entry_close = float(row.get("entry_close") or row.get("close_price") or trigger or 0)
-    if trigger <= 0 or entry_close <= 0:
+    if trigger <= 0:
+        _score_b_reject(code, f"invalid trigger={trigger:.2f}")
+        return None
+    if entry_close <= 0:
+        _score_b_reject(code, f"invalid entry_close={entry_close:.2f}")
         return None
 
     snap = get_snapshot_quote_realtime(code)
@@ -1707,23 +1729,44 @@ def _score_b_candidate(conn, code: str):
     if prev_close <= 0:
         prev_close = _get_prev_close_from_db(conn, code)
 
-    if price <= 0 or prev_close <= 0:
+    if price <= 0:
+        _score_b_reject(code, f"invalid price={price:.2f}")
+        return None
+    if prev_close <= 0:
+        _score_b_reject(code, f"invalid prev_close={prev_close:.2f}")
         return None
     if price < B_MIN_PRICE:
+        _score_b_reject(code, f"price={price:.2f} < min_price={B_MIN_PRICE:.2f}")
         return None
     if not (price > trigger):
+        _score_b_reject(code, f"price={price:.2f} <= trigger={trigger:.2f}")
         return None
 
     day_up_pct = (price - prev_close) / prev_close if prev_close > 0 else 0.0
     entry_up_pct = (price - entry_close) / entry_close if entry_close > 0 else 0.0
     if not (day_up_pct > B_MIN_UP_PCT):
+        need_price = prev_close * (1.0 + float(B_MIN_UP_PCT)) if prev_close > 0 else 0.0
+        _score_b_reject(
+            code,
+            f"day_up={day_up_pct:.2%} <= min_up={B_MIN_UP_PCT:.2%} need>{need_price:.2f}",
+        )
         return None
     if day_up_pct >= B_MAX_BUY_UP_PCT:
+        max_buy_price = prev_close * (1.0 + float(B_MAX_BUY_UP_PCT)) if prev_close > 0 else 0.0
+        _score_b_reject(
+            code,
+            f"day_up={day_up_pct:.2%} >= max_buy_up={B_MAX_BUY_UP_PCT:.2%} max_buy_price<{max_buy_price:.2f}",
+        )
         return None
     if entry_up_pct >= B_MAX_ENTRY_UP_PCT:
+        _score_b_reject(
+            code,
+            f"entry_up={entry_up_pct:.2%} >= max_entry_up={B_MAX_ENTRY_UP_PCT:.2%}",
+        )
         return None
-    reject_reversal, _ = _intraday_reversal_reject(price, day_open, day_high)
+    reject_reversal, reversal_reason = _intraday_reversal_reject(price, day_open, day_high)
     if reject_reversal:
+        _score_b_reject(code, f"weak intraday price {reversal_reason}")
         return None
 
     (
@@ -1732,9 +1775,14 @@ def _score_b_candidate(conn, code: str):
         avg_volume20,
         required_volume_ratio,
         volume_ratio,
-        _volume_reason,
+        volume_reason,
     ) = _intraday_volume_check(conn, code)
     if not volume_ok:
+        _score_b_reject(
+            code,
+            f"intraday volume {volume_reason} vol={intraday_volume} "
+            f"avg20={avg_volume20:.0f} required={required_volume_ratio:.2%}",
+        )
         return None
 
     # 越接近 3%-8% 的强势突破、越接近入选价、成交量越健康，分越高。
@@ -1754,6 +1802,13 @@ def _score_b_candidate(conn, code: str):
         + trigger_score
         - entry_penalty
         - reversal_penalty
+    )
+    _b_score_log(
+        f"[B SCORE CHECK] {code} pass: score={score:.4f} price={price:.2f} "
+        f"trigger={trigger:.2f} day_up={day_up_pct:.2%} entry_up={entry_up_pct:.2%} "
+        f"pullback={pullback_from_high:.2%} below_open={below_open:.2%} "
+        f"volume={intraday_volume}/{avg_volume20:.0f} ratio={volume_ratio:.2%} "
+        f"required={required_volume_ratio:.2%}"
     )
 
     return {
@@ -1861,11 +1916,20 @@ def strategy_B_rank_and_confirm(codes) -> list[str]:
             if args:
                 with conn.cursor() as cur:
                     cur.executemany(sql, args)
+            top_detail = ",".join(
+                [
+                    f"{idx}:{item['symbol']} score={float(item['score']):.4f} "
+                    f"price={float(item['price']):.2f} reason={item['reason']}"
+                    for idx, item in enumerate(top, start=1)
+                ]
+            )
             print(
                 f"[B SCORE] bucket={bucket_time} scored={len(scored)} "
                 f"top={','.join([x['symbol'] for x in top]) or '-'}",
                 flush=True,
             )
+            if top_detail:
+                print(f"[B SCORE TOP] {top_detail}", flush=True)
         else:
             print(f"[B SCORE] wait next bucket latest={latest_bucket}", flush=True)
 
@@ -1944,6 +2008,17 @@ def strategy_B_rank_and_confirm(codes) -> list[str]:
             ]
             if pending:
                 print(f"[B SCORE] pending={','.join(pending)}", flush=True)
+            if pending_rows:
+                progress = [
+                    f"{str(r.get('symbol') or '').upper()} "
+                    f"hits={int(r.get('hits') or 0)}/{int(B_SCORE_CONFIRMATIONS)} "
+                    f"latest_rank={int(r.get('latest_rank') or 0)} "
+                    f"avg_score={float(r.get('avg_score') or 0.0):.4f}"
+                    for r in pending_rows
+                    if r.get("symbol")
+                ]
+                if progress:
+                    print(f"[B SCORE PROGRESS] {'; '.join(progress)}", flush=True)
         return confirmed
 
     except Exception as e:

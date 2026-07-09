@@ -264,6 +264,7 @@ def run_buy_round(conn, config: SplitBotConfig, phase: str, control: dict) -> tu
         for code in confirmed_b:
             if tb._STOP:
                 break
+            tb.log.info(f"[BUY BOT] confirmed B {code}: enter order checks phase={phase}")
             if LOG_EACH_SYMBOL:
                 tb.log.info(f"[BUY BOT] confirmed B {code} phase={phase}")
             traded = _buy_one(code, "B")
