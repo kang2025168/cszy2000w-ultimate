@@ -211,6 +211,24 @@ class BCStrategyFlowTests(unittest.TestCase):
         self.assertEqual(1, control["strategy_b_enabled"])
         self.assertEqual(0, control["strategy_f_enabled"])
 
+    def test_b_entry_limit_price_is_capped_by_max_buy_up(self):
+        import app.strategy_b as sb
+
+        original = sb.B_MAX_BUY_UP_PCT
+        try:
+            sb.B_MAX_BUY_UP_PCT = 0.10
+            limit_price, raw_limit_price, max_buy_price = sb._b_entry_limit_price(
+                price=104.50,
+                ask=120.95,
+                prev_close=95.45,
+            )
+        finally:
+            sb.B_MAX_BUY_UP_PCT = original
+
+        self.assertEqual(121.19, raw_limit_price)
+        self.assertEqual(105.00, max_buy_price)
+        self.assertEqual(105.00, limit_price)
+
     def test_c_idle_state_buys_extra_lot_when_up_trigger_hits(self):
         import app.strategy_ac_t as ac
 

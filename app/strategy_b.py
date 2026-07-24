@@ -1652,6 +1652,27 @@ def _intraday_reversal_reject(ref_price: float, day_open: float, day_high: float
     return False, ""
 
 
+def _b_max_buy_price(prev_close: float) -> float:
+    prev_close = float(prev_close or 0.0)
+    if prev_close <= 0:
+        return 0.0
+    return round(prev_close * (1.0 + float(B_MAX_BUY_UP_PCT)), 2)
+
+
+def _b_entry_limit_price(price: float, ask: float, prev_close: float) -> tuple[float, float, float]:
+    price = float(price or 0.0)
+    ask = float(ask or 0.0)
+    if ask > 0:
+        raw_limit = ask * 1.002
+    else:
+        raw_limit = price * 1.003
+    raw_limit = max(raw_limit, price * 1.001)
+
+    max_buy_price = _b_max_buy_price(prev_close)
+    capped_limit = min(raw_limit, max_buy_price) if max_buy_price > 0 else raw_limit
+    return round(float(capped_limit), 2), round(float(raw_limit), 2), max_buy_price
+
+
 def _ensure_b_score_table(conn):
     sql = f"""
     CREATE TABLE IF NOT EXISTS `{B_SCORE_TABLE}` (
@@ -2271,20 +2292,22 @@ def strategy_B_buy(code: str) -> bool:
 
         used_notional = float(qty) * float(price)
 
-        # 限价：至少高于 last 0.1%，提高成交概率。
-        if ask > 0:
-            raw_limit = float(ask) * 1.002
-        else:
-            raw_limit = float(price) * 1.003
-        raw_limit = max(raw_limit, float(price) * 1.001)
-        limit_price = round(float(raw_limit), 2)
+        # 限价：至少高于 last 0.1%，提高成交概率；但绝不能超过策略最高买入价。
+        limit_price, raw_limit_price, max_buy_price = _b_entry_limit_price(price, ask, prev_close)
 
         if limit_price <= 0:
             print(f"[B BUY] {code} skip: invalid limit_price={limit_price:.2f}", flush=True)
             return False
+        if max_buy_price > 0 and raw_limit_price > max_buy_price:
+            print(
+                f"[B BUY] {code} cap limit: raw_limit={raw_limit_price:.2f} "
+                f"> max_buy_price={max_buy_price:.2f}; capped_limit={limit_price:.2f}",
+                flush=True,
+            )
         if limit_price < price:
             print(
-                f"[B BUY] {code} skip: limit_price={limit_price:.2f} < last_price={price:.2f}",
+                f"[B BUY] {code} skip: limit_price={limit_price:.2f} < last_price={price:.2f} "
+                f"max_buy_price={max_buy_price:.2f}",
                 flush=True,
             )
             return False

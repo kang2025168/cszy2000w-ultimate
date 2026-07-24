@@ -9,6 +9,7 @@ import contextlib
 import csv
 import importlib.util
 import io
+import re
 import socket
 import time
 from datetime import date, datetime, time as dt_time
@@ -911,8 +912,22 @@ def _curve_payload(period: str) -> dict:
 
 
 def _trade_records_payload() -> dict:
-    """读取当天买卖机器人记录，限制在面板内滚动展示。"""
+    """读取最近 30 天买卖机器人记录，限制在面板内滚动展示。"""
     rows: list[dict] = []
+
+    def _qty_from_note(row: dict) -> float | None:
+        if str(row.get("source") or "") != "stock_operations":
+            return None
+        note = str(row.get("note") or "")
+        side = str(row.get("side") or "").strip().upper()
+        patterns = (r"\bsold=([0-9]+(?:\.[0-9]+)?)", r"\bqty=([0-9]+(?:\.[0-9]+)?)") if side == "SELL" else (r"\bqty=([0-9]+(?:\.[0-9]+)?)",)
+        for pattern in patterns:
+            match = re.search(pattern, note)
+            if match:
+                qty = _safe_float(match.group(1), 0.0)
+                if qty > 0:
+                    return qty
+        return None
     try:
         rows.extend(
             fetch_all(
@@ -929,10 +944,10 @@ def _trade_records_payload() -> dict:
                     alpaca_order_id AS order_id,
                     'orders' AS source
                 FROM orders
-                WHERE DATE(created_at)=CURDATE()
+                WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
                   AND UPPER(side) IN ('BUY','SELL')
                 ORDER BY created_at DESC, order_id DESC
-                LIMIT 200
+                LIMIT 500
                 """
             )
         )
@@ -955,10 +970,10 @@ def _trade_records_payload() -> dict:
                     last_order_id AS order_id,
                     'stock_operations' AS source
                 FROM stock_operations
-                WHERE DATE(last_order_time)=CURDATE()
+                WHERE last_order_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
                   AND LOWER(last_order_side) IN ('buy','sell')
                 ORDER BY last_order_time DESC, id DESC
-                LIMIT 200
+                LIMIT 500
                 """
             )
         )
@@ -981,9 +996,9 @@ def _trade_records_payload() -> dict:
                     CAST(id AS CHAR) AS order_id,
                     'bot_lifecycle_events' AS source
                 FROM bot_lifecycle_events
-                WHERE DATE(created_at)=CURDATE()
+                WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
                 ORDER BY created_at DESC, id DESC
-                LIMIT 200
+                LIMIT 500
                 """
             )
         )
@@ -1008,9 +1023,12 @@ def _trade_records_payload() -> dict:
         if k in seen:
             continue
         seen.add(k)
+        note_qty = _qty_from_note(row)
+        if note_qty is not None:
+            row = {**row, "qty": note_qty}
         cleaned.append(row)
     cleaned.sort(key=lambda r: str(r.get("event_time") or ""), reverse=True)
-    return {"ok": True, "rows": cleaned[:200]}
+    return {"ok": True, "rows": cleaned[:500]}
 
 
 def _candidate_log_dirs() -> list[Path]:
@@ -2445,7 +2463,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="lower-page">
             <div class="trade-records">
               <div class="trade-records-head">
-                <span class="trade-records-title">今日交易记录</span>
+                <span class="trade-records-title">近30天交易记录</span>
                 <span class="trade-records-count" id="tradeRecordsCount">--</span>
               </div>
               <div class="trade-records-scroll">
@@ -3557,7 +3575,7 @@ INDEX_HTML = r"""<!doctype html>
       const tableEl = document.getElementById('tradeRecords');
       countEl.textContent = `${rows.length} 条`;
       if (!rows.length) {
-        tableEl.innerHTML = `<tbody><tr><td class="small-muted" style="padding:18px;text-align:center;">今日暂无买卖机器人交易记录</td></tr></tbody>`;
+        tableEl.innerHTML = `<tbody><tr><td class="small-muted" style="padding:18px;text-align:center;">近30天暂无买卖机器人交易记录</td></tr></tbody>`;
         return;
       }
       const widths = [92, 82, 90, 160, 92, 108, 128, 248];
@@ -3568,7 +3586,8 @@ INDEX_HTML = r"""<!doctype html>
           const isBotEvent = r.source === 'bot_lifecycle_events';
           const sideClass = side === 'SELL' || side === 'STOP' ? 'sell' : 'buy';
           const sideLabel = isBotEvent ? (side === 'STOP' ? '关闭' : '开启') : (side === 'SELL' ? '卖出' : '买入');
-          const timeText = String(r.event_time || '').slice(11,19) || String(r.event_time || '').slice(0,16);
+          const eventText = String(r.event_time || '');
+          const timeText = eventText.length >= 16 ? eventText.slice(5,16) : eventText;
           const price = Number(r.price || 0);
           const priceText = price > 0 ? money(price) : '--';
           return `<tr><td>${timeText}</td><td><span class="side-pill ${sideClass}">${sideLabel}</span></td><td>${r.strategy_group || '--'}</td><td><b>${r.symbol || '--'}</b></td><td>${Number(r.qty || 0).toFixed(2)}</td><td>${priceText}</td><td>${r.status || '--'}</td><td>${r.note || ''}</td></tr>`;
@@ -3912,7 +3931,7 @@ INDEX_HTML = r"""<!doctype html>
       const dMode = lowerView === 'd';
       const tradesMode = lowerView === 'trades';
       const strategyMode = lowerView === 'strategy';
-      document.getElementById('lowerPanelTitle').textContent = strategyMode ? '策略 2.0' : tradesMode ? '今日交易记录' : dMode ? (dSection === 'intraday' ? 'D 日内交易' : 'Q 期权交易') : (marketMode ? '行情分析' : '持仓');
+      document.getElementById('lowerPanelTitle').textContent = strategyMode ? '策略 2.0' : tradesMode ? '近30天交易记录' : dMode ? (dSection === 'intraday' ? 'D 日内交易' : 'Q 期权交易') : (marketMode ? '行情分析' : '持仓');
       document.getElementById('viewToggleBtn').textContent = strategyMode ? '看持仓' : marketMode ? (isDSectionHolding() ? '看D' : isTradesHolding() ? '看交易' : '看持仓') : '看行情';
       document.querySelector('.holdings-panel').classList.toggle('market-view', marketMode);
       document.querySelector('.holdings-panel').classList.toggle('d-view', dMode);
