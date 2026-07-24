@@ -1031,6 +1031,111 @@ def _trade_records_payload() -> dict:
     return {"ok": True, "rows": cleaned[:500]}
 
 
+def _stock_selection_payload() -> dict:
+    """复盘选股：最新交易日涨幅大于 5%，并标记其中的 B 策略候选。"""
+    min_up_pct = _safe_float(env_str("SELECTION_MIN_UP_PCT", "0.05"), 0.05)
+    latest = fetch_all("SELECT MAX(DATE(`date`)) AS d FROM stock_prices_pool")
+    snapshot_date = (latest[0] or {}).get("d") if latest else None
+    if not snapshot_date:
+        return {"ok": True, "snapshot_date": None, "min_up_pct": min_up_pct, "rows": [], "b_rows": []}
+    previous = fetch_all(
+        """
+        SELECT MAX(DATE(`date`)) AS d
+        FROM stock_prices_pool
+        WHERE DATE(`date`) < DATE(%s)
+        """,
+        (snapshot_date,),
+    )
+    previous_date = (previous[0] or {}).get("d") if previous else None
+
+    rows = fetch_all(
+        """
+        SELECT
+            UPPER(p.symbol) AS symbol,
+            DATE(p.`date`) AS snapshot_date,
+            p.`open`, p.high, p.low, p.`close`, p.volume,
+            ((p.`close` - p.`open`) / p.`open`) AS intraday_change_pct,
+            pp.`close` AS prev_close,
+            b.id AS operation_id,
+            b.trigger_price,
+            b.entry_open,
+            b.entry_close,
+            b.entry_date,
+            b.can_buy,
+            b.is_bought,
+            b.last_order_side,
+            b.last_order_intent,
+            b.updated_at AS b_updated_at
+        FROM stock_prices_pool p
+        LEFT JOIN stock_prices_pool pp
+          ON DATE(pp.`date`) = DATE(%s)
+         AND UPPER(CONVERT(pp.symbol USING utf8mb4)) COLLATE utf8mb4_unicode_ci = UPPER(CONVERT(p.symbol USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+        LEFT JOIN (
+            SELECT so.*
+            FROM stock_operations so
+            INNER JOIN (
+                SELECT UPPER(CONVERT(stock_code USING utf8mb4)) COLLATE utf8mb4_unicode_ci AS symbol, MAX(id) AS id
+                FROM stock_operations
+                WHERE UPPER(stock_type)='B'
+                GROUP BY UPPER(CONVERT(stock_code USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+            ) latest_b ON latest_b.id = so.id
+        ) b ON UPPER(CONVERT(b.stock_code USING utf8mb4)) COLLATE utf8mb4_unicode_ci = UPPER(CONVERT(p.symbol USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+        WHERE DATE(p.`date`) = DATE(%s)
+          AND p.`open` > 0
+          AND p.`close` > 0
+          AND ((p.`close` - p.`open`) / p.`open`) >= %s
+        ORDER BY ((p.`close` - p.`open`) / p.`open`) DESC, UPPER(p.symbol) ASC
+        LIMIT 1000
+        """,
+        (previous_date or snapshot_date, snapshot_date, min_up_pct),
+    )
+
+    out = []
+    b_rows = []
+    for row in rows or []:
+        close = _safe_float(row.get("close"))
+        prev_close = _safe_float(row.get("prev_close"))
+        day_change_pct = (close - prev_close) / prev_close if close > 0 and prev_close > 0 else None
+        can_buy = int(row.get("can_buy") or 0)
+        is_bought = int(row.get("is_bought") or 0)
+        b_match = bool(row.get("operation_id") and can_buy == 1 and is_bought != 1)
+        item = {
+            "symbol": str(row.get("symbol") or "").upper(),
+            "snapshot_date": row.get("snapshot_date"),
+            "open": _safe_float(row.get("open")),
+            "high": _safe_float(row.get("high")),
+            "low": _safe_float(row.get("low")),
+            "close": close,
+            "volume": _safe_float(row.get("volume")),
+            "intraday_change_pct": _safe_float(row.get("intraday_change_pct")),
+            "prev_close": prev_close,
+            "day_change_pct": day_change_pct,
+            "b_match": b_match,
+            "operation_id": row.get("operation_id"),
+            "trigger_price": _safe_float(row.get("trigger_price")),
+            "entry_open": _safe_float(row.get("entry_open")),
+            "entry_close": _safe_float(row.get("entry_close")),
+            "entry_date": row.get("entry_date"),
+            "can_buy": can_buy,
+            "is_bought": is_bought,
+            "last_order_side": row.get("last_order_side"),
+            "last_order_intent": row.get("last_order_intent"),
+            "b_updated_at": row.get("b_updated_at"),
+        }
+        out.append(item)
+        if b_match:
+            b_rows.append(item)
+
+    return {
+        "ok": True,
+        "snapshot_date": snapshot_date,
+        "previous_date": previous_date,
+        "min_up_pct": min_up_pct,
+        "rows": out,
+        "b_rows": b_rows,
+    }
+
+
 def _candidate_log_dirs() -> list[Path]:
     root = Path(__file__).resolve().parents[1]
     candidates = [
@@ -1613,6 +1718,11 @@ INDEX_HTML = r"""<!doctype html>
     body.life-focus .left-stack { display:block; }
     body.life-focus .right-stack, body.life-focus .capital-hero, body.life-focus .holdings-panel, body.life-focus .phase-popover, body.life-focus .log-focus-panel { display:none !important; }
     body.life-focus .life-focus-panel { display:block; min-height:calc(100vh - 116px); margin-top:12px; }
+    body.stock-focus main { max-width:none; gap:12px; }
+    body.stock-focus .dash { display:block; }
+    body.stock-focus .left-stack { display:block; }
+    body.stock-focus .right-stack, body.stock-focus .capital-hero, body.stock-focus .holdings-panel, body.stock-focus .phase-popover, body.stock-focus .log-focus-panel, body.stock-focus .life-focus-panel { display:none !important; }
+    body.stock-focus .stock-focus-panel { display:block; min-height:calc(100vh - 116px); margin-top:12px; }
     .capital-hero { flex:0 0 auto; }
     .hero-top { display:grid; grid-template-columns:minmax(340px,1fr) minmax(300px,.78fr); gap:12px; align-items:start; padding:14px; border:1px solid #c5d5e6; border-radius:8px; background:linear-gradient(145deg,#eef5fb 0%,#f8fbff 45%,#edf4fa 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.86), 0 10px 26px rgba(15,23,42,.06); }
     .hero-top:before { content:""; grid-column:1 / -1; height:3px; border-radius:999px; background:linear-gradient(90deg,#15936a,#2563eb,#d97706); opacity:.72; margin:-2px 0 0; }
@@ -1773,6 +1883,31 @@ INDEX_HTML = r"""<!doctype html>
     .trade-records th, .trade-records td { padding:8px 10px; font-size:11px; }
     .trade-records th, .trade-records td { white-space:nowrap; }
     .life-focus-panel { display:none; }
+    .stock-focus-panel { display:none; }
+    .stock-selection-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; margin-bottom:14px; }
+    .stock-selection-title { display:grid; gap:5px; }
+    .stock-selection-title h2 { font-size:20px; }
+    .stock-selection-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .stock-selection-refresh { height:34px; border:0; border-radius:8px; background:#101828; color:#fff; font-weight:850; }
+    .stock-selection-refresh.loading { opacity:.65; pointer-events:none; }
+    .stock-selection-meta { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+    .selection-summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:12px; }
+    .selection-summary-card { border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); padding:12px; display:grid; gap:5px; min-height:72px; box-shadow:0 8px 18px rgba(15,23,42,.035); }
+    .selection-summary-label { color:var(--muted); font-size:11px; font-weight:900; }
+    .selection-summary-value { color:var(--ink); font-size:20px; font-weight:950; line-height:1.1; font-variant-numeric:tabular-nums; }
+    .selection-summary-value.pos { color:var(--green); }
+    .stock-selection-grid { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(360px,.8fr); gap:14px; align-items:start; }
+    .stock-selection-card { border:1px solid #d8e4f0; border-radius:8px; background:#fff; overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,.035); }
+    .stock-selection-card-head { min-height:46px; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 12px; border-bottom:1px solid #e8eef6; background:linear-gradient(180deg,#fff,#f8fbff); }
+    .stock-selection-card-title { color:var(--ink); font-size:15px; font-weight:950; }
+    .stock-selection-count { color:var(--muted); font-size:11px; font-weight:850; }
+    .stock-selection-scroll { max-height:calc(100vh - 310px); min-height:360px; overflow:auto; }
+    .stock-selection-table { border:0; border-radius:0; min-width:920px; }
+    .stock-selection-table th, .stock-selection-table td { font-size:12px; padding:9px 10px; }
+    .stock-selection-table .note-cell { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
+    .b-match-pill { display:inline-flex; align-items:center; justify-content:center; height:24px; min-width:56px; padding:0 8px; border-radius:8px; background:#e7f6ef; color:#08734f; font-size:12px; font-weight:950; }
+    .b-match-pill.off { background:#eef2f6; color:#667085; }
+    .stock-selection-empty { min-height:220px; display:flex; align-items:center; justify-content:center; color:var(--muted); font-weight:800; }
     .life-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; margin-bottom:14px; }
     .life-title { display:grid; gap:5px; }
     .life-title h2 { font-size:20px; }
@@ -2065,12 +2200,13 @@ INDEX_HTML = r"""<!doctype html>
       .chart-panel { order:3; }
       .holdings-panel { order:5; }
       .left-titlebar, .chart-panel, .holdings-panel, .capital-hero, .annual-panel { width:100%; }
-      .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:center; }
-      .brand-lockup { gap:8px; flex:1 1 auto; }
+      .left-titlebar { height:auto; min-height:48px; padding:6px 2px 10px; gap:8px; align-items:stretch; flex-direction:column; }
+      .brand-lockup { gap:8px; flex:1 1 auto; width:100%; }
       .brand-logo { width:38px; height:38px; border-radius:8px; }
       .brand-copy { gap:5px; }
       .dashboard-motto { font-size:11px; max-width:190px; }
-      .title-actions { gap:7px; flex:0 0 auto; }
+      .title-actions { gap:7px; flex:0 1 auto; align-self:stretch; width:calc(100vw - 24px); max-width:calc(100vw - 24px); min-width:0; overflow-x:auto; justify-content:flex-start; }
+      .title-actions .trade-focus-btn, .title-actions .phase-chip, .title-actions .refresh-btn { flex:0 0 auto; }
       .phase-chip { min-width:88px; height:34px; padding:0 10px; font-size:12px; }
       .phase-chip .phase-dot { width:8px; height:8px; }
       .refresh-btn { height:34px; padding:0 12px; border-radius:8px; }
@@ -2128,6 +2264,11 @@ INDEX_HTML = r"""<!doctype html>
       .trade-records table { min-width:980px; }
       .trade-records th, .trade-records td { padding:8px 7px; font-size:11px; }
       .life-layout { grid-template-columns:1fr; }
+      .stock-selection-head { flex-direction:column; }
+      .stock-selection-actions { justify-content:flex-start; width:100%; }
+      .selection-summary-grid, .stock-selection-grid { grid-template-columns:1fr; }
+      .stock-selection-scroll { max-height:520px; min-height:260px; }
+      .stock-selection-table { min-width:900px; }
       .life-head { flex-direction:column; }
       .five-year-head { flex-direction:column; align-items:stretch; }
       .five-year-actions { justify-content:flex-end; flex-wrap:wrap; }
@@ -2191,6 +2332,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="title-actions">
           <button class="trade-focus-btn active" id="overviewFocusBtn" onclick="showOverview()">总览</button>
           <button class="trade-focus-btn" id="lifeFocusBtn" onclick="toggleLifeFocus()">生活</button>
+          <button class="trade-focus-btn" id="stockFocusBtn" onclick="toggleStockFocus()">选股</button>
           <button class="trade-focus-btn" id="tradeFocusBtn" onclick="toggleTradeFocus()">交易</button>
           <button class="trade-focus-btn" id="logFocusBtn" onclick="toggleLogFocus()">日志</button>
           <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
@@ -2302,6 +2444,36 @@ INDEX_HTML = r"""<!doctype html>
             </div>
             <canvas id="equityChart" width="760" height="260"></canvas>
           </div>
+        </div>
+      </div>
+    </section>
+    <section class="panel stock-focus-panel" id="stockFocusPanel">
+      <div class="stock-selection-head">
+        <div class="stock-selection-title">
+          <h2>选股复盘</h2>
+          <div class="small-muted">最新交易日涨幅大于 5% 的股票，以及其中已经进入 B 策略候选池的股票。</div>
+        </div>
+        <div class="stock-selection-actions">
+          <span class="small-muted" id="stockSelectionStatus">未加载</span>
+          <button class="stock-selection-refresh" id="stockSelectionRefreshBtn" onclick="loadStockSelection()">刷新选股</button>
+        </div>
+      </div>
+      <div class="stock-selection-meta" id="stockSelectionMeta"></div>
+      <div class="selection-summary-grid" id="stockSelectionSummary"></div>
+      <div class="stock-selection-grid">
+        <div class="stock-selection-card">
+          <div class="stock-selection-card-head">
+            <span class="stock-selection-card-title">涨幅 >5% 全量</span>
+            <span class="stock-selection-count" id="gainersCount">--</span>
+          </div>
+          <div class="stock-selection-scroll"><table class="stock-selection-table" id="gainersTable"></table></div>
+        </div>
+        <div class="stock-selection-card">
+          <div class="stock-selection-card-head">
+            <span class="stock-selection-card-title">符合 B 策略</span>
+            <span class="stock-selection-count" id="bSelectionCount">--</span>
+          </div>
+          <div class="stock-selection-scroll"><table class="stock-selection-table" id="bSelectionTable"></table></div>
         </div>
       </div>
     </section>
@@ -2630,6 +2802,7 @@ INDEX_HTML = r"""<!doctype html>
     let latestHoldings = [];
     let latestMarketMeta = [];
     let latestTradeRecords = [];
+    let latestStockSelection = null;
     let latestEquityCurve = null;
     let latestBotHeartbeats = [];
     let latestBotControls = [];
@@ -2863,13 +3036,16 @@ INDEX_HTML = r"""<!doctype html>
       const trade = mode === 'trade';
       const logs = mode === 'logs';
       const life = mode === 'life';
+      const stock = mode === 'stock';
       document.body.classList.toggle('trade-focus', trade);
       document.body.classList.toggle('log-focus', logs);
       document.body.classList.toggle('life-focus', life);
-      document.getElementById('overviewFocusBtn')?.classList.toggle('active', !trade && !logs && !life);
+      document.body.classList.toggle('stock-focus', stock);
+      document.getElementById('overviewFocusBtn')?.classList.toggle('active', !trade && !logs && !life && !stock);
       document.getElementById('tradeFocusBtn')?.classList.toggle('active', trade);
       document.getElementById('logFocusBtn')?.classList.toggle('active', logs);
       document.getElementById('lifeFocusBtn')?.classList.toggle('active', life);
+      document.getElementById('stockFocusBtn')?.classList.toggle('active', stock);
     }
     function showOverview() {
       setFocusMode('overview');
@@ -2883,6 +3059,15 @@ INDEX_HTML = r"""<!doctype html>
       setFocusMode('trade');
       document.getElementById('phasePopover')?.classList.remove('show');
       setLowerView('holdings');
+    }
+    function toggleStockFocus() {
+      setFocusMode('stock');
+      if (manualQuoteInterval) {
+        clearInterval(manualQuoteInterval);
+        manualQuoteInterval = null;
+      }
+      document.getElementById('phasePopover')?.classList.remove('show');
+      loadStockSelection();
     }
     function toggleLogFocus() {
       setFocusMode('logs');
@@ -3008,6 +3193,81 @@ INDEX_HTML = r"""<!doctype html>
       const rows = text.value.split(/\n+/).map(v => v.trim()).filter(Boolean);
       writeTradingRules(rows.length ? rows : defaultTradingRules);
       renderTradingRules();
+    }
+    function renderStockSelection(payload) {
+      latestStockSelection = payload || {};
+      const rows = latestStockSelection.rows || [];
+      const bRows = latestStockSelection.b_rows || [];
+      const status = document.getElementById('stockSelectionStatus');
+      if (status) status.textContent = `${new Date().toLocaleTimeString()} 已更新`;
+      document.getElementById('gainersCount').textContent = `${rows.length} 只`;
+      document.getElementById('bSelectionCount').textContent = `${bRows.length} 只`;
+      document.getElementById('stockSelectionMeta').innerHTML = [
+        `交易日 ${latestStockSelection.snapshot_date || '--'}`,
+        `上一交易日 ${latestStockSelection.previous_date || '--'}`,
+        `阈值 > ${(Number(latestStockSelection.min_up_pct || 0.05) * 100).toFixed(1)}%`,
+        `B 占比 ${rows.length ? (bRows.length / rows.length * 100).toFixed(1) : '0.0'}%`
+      ].map(x => `<span class="market-pill">${x}</span>`).join('');
+      const strongest = rows[0];
+      const avg = rows.length ? rows.reduce((s, r) => s + Number(r.intraday_change_pct || 0), 0) / rows.length : 0;
+      document.getElementById('stockSelectionSummary').innerHTML = [
+        ['涨幅>5%', `${rows.length}`, ''],
+        ['符合B', `${bRows.length}`, 'pos'],
+        ['平均涨幅', pct(avg), 'pos'],
+        ['最强股票', strongest ? `${strongest.symbol} ${pct(strongest.intraday_change_pct)}` : '--', 'pos']
+      ].map(([label, value, tone]) => `<div class="selection-summary-card"><div class="selection-summary-label">${label}</div><div class="selection-summary-value ${tone}">${value}</div></div>`).join('');
+
+      const gainersHead = ['代码','B','开盘涨幅','昨收涨跌','开','高','低','收','量','B说明'];
+      const bHead = ['代码','开盘涨幅','昨收涨跌','触发价','入池收盘','入池日','最近说明'];
+      const rowHtml = r => {
+        const bLabel = r.b_match ? '<span class="b-match-pill">符合B</span>' : '<span class="b-match-pill off">观察</span>';
+        return `<tr>
+          <td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td>
+          <td>${bLabel}</td>
+          <td class="${cls(r.intraday_change_pct)}">${pct(r.intraday_change_pct)}</td>
+          <td class="${cls(r.day_change_pct)}">${r.day_change_pct == null ? '--' : pct(r.day_change_pct)}</td>
+          <td>${money(r.open)}</td>
+          <td>${money(r.high)}</td>
+          <td>${money(r.low)}</td>
+          <td>${money(r.close)}</td>
+          <td>${compactNumber(r.volume)}</td>
+          <td class="note-cell" title="${esc(r.last_order_intent || '')}">${esc(r.last_order_intent || '')}</td>
+        </tr>`;
+      };
+      const bRowHtml = r => `<tr>
+        <td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td>
+        <td class="${cls(r.intraday_change_pct)}">${pct(r.intraday_change_pct)}</td>
+        <td class="${cls(r.day_change_pct)}">${r.day_change_pct == null ? '--' : pct(r.day_change_pct)}</td>
+        <td>${maybeMoney(r.trigger_price)}</td>
+        <td>${maybeMoney(r.entry_close)}</td>
+        <td>${r.entry_date || '--'}</td>
+        <td class="note-cell" title="${esc(r.last_order_intent || '')}">${esc(r.last_order_intent || '')}</td>
+      </tr>`;
+      document.getElementById('gainersTable').innerHTML = rows.length
+        ? `<thead><tr>${gainersHead.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(rowHtml).join('')}</tbody>`
+        : `<tbody><tr><td><div class="stock-selection-empty">暂无涨幅超过阈值的股票</div></td></tr></tbody>`;
+      document.getElementById('bSelectionTable').innerHTML = bRows.length
+        ? `<thead><tr>${bHead.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${bRows.map(bRowHtml).join('')}</tbody>`
+        : `<tbody><tr><td><div class="stock-selection-empty">涨幅列表里暂无符合 B 策略的股票</div></td></tr></tbody>`;
+    }
+    async function loadStockSelection() {
+      const btn = document.getElementById('stockSelectionRefreshBtn');
+      const status = document.getElementById('stockSelectionStatus');
+      const oldText = btn ? btn.textContent : '';
+      if (btn) { btn.classList.add('loading'); btn.textContent = '刷新中'; }
+      if (status) status.textContent = '加载中...';
+      try {
+        const payload = await api('/api/stock_selection');
+        if (!payload.ok) {
+          if (status) status.textContent = payload.error || '读取失败';
+          return;
+        }
+        renderStockSelection(payload);
+      } catch (e) {
+        if (status) status.textContent = e.message || '读取失败';
+      } finally {
+        if (btn) { btn.classList.remove('loading'); btn.textContent = oldText || '刷新选股'; }
+      }
     }
     function renderJournalDates() {
       const box = document.getElementById('journalDateList');
@@ -4153,6 +4413,7 @@ INDEX_HTML = r"""<!doctype html>
       renderLowerView();
       if (lowerView === 'market') await loadMarketCategories(currentCategory);
       if (lowerView === 'strategy') await loadStrategy2Config();
+      if (document.body.classList.contains('stock-focus')) await loadStockSelection();
       if (document.body.classList.contains('log-focus')) await loadBotLogs();
       await loadCurve(currentPeriod);
       } finally {
@@ -4451,6 +4712,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_curve_payload(period))
             elif path == "/api/trade_records":
                 self._send_json(_trade_records_payload())
+            elif path == "/api/stock_selection":
+                self._send_json(_stock_selection_payload())
             elif path == "/api/bot_logs":
                 qs = parse_qs(parsed.query)
                 try:
