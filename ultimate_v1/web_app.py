@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import alpaca_gateway
 from .bot_supervisor import managed_bot_names, process_status, set_bot_runtime, sync_from_controls
-from .capital_manager import get_capital_allocation, get_strategy_used_capital
+from .capital_manager import get_capital_allocation, get_strategy_used_capital, resolve_margin_usage_pct
 from .config import env_str, settings
 from .db import db_conn, fetch_all
 from .d_tactical import d_tactical_payload, option_preview, submit_option_combo
@@ -28,7 +28,7 @@ from .exposure_manager import latest_exposure_state, latest_rebalance_actions, r
 from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import CAPITAL_MODE_LABELS, get_risk_state
 from .schema import ensure_schema
-from .state_store import bot_controls, bot_heartbeats, capital_state_rows, equity_curve, get_app_setting, latest_risk_state, set_app_setting
+from .state_store import bot_controls, bot_heartbeats, capital_state_rows, equity_curve, get_app_setting, latest_risk_state, set_app_setting, write_risk_state
 from .sync_positions import last_sync_error, sync_all_positions
 
 try:
@@ -89,7 +89,7 @@ def _allocation_payload() -> dict:
     allocation = get_capital_allocation()
     if allocation is None:
         return {"ok": False, "error": "account_snapshot_failed"}
-    margin_usage = _parse_margin_usage_setting()
+    margin_mode, margin_usage, margin_reason = resolve_margin_usage_pct()
     used = allocation.used
     available = allocation.available
     usable_total = sum(allocation.target_for(g) for g in ("A", "B", "C", "D"))
@@ -137,6 +137,8 @@ def _allocation_payload() -> dict:
         "used_total": used_total,
         "total_risk_percent": allocation.total_risk_percent,
         "margin_usage_percent": margin_usage,
+        "margin_usage_mode": margin_mode,
+        "margin_usage_reason": margin_reason,
         "market_exposure_percent": allocation.total_risk_percent / margin_usage if margin_usage > 0 else 0.0,
         "targets": {
             "A": allocation.A_target,
@@ -147,6 +149,7 @@ def _allocation_payload() -> dict:
         "base_targets": allocation.base_targets,
         "base_percents": allocation.base_percents,
         "pool_risk_percents": allocation.pool_risk_percents,
+        "pool_enabled": allocation.pool_enabled,
         "pool_brokers": allocation.pool_brokers,
         "broker_snapshots": allocation.broker_snapshots,
         "used": used,
@@ -294,14 +297,7 @@ def _advance_annual_goal(goal_key: str) -> dict:
 
 
 def _parse_margin_usage_setting() -> float:
-    raw = get_app_setting("RISK_TOTAL_CAPITAL_PCT", "1.0")
-    try:
-        value = float(raw)
-        if value > 10:
-            value = value / 100.0
-    except Exception:
-        value = 1.0
-    return max(1.0, min(1.5, value))
+    return resolve_margin_usage_pct()[1]
 
 
 def _risk_payload() -> dict:
@@ -342,20 +338,44 @@ STRATEGY_2_CONFIG_KEY = "STRATEGY_2_CONFIG"
 STRATEGY_2_DEFAULT_CONFIG = {
     "version": "2.0",
     "capital": {
-        "title": "资金 1:1",
-        "desc": "Alpaca 主账户按 B/C 各 50% 独立计算；A 用 Fidelity，D 日内用 Webull。",
+        "title": "A/C 长期 + B 动量 + D 日内/期权",
+        "desc": "A 和 C 用来买长期，B 策略保持原样，D 独立用于日间交易和期权复盘/执行。",
         "rules": [
-            {"key": "b_capital_pct", "label": "B 资金占比", "value": 50, "unit": "%", "enabled": True},
-            {"key": "c_capital_pct", "label": "C 资金占比", "value": 50, "unit": "%", "enabled": True},
+            {"key": "a_capital_role", "label": "A 职责", "value": "长期/Fidelity", "unit": "", "enabled": True},
+            {"key": "b_capital_role", "label": "B 职责", "value": "动量/Alpaca", "unit": "", "enabled": True},
+            {"key": "c_capital_role", "label": "C 职责", "value": "长期/Alpaca", "unit": "", "enabled": True},
+            {"key": "d_capital_role", "label": "D 职责", "value": "日内+期权/Webull", "unit": "", "enabled": True},
             {"key": "auto_execute", "label": "机器人自动执行", "value": "准备中", "unit": "", "enabled": False},
         ],
     },
     "strategies": [
         {
+            "key": "A",
+            "name": "A 长期指数 / Fidelity",
+            "broker": "Fidelity",
+            "capital": "长期资金",
+            "mission": "负责长期底仓和指数类配置，优先做稳定累积，不参与日内追涨和期权。",
+            "select_rules": [
+                {"key": "a_stock_type", "label": "长期核心标记", "value": "stock_type=A", "unit": "", "enabled": True},
+                {"key": "a_market_filter", "label": "市场环境过滤", "value": "向上/横盘优先", "unit": "", "enabled": True},
+                {"key": "a_rebalance_source", "label": "资金来源", "value": "Fidelity 资金池", "unit": "", "enabled": True},
+            ],
+            "buy_rules": [
+                {"key": "a_buy_style", "label": "买入方式", "value": "分批定投/回调加仓", "unit": "", "enabled": True},
+                {"key": "a_position_role", "label": "仓位角色", "value": "长期核心仓", "unit": "", "enabled": True},
+                {"key": "a_no_intraday", "label": "禁止日内投机", "value": "是", "unit": "", "enabled": True},
+            ],
+            "sell_rules": [
+                {"key": "a_sell_trigger", "label": "卖出触发", "value": "再平衡/风险关闭", "unit": "", "enabled": True},
+                {"key": "a_hold_horizon", "label": "持有周期", "value": "长期", "unit": "", "enabled": True},
+                {"key": "a_options_block", "label": "禁止期权", "value": "是", "unit": "", "enabled": True},
+            ],
+        },
+        {
             "key": "B",
             "name": "B 股票动量",
             "broker": "Alpaca",
-            "capital": "50%",
+            "capital": "策略不变",
             "mission": "从强势股票里筛出确认度足够的进攻买点，买入后必须由 B 卖出机器人执行止损和分批止盈。",
             "select_rules": [
                 {"key": "b_min_up_pct", "label": "日内最低涨幅", "value": 3, "unit": "%", "enabled": True},
@@ -379,8 +399,8 @@ STRATEGY_2_DEFAULT_CONFIG = {
             "key": "C",
             "name": "C 长期成长 / AC 做T",
             "broker": "Alpaca",
-            "capital": "50%",
-            "mission": "围绕长期成长核心仓做日内T，不做期权；上涨只卖新增仓，下跌临时卖核心仓时必须在收盘前恢复，避免隔夜丢失核心仓。",
+            "capital": "长期资金",
+            "mission": "负责长期成长核心仓；AC 做T只围绕长期仓微调，不做期权，避免隔夜丢失核心仓。",
             "select_rules": [
                 {"key": "c_ac_enabled", "label": "显式启用 AC_T", "value": "ac_t_enabled=1", "unit": "", "enabled": True},
                 {"key": "c_stock_type", "label": "长期成长核心仓", "value": "stock_type=C", "unit": "", "enabled": True},
@@ -398,6 +418,28 @@ STRATEGY_2_DEFAULT_CONFIG = {
                 {"key": "c_gap_pullback_sell", "label": "高开回撤临时卖出", "value": 1, "unit": "%", "enabled": True},
                 {"key": "c_force_recover", "label": "收盘前强制恢复核心仓", "value": "12:55", "unit": "LA", "enabled": True},
                 {"key": "c_sell_limit_buffer", "label": "卖出限价缓冲", "value": 0.2, "unit": "%", "enabled": True},
+            ],
+        },
+        {
+            "key": "D",
+            "name": "D 日内交易 / 期权",
+            "broker": "Webull",
+            "capital": "独立日内额度",
+            "mission": "负责日间交易和期权交易，额度独立管理，收盘前优先降低隔夜风险。",
+            "select_rules": [
+                {"key": "d_intraday_candidates", "label": "日内股票候选", "value": "强趋势/高流动性", "unit": "", "enabled": True},
+                {"key": "d_option_underlying", "label": "期权标的", "value": "QQQ/SPY/高流动性", "unit": "", "enabled": True},
+                {"key": "d_market_phase", "label": "交易阶段", "value": "盘中确认", "unit": "", "enabled": True},
+            ],
+            "buy_rules": [
+                {"key": "d_daytrade_window", "label": "日内开仓窗口", "value": "开盘后确认", "unit": "LA", "enabled": True},
+                {"key": "d_option_spread", "label": "期权结构", "value": "价差优先", "unit": "", "enabled": True},
+                {"key": "d_max_risk", "label": "单笔风险", "value": "按D额度限制", "unit": "", "enabled": True},
+            ],
+            "sell_rules": [
+                {"key": "d_flatten_intraday", "label": "日内收尾", "value": "收盘前降风险", "unit": "", "enabled": True},
+                {"key": "d_stop_loss", "label": "止损", "value": "预设价/时间止损", "unit": "", "enabled": True},
+                {"key": "d_take_profit", "label": "止盈", "value": "分批/结构退出", "unit": "", "enabled": True},
             ],
         },
     ],
@@ -1731,10 +1773,20 @@ INDEX_HTML = r"""<!doctype html>
     .hero-donut-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:4px; }
     .mode-pill { display:inline-flex; align-items:center; justify-content:center; min-width:48px; height:26px; padding:0 10px; border-radius:999px; background:#101828; color:#fff; font-size:12px; font-weight:900; }
     .hero-carousel-viewport { overflow:hidden; width:100%; }
-    .hero-carousel-track { width:200%; display:flex; transition:transform .28s ease; }
-    .hero-carousel-track.bots { transform:translateX(-50%); }
-    .hero-carousel-page { width:50%; flex:0 0 50%; min-width:0; display:flex; flex-direction:column; }
+    .hero-carousel-track { width:300%; display:flex; transition:transform .28s ease; }
+    .hero-carousel-track.allocation { transform:translateX(-33.3333%); }
+    .hero-carousel-track.bots { transform:translateX(-66.6667%); }
+    .hero-carousel-page { width:33.3333%; flex:0 0 33.3333%; min-width:0; display:flex; flex-direction:column; }
     .hero-carousel-page .donut-wrap { min-height:112px; }
+    .allocation-grid { display:grid; grid-template-columns:1fr; gap:8px; padding:9px 2px 2px 0; min-height:174px; max-height:186px; overflow:auto; }
+    .allocation-card { border:1px solid #d7e4f1; border-radius:8px; background:rgba(255,255,255,.72); padding:9px; display:grid; gap:7px; min-width:0; }
+    .allocation-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .allocation-name { color:var(--ink); font-size:13px; font-weight:950; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .allocation-role { color:var(--muted); font-size:11px; font-weight:850; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .allocation-meta { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+    .allocation-metric { border:1px solid #e6edf5; border-radius:7px; padding:5px 6px; background:#fff; min-width:0; }
+    .allocation-metric span { display:block; color:var(--muted); font-size:10px; font-weight:850; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .allocation-metric b { display:block; margin-top:2px; color:var(--ink); font-size:12px; font-weight:950; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .hero-side-column { display:grid; gap:10px; align-self:stretch; min-width:0; padding:10px; border:1px solid #d5e2ef; border-radius:8px; background:linear-gradient(135deg,#fffaf3 0%,#f7fbff 54%,#eef5fb 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.78); }
     .hero-pools-list { display:grid; gap:8px; }
     .hero-pool-row { border:1px solid #d8e3ef; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); padding:9px 10px; display:grid; gap:6px; box-shadow:0 6px 14px rgba(15,23,42,.035); }
@@ -1771,6 +1823,14 @@ INDEX_HTML = r"""<!doctype html>
       100% { transform:scale(1); box-shadow:0 0 0 0 rgba(21,147,106,0); filter:brightness(1); }
     }
     .risk-actions { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; gap:8px; width:100%; }
+    .pool-switches { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+    .pool-switch { height:34px; display:flex; align-items:center; justify-content:space-between; gap:8px; border:1px solid #d7e4f1; border-radius:8px; background:#fff; padding:0 9px; color:var(--muted); font-size:12px; font-weight:900; }
+    .pool-switch input { display:none; }
+    .pool-switch-dot { width:28px; height:16px; border-radius:999px; background:#d0d5dd; padding:2px; transition:background .15s ease; flex:0 0 auto; }
+    .pool-switch-dot:after { content:""; display:block; width:12px; height:12px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(15,23,42,.2); transition:transform .15s ease; }
+    .pool-switch.on { color:var(--ink); border-color:#b7d5f5; background:#f8fbff; }
+    .pool-switch.on .pool-switch-dot { background:#15936a; }
+    .pool-switch.on .pool-switch-dot:after { transform:translateX(12px); }
     .risk-badge { font-size:13px; font-weight:700; padding:5px 9px; border-radius:999px; background:#e7f6ef; color:var(--green); white-space:nowrap; }
     .risk-badge.warn { background:#fff3d6; color:#9a5b00; }
     .risk-badge.danger { background:#fee2e2; color:#b42318; }
@@ -1783,13 +1843,22 @@ INDEX_HTML = r"""<!doctype html>
     .rebalance-icon { grid-area:icon; width:34px; height:34px; border-radius:8px; display:grid; place-items:center; background:#fff; color:#075985; font-weight:950; box-shadow:inset 0 0 0 1px #bfdbfe; }
     .rebalance-title { grid-area:title; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--ink); font-weight:900; }
     .rebalance-detail { grid-area:detail; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-    .broker-balances { grid-column:1 / -1; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding:12px; border:1px solid #d6e2ef; border-radius:8px; background:linear-gradient(135deg,#fff 0%,#f7fbff 62%,#fffaf0 100%); box-shadow:0 8px 20px rgba(15,23,42,.045); }
-    .broker-balance-item { min-height:62px; display:grid; gap:5px; align-content:center; padding:8px 10px; border-right:1px solid #e6edf5; }
-    .broker-balance-item:last-child { border-right:0; }
-    .broker-balance-label { color:var(--muted); font-size:12px; font-weight:900; }
-    .broker-balance-value { color:#17202a; font-size:19px; font-weight:950; line-height:1.1; font-variant-numeric:tabular-nums; }
-    .broker-balance-value.neg { color:var(--red); }
-    .broker-balance-value.pos { color:var(--green); }
+    .daily-action-panel { grid-column:1 / -1; display:grid; grid-template-columns:1.05fr 1fr 1.2fr; gap:0; padding:13px 14px; border:1px solid #d6e2ef; border-radius:8px; background:linear-gradient(135deg,#fff 0%,#f7fbff 62%,#fffaf0 100%); box-shadow:0 8px 20px rgba(15,23,42,.045); }
+    .daily-action-section { min-height:82px; display:grid; gap:8px; align-content:start; padding:4px 14px; border-right:1px solid #e6edf5; }
+    .daily-action-section:first-child { padding-left:0; }
+    .daily-action-section:last-child { border-right:0; padding-right:0; }
+    .daily-action-title { color:var(--muted); font-size:12px; font-weight:950; }
+    .daily-action-main { color:var(--ink); font-size:20px; font-weight:950; line-height:1.12; font-variant-numeric:tabular-nums; }
+    .daily-action-main.ok { color:var(--green); }
+    .daily-action-main.warn { color:#9a5b00; }
+    .daily-action-main.danger { color:var(--red); }
+    .daily-pill-row { display:flex; flex-wrap:wrap; gap:6px; }
+    .daily-pill { display:inline-flex; align-items:center; gap:5px; min-height:24px; padding:3px 7px; border-radius:7px; background:#eef6ff; color:#075985; font-size:12px; font-weight:900; white-space:nowrap; }
+    .daily-pill.off { background:#eef1f5; color:var(--muted); }
+    .daily-pill.warn { background:#fff3d6; color:#9a5b00; }
+    .daily-pill.danger { background:#fee2e2; color:#b42318; }
+    .daily-action-note { color:var(--muted); font-size:12px; font-weight:750; line-height:1.4; }
+    .daily-action-advice { color:var(--ink); font-size:13px; font-weight:850; line-height:1.45; }
     .pool-card { border:1px solid var(--line); border-radius:8px; padding:14px; min-height:126px; background:linear-gradient(180deg,#fff,#fafcff); box-shadow:0 10px 22px rgba(15,23,42,.04); position:relative; overflow:hidden; }
     .pool-card:before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:#d7e0ea; }
     .pool-card.defensive-pool { background:linear-gradient(180deg,#f9fbff,#f4f8fd); }
@@ -2245,6 +2314,7 @@ INDEX_HTML = r"""<!doctype html>
       .annual-grid { grid-template-columns:1fr; gap:9px; }
       .annual-goal { min-height:84px; padding:11px; }
       .donut-wrap { min-height:188px; justify-content:center; gap:14px; }
+      .allocation-grid { min-height:188px; max-height:260px; padding-right:2px; }
       #capitalDonut { width:150px; height:150px; }
       .legend { min-width:132px; gap:7px; }
       .legend-row { gap:7px; font-size:12px; flex-wrap:wrap; }
@@ -2275,9 +2345,10 @@ INDEX_HTML = r"""<!doctype html>
       .journal-prompts { grid-template-columns:1fr; }
       .life-journal { min-height:520px; }
       .journal-textarea { min-height:420px; }
-      .broker-balances { grid-template-columns:1fr; }
-      .broker-balance-item { border-right:0; border-bottom:1px solid #e6edf5; }
-      .broker-balance-item:last-child { border-bottom:0; }
+      .daily-action-panel { grid-template-columns:1fr; }
+      .daily-action-section { border-right:0; border-bottom:1px solid #e6edf5; padding:10px 0; }
+      .daily-action-section:first-child { padding-top:0; }
+      .daily-action-section:last-child { border-bottom:0; padding-bottom:0; }
       .bot-log-layout { grid-template-columns:1fr; min-height:auto; }
       .bot-log-sidebar { flex-direction:row; overflow:auto; }
       .bot-log-group-label { display:none; }
@@ -2352,6 +2423,7 @@ INDEX_HTML = r"""<!doctype html>
                     <div class="carousel-actions">
                       <span class="mode-pill" id="modeValue">--</span>
                       <button class="carousel-tab active" id="toolTabDonut" onclick="setToolsPage('donut')">资金</button>
+                      <button class="carousel-tab" id="toolTabAllocation" onclick="setToolsPage('allocation')">分配</button>
                       <button class="carousel-tab" id="toolTabBots" onclick="setToolsPage('bots')">机器人</button>
                     </div>
                   </div>
@@ -2362,6 +2434,9 @@ INDEX_HTML = r"""<!doctype html>
                           <canvas id="capitalDonut" width="220" height="220"></canvas>
                           <div class="legend" id="donutLegend"></div>
                         </div>
+                      </div>
+                      <div class="hero-carousel-page">
+                        <div class="allocation-grid" id="capitalAllocationGrid"></div>
                       </div>
                       <div class="hero-carousel-page">
                         <div class="bot-grid" id="botLights"></div>
@@ -2385,14 +2460,16 @@ INDEX_HTML = r"""<!doctype html>
                         </select>
                         <button class="clear-btn" onclick="openClearModal()">清仓</button>
                         <select class="risk-control-select" id="marginUsageSelect" onchange="updateMarginUsage(this.value)" title="A/B/C 保证金使用额度">
-                          <option value="1.0">额度 100%</option>
-                          <option value="1.1">额度 110%</option>
-                          <option value="1.2">额度 120%</option>
-                          <option value="1.3">额度 130%</option>
-                          <option value="1.4">额度 140%</option>
-                          <option value="1.5">额度 150%</option>
+                          <option value="auto">自动额度</option>
+                          <option value="1.0">固定 100%</option>
+                          <option value="1.1">固定 110%</option>
+                          <option value="1.2">固定 120%</option>
+                          <option value="1.3">固定 130%</option>
+                          <option value="1.4">固定 140%</option>
+                          <option value="1.5">固定 150%</option>
                         </select>
                       </div>
+                      <div class="pool-switches" id="poolSwitches"></div>
                     </div>
                   </div>
                   <div class="rebalance-card"><div class="rebalance-advice" id="rebalanceAdvice"></div></div>
@@ -2401,18 +2478,11 @@ INDEX_HTML = r"""<!doctype html>
               <div class="hero-side-column">
                 <div class="hero-pools-list" id="heroPools"></div>
               </div>
-              <div class="broker-balances" id="brokerBalances">
-                <div class="broker-balance-item">
-                  <div class="broker-balance-label">Buying Power</div>
-                  <div class="broker-balance-value">--</div>
-                </div>
-                <div class="broker-balance-item">
-                  <div class="broker-balance-label">Cash</div>
-                  <div class="broker-balance-value">--</div>
-                </div>
-                <div class="broker-balance-item">
-                  <div class="broker-balance-label">Daily Change</div>
-                  <div class="broker-balance-value">--</div>
+              <div class="daily-action-panel" id="brokerBalances">
+                <div class="daily-action-section">
+                  <div class="daily-action-title">今日作战</div>
+                  <div class="daily-action-main">--</div>
+                  <div class="daily-action-note">等待资金池与风控数据</div>
                 </div>
               </div>
             </div>
@@ -2571,8 +2641,11 @@ INDEX_HTML = r"""<!doctype html>
           <button class="sync-positions-btn" id="syncPositionsBtn" onclick="syncPositions()">同步仓位</button>
           <div class="holding-tabs" id="holdingTabs">
             <button class="holding-tab active" data-holding="ALL">总</button>
+            <button class="holding-tab" data-holding="A">A</button>
             <button class="holding-tab" data-holding="B">B</button>
             <button class="holding-tab" data-holding="C">C</button>
+            <button class="holding-tab" data-holding="D">D</button>
+            <button class="holding-tab" data-holding="F">F</button>
             <button class="holding-tab" data-holding="TRADES">交易</button>
             <button class="holding-tab config-tab" data-holding="CONFIG">配置</button>
           </div>
@@ -2923,6 +2996,32 @@ INDEX_HTML = r"""<!doctype html>
       if (key === 'webull') return 'Webull';
       return value || '--';
     }
+    function poolRiskPct(g, cap) {
+      const poolPct = Number(cap.pool_risk_percents?.[g] || 0);
+      return (g === 'D' ? poolPct : Number(cap.total_risk_percent || 0) * poolPct) * 100;
+    }
+    function poolRole(g) {
+      return {
+        A: '长期底仓 / Fidelity',
+        B: '股票动量 / Alpaca',
+        C: '长期成长 / Alpaca',
+        D: '日内 + 期权 / Webull',
+      }[g] || '--';
+    }
+    function renderPoolSwitches(cap) {
+      const box = document.getElementById('poolSwitches');
+      if (!box) return;
+      const enabled = cap.pool_enabled || {};
+      box.innerHTML = ['A','B','C','D'].map(g => {
+        const on = enabled[g] !== false;
+        return `
+          <label class="pool-switch ${on ? 'on' : ''}" title="${poolRole(g)}">
+            <span>${g}</span>
+            <input type="checkbox" ${on ? 'checked' : ''} onchange="updatePoolEnabled('${g}', this.checked)" />
+            <span class="pool-switch-dot"></span>
+          </label>`;
+      }).join('');
+    }
     function poolCard(g, cap) {
       const defensive = cap.defensive_pools?.[g];
       if (defensive) {
@@ -2939,9 +3038,8 @@ INDEX_HTML = r"""<!doctype html>
       const used = Number(cap.used[g] || 0), av = Number(cap.available[g] || 0);
       const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
-      const riskPct = Number(cap.total_risk_percent || 0) * Number(cap.pool_risk_percents?.[g] || 0) * 100;
-      const broker = brokerLabel(cap.pool_brokers?.[g]);
-      return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池 <span class="pool-label">${broker}</span></div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>月度目标 ${money(displayTarget)}</span><span>可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
+      const riskPct = poolRiskPct(g, cap);
+      return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${g} 资金池</div><div class="small-muted">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>月度目标 ${money(displayTarget)}</span><span>可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
     function poolRow(g, cap) {
       const riskTarget = Number(cap.targets?.[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
@@ -2949,9 +3047,38 @@ INDEX_HTML = r"""<!doctype html>
       const used = Number(cap.used?.[g] || 0), av = Number(cap.available?.[g] || 0);
       const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
-      const riskPct = Number(cap.total_risk_percent || 0) * Number(cap.pool_risk_percents?.[g] || 0) * 100;
-      const broker = brokerLabel(cap.pool_brokers?.[g]);
-      return `<div class="hero-pool-row"><div class="hero-pool-top"><div><div class="hero-pool-name">${g} 资金池 <span class="pool-label">${broker}</span></div><div class="hero-pool-meta">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><span class="small-muted">${w.toFixed(1)}%</span></div><div class="hero-pool-mid"><span class="hero-pool-used">${money(used)}</span><span class="hero-pool-available">可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
+      const riskPct = poolRiskPct(g, cap);
+      return `<div class="hero-pool-row"><div class="hero-pool-top"><div><div class="hero-pool-name">${g} 资金池</div><div class="hero-pool-meta">月度 ${basePct.toFixed(1)}% · 可开 ${riskPct.toFixed(0)}%</div></div><span class="small-muted">${w.toFixed(1)}%</span></div><div class="hero-pool-mid"><span class="hero-pool-used">${money(used)}</span><span class="hero-pool-available">可开仓 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
+    }
+    function renderCapitalAllocation(cap) {
+      const grid = document.getElementById('capitalAllocationGrid');
+      if (!grid) return;
+      grid.innerHTML = ['A','B','C','D'].map(g => {
+        const riskTarget = Number(cap.targets?.[g] || 0);
+        const baseTarget = Number(cap.base_targets?.[g] || 0);
+        const displayTarget = riskTarget > 0 ? riskTarget : baseTarget;
+        const used = Number(cap.used?.[g] || 0);
+        const av = Number(cap.available?.[g] || 0);
+        const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
+        const basePct = Number(cap.base_percents?.[g] || 0) * 100;
+        const riskPct = poolRiskPct(g, cap);
+        return `
+          <div class="allocation-card">
+            <div class="allocation-head">
+              <div>
+                <div class="allocation-name">${g} 资金池</div>
+                <div class="allocation-role">${poolRole(g)}</div>
+              </div>
+            </div>
+            <div class="allocation-meta">
+              <div class="allocation-metric"><span>月度比例</span><b>${basePct.toFixed(1)}%</b></div>
+              <div class="allocation-metric"><span>可开比例</span><b>${riskPct.toFixed(0)}%</b></div>
+              <div class="allocation-metric"><span>已用</span><b>${money(used)}</b></div>
+              <div class="allocation-metric"><span>可开仓</span><b>${money(av)}</b></div>
+            </div>
+            <div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div>
+          </div>`;
+      }).join('');
     }
     function drawDonutOn(canvasId, legendId, cap) {
       const canvas = document.getElementById(canvasId);
@@ -3013,14 +3140,19 @@ INDEX_HTML = r"""<!doctype html>
       renderBots(latestBotHeartbeats, latestBotControls);
     }
     function setToolsPage(page) {
-      toolsPage = page === 'bots' ? 'bots' : 'donut';
+      toolsPage = ['donut','allocation','bots'].includes(page) ? page : 'donut';
       const track = document.getElementById('toolsTrack');
-      if (track) track.classList.toggle('bots', toolsPage === 'bots');
+      if (track) {
+        track.classList.toggle('allocation', toolsPage === 'allocation');
+        track.classList.toggle('bots', toolsPage === 'bots');
+      }
       document.getElementById('toolTabDonut')?.classList.toggle('active', toolsPage === 'donut');
+      document.getElementById('toolTabAllocation')?.classList.toggle('active', toolsPage === 'allocation');
       document.getElementById('toolTabBots')?.classList.toggle('active', toolsPage === 'bots');
       const title = document.getElementById('toolsPanelTitle');
-      if (title) title.textContent = toolsPage === 'bots' ? '机器人' : '资金比例';
+      if (title) title.textContent = toolsPage === 'bots' ? '机器人' : (toolsPage === 'allocation' ? '资金分配' : '资金比例');
       if (toolsPage === 'donut' && window.latestCapitalPayload) setTimeout(() => drawDonut(window.latestCapitalPayload), 50);
+      if (toolsPage === 'allocation' && window.latestCapitalPayload) renderCapitalAllocation(window.latestCapitalPayload);
     }
     function renderPhase(phase) {
       const chip = document.getElementById('phaseChip');
@@ -4116,6 +4248,7 @@ INDEX_HTML = r"""<!doctype html>
       }
       const grid = document.getElementById('strategy2Grid');
       if (!grid) return;
+      const badgeLabel = key => ({A:'长期', B:'股票', C:'长期', D:'日内/期权'}[key] || '策略');
       grid.innerHTML = (config?.strategies || []).map(strategy => `
         <div class="strategy-card" data-strategy-card="${esc(strategy.key)}">
           <div class="strategy-card-head">
@@ -4123,7 +4256,7 @@ INDEX_HTML = r"""<!doctype html>
               <h3>${esc(strategy.key)} · ${esc(strategy.name)}</h3>
               <div class="strategy-card-meta">${esc(strategy.broker)} · 资金 ${esc(strategy.capital)}</div>
             </div>
-            <span class="strategy-badge">${esc(strategy.key === 'B' ? '股票' : '长期')}</span>
+            <span class="strategy-badge">${esc(badgeLabel(strategy.key))}</span>
           </div>
           <p class="strategy-mission">${esc(strategy.mission)}</p>
           <div class="rule-section">
@@ -4210,7 +4343,7 @@ INDEX_HTML = r"""<!doctype html>
       renderDSection();
     }
     function setLowerView(view) {
-      lowerView = view === 'market' ? 'market' : view === 'trades' ? 'trades' : view === 'strategy' ? 'strategy' : 'holdings';
+      lowerView = view === 'market' ? 'market' : view === 'd' ? 'd' : view === 'trades' ? 'trades' : view === 'strategy' ? 'strategy' : 'holdings';
       if (lowerView === 'trades') currentHolding = 'TRADES';
       if (lowerView === 'holdings' && isTradesHolding()) currentHolding = 'ALL';
       renderHoldings();
@@ -4303,12 +4436,18 @@ INDEX_HTML = r"""<!doctype html>
     function renderRebalanceAdvice(exposureState, risk) {
       const el = document.getElementById('rebalanceAdvice');
       if (!el) return;
+      const cap = window.latestCapitalPayload || {};
+      const leverage = Number(cap.margin_usage_percent || 1);
+      const leverageLabel = `${leverage.toFixed(2)}x`;
+      const leverageText = cap.margin_usage_mode === 'AUTO'
+        ? `自动杠杆 ${leverageLabel}`
+        : `固定杠杆 ${leverageLabel}`;
       if (!exposureState) {
         const target = Number(risk?.recommended_exposure || 0);
         el.innerHTML = `
           <span class="rebalance-icon">调</span>
           <span class="rebalance-title">自动调仓 <span class="risk-chip info">等待建议</span></span>
-          <span class="rebalance-detail"><span>目标仓位 ${target ? (target * 100).toFixed(0) + '%' : '--'}</span><span>rebalance_bot 未生成</span></span>
+          <span class="rebalance-detail"><span>${leverageText}</span><span>目标仓位 ${target ? (target * 100).toFixed(0) + '%' : '--'}</span><span>rebalance_bot 未生成</span></span>
         `;
         return;
       }
@@ -4323,6 +4462,7 @@ INDEX_HTML = r"""<!doctype html>
         <span class="rebalance-icon">调</span>
         <span class="rebalance-title">自动调仓 <span class="risk-chip ${tone}">${label}</span></span>
         <span class="rebalance-detail">
+          <span>${leverageText}</span>
           <span>当前 ${(cur * 100).toFixed(1)}%</span>
           <span>目标 ${(target * 100).toFixed(1)}%</span>
           <span>差额 ${money(Math.abs(gap))}</span>
@@ -4330,31 +4470,59 @@ INDEX_HTML = r"""<!doctype html>
         </span>
       `;
     }
-    function renderBrokerBalances(cap, risk) {
+    function renderDailyActionPanel(cap, risk, holdingsPayload, state, dTactical) {
       const el = document.getElementById('brokerBalances');
       if (!el) return;
-      const brokers = cap?.broker_snapshots || {};
-      const rows = [
-        ['Fidelity · A', brokers.fidelity],
-        ['Alpaca · B/C', brokers.alpaca],
-        ['Webull · D 日内', brokers.webull],
-      ];
-      el.innerHTML = rows.map(([label, snap]) => {
-        const equity = Number(snap?.equity || 0);
-        const buyingPower = Number(snap?.buying_power || 0);
-        const cash = Number(snap?.cash || 0);
-        const valueClass = cash < 0 ? 'neg' : equity > 0 ? 'pos' : '';
-        const value = equity > 0
-          ? `${money(equity)}`
-          : '--';
-        const sub = equity > 0 ? `BP ${money(buyingPower)} · Cash ${money(cash)}` : '未配置账户余额';
-        return `
-        <div class="broker-balance-item">
-          <div class="broker-balance-label">${label}</div>
-          <div class="broker-balance-value ${valueClass}">${value}</div>
-          <div class="small-muted">${sub}</div>
+      const available = cap?.available || {};
+      const enabled = cap?.pool_enabled || {};
+      const rows = holdingsPayload?.rows || latestHoldings || [];
+      const activePositions = rows.filter(r => Number(r.qty || 0) > 0);
+      const bCandidates = rows.filter(r => String(r.strategy_group || '').toUpperCase() === 'B' && String(r.status || '').toLowerCase() === 'candidate').length;
+      const dSignals = Number(dTactical?.signals?.length || dTactical?.candidates?.length || 0);
+      const poolStatus = ['A','B','C','D'].map(g => {
+        const open = enabled[g] !== false;
+        const amt = Number(available[g] || 0);
+        const blocked = risk?.block_all_new || risk?.[`block_${g.toLowerCase()}`];
+        const cls = !open ? 'off' : blocked ? 'danger' : amt > 0 ? '' : 'warn';
+        const label = !open ? `${g} 关闭` : blocked ? `${g} 风控` : `${g} ${money(amt)}`;
+        return `<span class="daily-pill ${cls}">${label}</span>`;
+      }).join('');
+      const leverage = Number(cap?.margin_usage_percent || cap?.total_risk_percent || 1);
+      const leverageMode = cap?.margin_usage_mode === 'AUTO' ? '自动杠杆' : '固定杠杆';
+      const targetExposure = Number(cap?.total_risk_percent || 0);
+      const usedTotal = Number(cap?.used_total || 0);
+      const usableTotal = Number(cap?.usable_total || 0);
+      const availableTotal = Object.values(available || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+      const usedPct = usableTotal > 0 ? usedTotal / usableTotal : 0;
+      const riskBlocked = risk?.block_all_new;
+      const advice = riskBlocked
+        ? '风控已阻止新开仓，今天以复盘持仓、检查止损和等待风险解除为主。'
+        : bCandidates > 0 && enabled.B !== false && Number(available.B || 0) > 0
+          ? `先复盘 B 策略候选 ${bCandidates} 只，再按额度和买点分批处理。`
+          : enabled.D !== false && Number(available.D || 0) > 0
+            ? '没有明显 B 候选时，D 只做日内/期权短打，收盘前降低隔夜风险。'
+            : enabled.C !== false && Number(available.C || 0) > 0
+              ? '今日偏观察，可把 C 的长期低吸名单排一遍，等回撤或突破确认。'
+              : '暂无明确开仓动作，保留现金，重点复盘涨幅榜和异常波动。';
+      const actionTone = riskBlocked ? 'danger' : availableTotal > 0 ? 'ok' : 'warn';
+      el.innerHTML = `
+        <div class="daily-action-section">
+          <div class="daily-action-title">今日可用行动</div>
+          <div class="daily-action-main ${actionTone}">${availableTotal > 0 ? money(availableTotal) : '暂停开仓'}</div>
+          <div class="daily-pill-row">${poolStatus}</div>
         </div>
-      `}).join('');
+        <div class="daily-action-section">
+          <div class="daily-action-title">风险预算</div>
+          <div class="daily-action-main">${leverage.toFixed(2)}x</div>
+          <div class="daily-action-note">${leverageMode} · 目标 ${(targetExposure * 100).toFixed(0)}% · 已用 ${(usedPct * 100).toFixed(1)}%</div>
+          <div class="daily-action-note">${cap?.margin_usage_reason || '跟随当前风控设置'}</div>
+        </div>
+        <div class="daily-action-section">
+          <div class="daily-action-title">下一步建议</div>
+          <div class="daily-action-advice">${advice}</div>
+          <div class="daily-action-note">持仓 ${activePositions.length} 只 · B候选 ${bCandidates} · D信号 ${dSignals}</div>
+        </div>
+      `;
     }
     async function updateRiskPreference(value) {
       const result = await postJson('/api/risk_settings', {risk_preference:value});
@@ -4362,8 +4530,14 @@ INDEX_HTML = r"""<!doctype html>
       await loadAll();
     }
     async function updateMarginUsage(value) {
-      const result = await postJson('/api/risk_settings', {margin_usage:value});
+      const body = value === 'auto' ? {margin_mode:'AUTO'} : {margin_usage:value, margin_mode:'MANUAL'};
+      const result = await postJson('/api/risk_settings', body);
       if (!result.ok) { alert(result.error || '保证金额度更新失败'); return; }
+      await loadAll();
+    }
+    async function updatePoolEnabled(group, enabled) {
+      const result = await postJson('/api/risk_settings', {pool_enabled:{[group]: enabled}});
+      if (!result.ok) { alert(result.error || '资金池开关更新失败'); await loadAll(); return; }
       await loadAll();
     }
     async function loadAll() {
@@ -4377,10 +4551,17 @@ INDEX_HTML = r"""<!doctype html>
         renderAnnualGoals(cap.annual_goals || []);
         document.getElementById('heroPools').innerHTML = ['A','B','C','D'].map(g => poolRow(g, cap)).join('');
         const marginSelect = document.getElementById('marginUsageSelect');
-        if (marginSelect) marginSelect.value = String((Number(cap.margin_usage_percent || cap.total_risk_percent || 1)).toFixed(1));
+        if (marginSelect) {
+          marginSelect.value = cap.margin_usage_mode === 'AUTO' ? 'auto' : String((Number(cap.margin_usage_percent || cap.total_risk_percent || 1)).toFixed(1));
+          marginSelect.title = cap.margin_usage_mode === 'AUTO'
+            ? `自动额度：当前 ${(Number(cap.margin_usage_percent || 1) * 100).toFixed(0)}%。${cap.margin_usage_reason || ''}`
+            : 'A/B/C 保证金使用额度';
+        }
+        renderPoolSwitches(cap);
         updateManualPoolAvailable();
         drawDonut(cap);
-        renderBrokerBalances(cap, risk);
+        renderCapitalAllocation(cap);
+        renderDailyActionPanel(cap, risk, holdings, state, dTactical);
       } else {
         document.getElementById('modeValue').textContent = 'ERROR';
       }
@@ -4778,6 +4959,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/risk_settings":
                 risk_preference = str(payload.get("risk_preference") or "").strip()
                 margin_usage = payload.get("margin_usage")
+                margin_mode = str(payload.get("margin_mode") or "").strip().upper()
+                pool_enabled = payload.get("pool_enabled")
                 response = {"ok": True}
                 if risk_preference:
                     if risk_preference not in {"保守", "中性", "激进"}:
@@ -4785,6 +4968,12 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     set_app_setting("RISK_PREFERENCE", risk_preference)
                     response["risk_preference"] = risk_preference
+                if margin_mode:
+                    if margin_mode not in {"AUTO", "MANUAL"}:
+                        self._send_json({"ok": False, "error": "不支持的额度模式"}, 400)
+                        return
+                    set_app_setting("RISK_MARGIN_MODE", margin_mode)
+                    response["margin_mode"] = margin_mode
                 if margin_usage is not None:
                     try:
                         margin_value = float(margin_usage)
@@ -4793,11 +4982,33 @@ class Handler(BaseHTTPRequestHandler):
                     if margin_value not in {1.0, 1.1, 1.2, 1.3, 1.4, 1.5}:
                         self._send_json({"ok": False, "error": "不支持的保证金额度"}, 400)
                         return
+                    set_app_setting("RISK_MARGIN_MODE", "MANUAL")
                     set_app_setting("RISK_TOTAL_CAPITAL_PCT", f"{margin_value:.1f}")
                     response["margin_usage"] = margin_value
-                if "risk_preference" not in response and "margin_usage" not in response:
+                if isinstance(pool_enabled, dict):
+                    current = {
+                        group: str(get_app_setting(f"RISK_{group}_POOL_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on", "y"}
+                        for group in ("A", "B", "C", "D")
+                    }
+                    for group, enabled_raw in pool_enabled.items():
+                        group = str(group or "").upper()
+                        if group not in current:
+                            self._send_json({"ok": False, "error": "不支持的资金池"}, 400)
+                            return
+                        current[group] = bool(enabled_raw is True or str(enabled_raw).lower() in {"1", "true", "yes", "on"})
+                    if not any(current.values()):
+                        self._send_json({"ok": False, "error": "至少保留一个资金池开启"}, 400)
+                        return
+                    for group, enabled in current.items():
+                        set_app_setting(f"RISK_{group}_POOL_ENABLED", "1" if enabled else "0")
+                    response["pool_enabled"] = current
+                if not any(key in response for key in ("risk_preference", "margin_usage", "margin_mode", "pool_enabled")):
                     self._send_json({"ok": False, "error": "没有可更新的设置"}, 400)
                     return
+                try:
+                    write_risk_state(get_risk_state())
+                except Exception as exc:
+                    response["risk_refresh_error"] = str(exc)[:180]
                 try:
                     refresh_exposure_plan(mode="SUGGEST", execute=True)
                 except Exception as exc:

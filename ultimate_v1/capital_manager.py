@@ -32,6 +32,10 @@ class CapitalAllocation:
     base_percents: dict[str, float]
     total_risk_percent: float
     pool_risk_percents: dict[str, float]
+    pool_enabled: dict[str, bool]
+    margin_usage_mode: str
+    margin_usage_percent: float
+    margin_usage_reason: str
     used: dict[str, float]
     available: dict[str, float]
     pool_brokers: dict[str, str]
@@ -51,6 +55,9 @@ POOL_BROKERS = {
     "C": "alpaca",
     "D": "webull",
 }
+POOL_GROUPS = ("A", "B", "C", "D")
+BASE_POOL_WEIGHTS = {"A": 0.20, "B": 0.50, "C": 0.20, "D": 0.10}
+DISABLED_POOL_TRANSFER = {"A": "B", "C": "B", "D": "C"}
 
 
 def _manual_account_snapshot(prefix: str) -> alpaca_gateway.AccountSnapshot:
@@ -122,6 +129,79 @@ def _month_start(today: date | None = None) -> date:
     return date(today.year, today.month, 1)
 
 
+def _setting_float(key: str, default: float) -> float:
+    raw = os.getenv(key)
+    if raw is None:
+        raw = get_app_setting(key, str(default))
+    try:
+        value = float(raw)
+        if value > 10:
+            value = value / 100.0
+        return value
+    except Exception:
+        return default
+
+
+def _setting_bool(key: str, default: bool = True) -> bool:
+    raw = os.getenv(key)
+    if raw is None:
+        raw = get_app_setting(key, "1" if default else "0")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def pool_enabled_settings() -> dict[str, bool]:
+    enabled = {group: _setting_bool(f"RISK_{group}_POOL_ENABLED", True) for group in POOL_GROUPS}
+    if not any(enabled.values()):
+        enabled["B"] = True
+    return enabled
+
+
+def _auto_margin_usage_pct(risk) -> tuple[float, str]:
+    """按市场环境给出 100%-150% 的自动保证金额度。"""
+    trend = str(getattr(risk, "market_trend", "") or "")
+    vix = float(getattr(risk, "vix", 0.0) or 0.0)
+    qqq_change = float(getattr(risk, "qqq_change_pct", 0.0) or 0.0)
+    loss_days = int(getattr(risk, "loss_days", 0) or 0)
+    max_drawdown = float(getattr(risk, "max_drawdown", 0.0) or 0.0)
+    block_all = bool(getattr(risk, "block_all", False))
+    risk_preference = str(getattr(risk, "risk_preference", "") or "中性")
+
+    if block_all or trend == "向下" or vix >= 28 or loss_days >= 2 or max_drawdown >= 0.10:
+        value, reason = 1.0, "防守：向下/VIX高/连续亏损/回撤扩大，额度 100%"
+    elif trend == "向上" and vix < 16 and qqq_change >= 0:
+        value, reason = 1.5, "进攻：向上且 VIX<16，额度 150%"
+    elif trend == "向上" and vix < 20:
+        value, reason = 1.4, "偏强：向上且 VIX<20，额度 140%"
+    elif trend == "横盘" and vix < 18:
+        value, reason = 1.2, "中性偏强：横盘低波动，额度 120%"
+    elif vix < 24:
+        value, reason = 1.1, "中性：波动可控，额度 110%"
+    else:
+        value, reason = 1.0, "谨慎：波动升高，额度 100%"
+
+    if risk_preference == "保守":
+        capped = min(value, 1.1)
+        if capped < value:
+            return capped, f"{reason}；保守模式上限 110%"
+        return capped, reason
+    if risk_preference == "中性":
+        capped = min(value, 1.3)
+        if capped < value:
+            return capped, f"{reason}；中性模式上限 130%"
+        return capped, reason
+    return value, reason
+
+
+def resolve_margin_usage_pct(risk=None) -> tuple[str, float, str]:
+    mode = str(get_app_setting("RISK_MARGIN_MODE", "AUTO") or "AUTO").upper()
+    if mode == "AUTO":
+        risk = risk or get_risk_state()
+        value, reason = _auto_margin_usage_pct(risk)
+        return "AUTO", max(1.0, min(1.5, value)), reason
+    value = _setting_float("RISK_TOTAL_CAPITAL_PCT", 1.0)
+    return "MANUAL", max(1.0, min(1.5, value)), "手动固定额度"
+
+
 def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
     """读取当前资金模式的基础比例；A/B/C 是本金池比例，D 是独立保证金额度比例。"""
     try:
@@ -137,7 +217,7 @@ def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
     except Exception as exc:
         print(f"[CAPITAL WARN] dynamic weights unavailable, fallback mode weights: {exc}", flush=True)
 
-    a, b, c, allow_d = {
+    a, b, c, d = {
         "NORMAL": (0.20, 0.30, 0.50, 0.30),
         "SAFE": (0.35, 0.15, 0.50, 0.10),
         "ATTACK": (0.15, 0.35, 0.50, 0.30),
@@ -149,18 +229,14 @@ def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
 
 def _margin_usage_pct() -> float:
     """读取保证金总额度上限：100%-150%。"""
-    raw_total = os.getenv("RISK_TOTAL_CAPITAL_PCT") or get_app_setting("RISK_TOTAL_CAPITAL_PCT", "1.0")
-    try:
-        margin_pct = float(raw_total)
-        if margin_pct > 10:
-            margin_pct = margin_pct / 100.0
-    except Exception:
-        margin_pct = 1.0
-    return max(1.0, min(1.5, margin_pct))
+    return resolve_margin_usage_pct()[1]
 
 
 def _market_exposure_pct(risk) -> float:
     """读取市场环境目标仓位：向上/VIX低 90%，横盘 80%，向下 35%。"""
+    recommended = float(getattr(risk, "recommended_exposure", 0.0) or 0.0)
+    if recommended > 0:
+        return max(0.0, min(1.0, recommended))
     if risk.market_trend == "向上" and risk.vix < env_float("REBALANCE_LOW_VIX", 20.0):
         return env_float("REBALANCE_TARGET_UP", 0.90)
     if risk.market_trend == "向下":
@@ -171,26 +247,57 @@ def _market_exposure_pct(risk) -> float:
 def _risk_percents() -> tuple[float, dict[str, float]]:
     """计算 A/B/C 有效可用额度：保证金上限 × 市场仓位目标。"""
     risk = get_risk_state()
-    total_pct = _margin_usage_pct() * _market_exposure_pct(risk)
+    total_pct = resolve_margin_usage_pct(risk)[1] * _market_exposure_pct(risk)
+    enabled = pool_enabled_settings()
     pool_pct = {
-        "A": max(0.0, min(1.0, env_float("RISK_A_POOL_PCT", 1.0))),
-        "B": max(0.0, min(1.0, env_float("RISK_B_POOL_PCT", 1.0))),
-        "C": max(0.0, min(1.0, env_float("RISK_C_POOL_PCT", 1.0))),
-        "D": max(0.0, min(1.0, env_float("RISK_D_POOL_PCT", 1.0))),
+        group: 0.0 if not enabled[group] else max(0.0, min(1.0, _setting_float(f"RISK_{group}_POOL_PCT", 1.0)))
+        for group in POOL_GROUPS
     }
     return total_pct, pool_pct
+
+
+def _pool_base_percents() -> dict[str, float]:
+    raw = {
+        "A": _setting_float("A_ACCOUNT_CAPITAL_PCT", BASE_POOL_WEIGHTS["A"]),
+        "B": _setting_float("B_ACCOUNT_CAPITAL_PCT", BASE_POOL_WEIGHTS["B"]),
+        "C": _setting_float("C_ACCOUNT_CAPITAL_PCT", BASE_POOL_WEIGHTS["C"]),
+        "D": _setting_float("D_ACCOUNT_CAPITAL_PCT", BASE_POOL_WEIGHTS["D"]),
+    }
+    enabled = pool_enabled_settings()
+    adjusted = {group: 0.0 for group in POOL_GROUPS}
+    active = [group for group in POOL_GROUPS if enabled[group]]
+    if not active:
+        return {"A": 0.0, "B": 1.0, "C": 0.0, "D": 0.0}
+
+    def destination(group: str) -> str:
+        seen = set()
+        current = group
+        while current not in seen:
+            seen.add(current)
+            if enabled.get(current):
+                return current
+            next_group = DISABLED_POOL_TRANSFER.get(current)
+            if not next_group:
+                break
+            current = next_group
+        active_total = sum(max(0.0, raw[g]) for g in active)
+        if active_total <= 0:
+            return active[0]
+        return max(active, key=lambda g: raw[g])
+
+    for group, weight in raw.items():
+        adjusted[destination(group)] += max(0.0, weight)
+    total = sum(adjusted.values())
+    if total > 0:
+        adjusted = {group: value / total for group, value in adjusted.items()}
+    return adjusted
 
 
 def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpaca_gateway.AccountSnapshot]) -> date:
     """当月没有资金池记录时，按当月账户资金和模式比例写入一次。"""
     month = _month_start()
     weights, _allow_d = _mode_weights(mode)
-    pool_base_percents = {
-        "A": env_float("A_ACCOUNT_CAPITAL_PCT", 1.0),
-        "B": env_float("B_ACCOUNT_CAPITAL_PCT", 0.5),
-        "C": env_float("C_ACCOUNT_CAPITAL_PCT", 0.5),
-        "D": env_float("D_ACCOUNT_CAPITAL_PCT", 1.0),
-    }
+    pool_base_percents = _pool_base_percents()
 
     def pool_snapshot(group: str) -> alpaca_gateway.AccountSnapshot:
         return broker_snaps.get(POOL_BROKERS[group]) or snap
@@ -336,6 +443,8 @@ def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
     base_targets = {group: float((by_group.get(group) or {}).get("base_target_capital") or 0) for group in ("A", "B", "C", "D")}
     base_percents = {group: float((by_group.get(group) or {}).get("base_percent") or 0) for group in ("A", "B", "C", "D")}
     pool_risk_percents = {group: float((by_group.get(group) or {}).get("pool_risk_percent") or 0) for group in ("A", "B", "C", "D")}
+    pool_enabled = pool_enabled_settings()
+    margin_mode, margin_usage, margin_reason = resolve_margin_usage_pct()
     used = {group: float((by_group.get(group) or {}).get("used_capital") or 0) for group in ("A", "B", "C", "D")}
     available = {group: float((by_group.get(group) or {}).get("available_capital") or 0) for group in ("A", "B", "C", "D")}
     total_risk_percent = max((float(row.get("total_risk_percent") or 0) for row in rows), default=0.0)
@@ -357,6 +466,10 @@ def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
         base_percents=base_percents,
         total_risk_percent=total_risk_percent,
         pool_risk_percents=pool_risk_percents,
+        pool_enabled=pool_enabled,
+        margin_usage_mode=margin_mode,
+        margin_usage_percent=margin_usage,
+        margin_usage_reason=margin_reason,
         used=used,
         available=available,
         pool_brokers=POOL_BROKERS.copy(),

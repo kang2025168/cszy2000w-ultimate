@@ -11,6 +11,7 @@ from . import alpaca_gateway
 from .config import env_float, env_str
 from .db import db_conn, fetch_all, fetch_one
 from .risk_controller import get_risk_state
+from .state_store import get_app_setting
 
 
 GROUPS = ("A", "B", "C", "D", "F")
@@ -57,17 +58,16 @@ def _safe_float(v, default: float = 0.0) -> float:
 
 def _margin_usage_pct() -> float:
     """读取保证金总额度上限：100%-150%。"""
-    raw = os.getenv("RISK_TOTAL_CAPITAL_PCT")
+    from .capital_manager import resolve_margin_usage_pct
+
+    return resolve_margin_usage_pct(get_risk_state())[1]
+
+
+def _pool_enabled(group: str) -> bool:
+    raw = os.getenv(f"RISK_{group}_POOL_ENABLED")
     if raw is None:
-        row = fetch_one("SELECT setting_value FROM app_settings WHERE setting_key=%s LIMIT 1", ("RISK_TOTAL_CAPITAL_PCT",))
-        raw = str((row or {}).get("setting_value") or "1.0")
-    try:
-        value = float(raw)
-        if value > 10:
-            value = value / 100.0
-    except Exception:
-        value = 1.0
-    return max(1.0, min(1.5, value))
+        raw = get_app_setting(f"RISK_{group}_POOL_ENABLED", "1")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
 def _target_exposure_pct() -> tuple[float, str]:
@@ -136,6 +136,10 @@ def _strategy_weights(risk) -> dict[str, float]:
 
     if os.getenv("REBALANCE_INCLUDE_D_BUY", "0") != "1":
         weights["D"] = 0.0
+
+    for group in ("A", "B", "C", "D"):
+        if not _pool_enabled(group):
+            weights[group] = 0.0
 
     f_weight = env_float("REBALANCE_F_WEIGHT", 0.0)
     if f_weight > 0:

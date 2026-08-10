@@ -64,7 +64,7 @@ B_MIN_OPEN_BUYING_POWER = float(os.getenv("B_MIN_OPEN_BUYING_POWER", "2500"))
 B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "2500"))
 B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "2500"))
 B_USE_DYNAMIC_CAPITAL_SIZING = int(os.getenv("B_USE_DYNAMIC_CAPITAL_SIZING", "1"))
-B_AVAILABLE_CAPITAL_MULTIPLIER = float(os.getenv("B_AVAILABLE_CAPITAL_MULTIPLIER", "2.0"))
+B_AVAILABLE_CAPITAL_MULTIPLIER = float(os.getenv("B_AVAILABLE_CAPITAL_MULTIPLIER", "1.0"))
 B_DYNAMIC_MAX_TRADE_NOTIONAL = float(os.getenv("B_DYNAMIC_MAX_TRADE_NOTIONAL", "5000"))
 B_DYNAMIC_MIN_TRADE_NOTIONAL = float(os.getenv("B_DYNAMIC_MIN_TRADE_NOTIONAL", "500"))
 
@@ -1502,7 +1502,7 @@ def _b_buy_plan(active_b: int = 0) -> dict:
         raw_target = max(0.0, float(allocation.target_for("B")))
         raw_used = max(0.0, float(allocation.used.get("B", 0.0)))
         raw_available = max(0.0, float(allocation.available.get("B", 0.0)))
-        effective_target = raw_target * max(0.0, float(B_AVAILABLE_CAPITAL_MULTIPLIER))
+        effective_target = raw_target
         available = max(0.0, effective_target - raw_used)
         max_positions = _max_b_positions_for_available(available)
         remaining_slots = max(max_positions - active_b, 0)
@@ -1525,7 +1525,7 @@ def _b_buy_plan(active_b: int = 0) -> dict:
             "max_positions": max_positions,
             "remaining_slots": remaining_slots,
             "target_notional": target_notional,
-            "reason": "capital_available_tiers_x_multiplier",
+            "reason": "capital_available_tiers",
         }
     except Exception as exc:
         print(f"[B BUY PLAN] dynamic sizing fallback: {exc}", flush=True)
