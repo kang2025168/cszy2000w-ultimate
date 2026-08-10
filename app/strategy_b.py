@@ -58,15 +58,21 @@ B_SCORE_INTERVAL_MINUTES = int(os.getenv("B_SCORE_INTERVAL_MINUTES", "5"))
 B_SCORE_CONFIRMATIONS = int(os.getenv("B_SCORE_CONFIRMATIONS", "3"))
 B_SCORE_LOOKBACK_MINUTES = int(os.getenv("B_SCORE_LOOKBACK_MINUTES", "30"))
 B_SCORE_LOG_EACH_CANDIDATE = int(os.getenv("B_SCORE_LOG_EACH_CANDIDATE", "1"))
-B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "2500"))
-B_MIN_OPEN_BUYING_POWER = float(os.getenv("B_MIN_OPEN_BUYING_POWER", "2500"))
+B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "1000"))
+B_MIN_OPEN_BUYING_POWER = float(os.getenv("B_MIN_OPEN_BUYING_POWER", "1000"))
 
 B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "2500"))
 B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "2500"))
 B_USE_DYNAMIC_CAPITAL_SIZING = int(os.getenv("B_USE_DYNAMIC_CAPITAL_SIZING", "1"))
 B_AVAILABLE_CAPITAL_MULTIPLIER = float(os.getenv("B_AVAILABLE_CAPITAL_MULTIPLIER", "1.0"))
-B_DYNAMIC_MAX_TRADE_NOTIONAL = float(os.getenv("B_DYNAMIC_MAX_TRADE_NOTIONAL", "5000"))
-B_DYNAMIC_MIN_TRADE_NOTIONAL = float(os.getenv("B_DYNAMIC_MIN_TRADE_NOTIONAL", "500"))
+B_DYNAMIC_MAX_TRADE_NOTIONAL = float(os.getenv("B_DYNAMIC_MAX_TRADE_NOTIONAL", "10000"))
+B_DYNAMIC_MIN_TRADE_NOTIONAL = float(os.getenv("B_DYNAMIC_MIN_TRADE_NOTIONAL", "1000"))
+B_DYNAMIC_ORDER_MAX_NOTIONAL = float(os.getenv("B_DYNAMIC_ORDER_MAX_NOTIONAL", str(B_DYNAMIC_MAX_TRADE_NOTIONAL)))
+B_DYNAMIC_ORDER_TIERS = os.getenv(
+    "B_DYNAMIC_ORDER_TIERS",
+    "10000:2000,20000:2500,40000:3000,80000:4000,150000:5000,300000:7500,inf:10000",
+)
+B_REMAINDER_BUY_MIN_NOTIONAL = float(os.getenv("B_REMAINDER_BUY_MIN_NOTIONAL", "1000"))
 
 B_COOLDOWN_MINUTES = int(os.getenv("B_COOLDOWN_MINUTES", "30"))
 B_BP_USE_RATIO = float(os.getenv("B_BP_USE_RATIO", "0.98"))
@@ -1452,21 +1458,63 @@ def _count_active_b_positions(conn) -> int:
         return 0
 
 
-def _max_b_positions_for_available(available: float) -> int:
+def _dynamic_b_order_notional(base_capital: float) -> float:
+    """
+    B 单笔金额随 B 资金池规模按阶梯放大。
+
+    默认:
+      <10k: 2000
+      10k-20k: 2500
+      20k-40k: 3000
+      40k-80k: 4000
+      80k-150k: 5000
+      150k-300k: 7500
+      >=300k: 10000
+    """
+    base_capital = max(0.0, float(base_capital or 0.0))
+    fallback = max(float(B_DYNAMIC_MIN_TRADE_NOTIONAL), 2000.0)
+    for item in str(B_DYNAMIC_ORDER_TIERS or "").split(","):
+        item = item.strip()
+        if not item or ":" not in item:
+            continue
+        limit_raw, notional_raw = item.split(":", 1)
+        try:
+            limit = math.inf if limit_raw.strip().lower() in {"inf", "infinity", "*"} else float(limit_raw)
+            notional = float(notional_raw)
+        except Exception:
+            continue
+        if base_capital < limit:
+            return max(float(B_DYNAMIC_MIN_TRADE_NOTIONAL), min(float(B_DYNAMIC_ORDER_MAX_NOTIONAL), notional))
+        fallback = notional
+    return max(float(B_DYNAMIC_MIN_TRADE_NOTIONAL), min(float(B_DYNAMIC_ORDER_MAX_NOTIONAL), fallback))
+
+
+def _b_remaining_slots_for_available(available: float, order_notional: float) -> int:
     available = max(0.0, float(available or 0.0))
-    if available <= 0:
+    order_notional = max(float(order_notional or 0.0), 1.0)
+    remainder_min = max(float(B_REMAINDER_BUY_MIN_NOTIONAL), float(B_DYNAMIC_MIN_TRADE_NOTIONAL), 1.0)
+    if available < remainder_min:
         return 0
-    if available < 5000:
-        return 2
-    if available < 10000:
-        return 3
-    if available < 15000:
-        return 4
-    return 5
+    full_slots = int(math.floor(available / order_notional))
+    remainder = available - float(full_slots) * order_notional
+    if full_slots <= 0:
+        return 1
+    return full_slots + (1 if remainder >= remainder_min else 0)
+
+
+def _b_next_trade_notional(available: float, order_notional: float) -> float:
+    available = max(0.0, float(available or 0.0))
+    order_notional = max(float(order_notional or 0.0), 1.0)
+    remainder_min = max(float(B_REMAINDER_BUY_MIN_NOTIONAL), float(B_DYNAMIC_MIN_TRADE_NOTIONAL), 1.0)
+    if available < remainder_min:
+        return 0.0
+    if available < order_notional:
+        return available
+    return order_notional
 
 
 def _fallback_b_buy_plan(active_b: int = 0) -> dict:
-    max_positions = int(B_MAX_ACTIVE_POSITIONS)
+    max_positions = max(int(B_MAX_ACTIVE_POSITIONS), int(active_b or 0))
     remaining_slots = max(max_positions - int(active_b or 0), 0)
     return {
         "dynamic": False,
@@ -1481,12 +1529,10 @@ def _fallback_b_buy_plan(active_b: int = 0) -> dict:
 
 def _b_buy_plan(active_b: int = 0) -> dict:
     """
-    根据 B 资金池可用额度动态控制 live 小资金买入节奏。
+    根据 B 资金池剩余额度动态控制买入节奏。
 
-    可用资金 < 5000: 最多 2 只，均分资金
-    5000-9999:     最多 3 只，均分资金
-    10000-14999:   最多 4 只，均分资金
-    >= 15000:      最多 5 只，单笔随资金增长但默认不超过 5000
+    默认单笔约 2000；如果最后剩余资金 >=1000 且小于单笔金额，
+    就用剩余金额开最后一笔。单笔金额会随 B 资金池规模按平方根慢慢提高。
     """
     active_b = int(active_b or 0)
     if B_USE_DYNAMIC_CAPITAL_SIZING != 1:
@@ -1504,14 +1550,11 @@ def _b_buy_plan(active_b: int = 0) -> dict:
         raw_available = max(0.0, float(allocation.available.get("B", 0.0)))
         effective_target = raw_target
         available = max(0.0, effective_target - raw_used)
-        max_positions = _max_b_positions_for_available(available)
+        order_notional = _dynamic_b_order_notional(raw_target)
+        available_slots = _b_remaining_slots_for_available(available, order_notional)
+        max_positions = active_b + available_slots
         remaining_slots = max(max_positions - active_b, 0)
-        if remaining_slots <= 0 or available <= 0:
-            target_notional = 0.0
-        else:
-            target_notional = available / float(remaining_slots)
-            target_notional = min(target_notional, float(B_DYNAMIC_MAX_TRADE_NOTIONAL))
-            target_notional = max(target_notional, 0.0)
+        target_notional = _b_next_trade_notional(available, order_notional)
 
         return {
             "dynamic": True,
@@ -1521,11 +1564,13 @@ def _b_buy_plan(active_b: int = 0) -> dict:
             "raw_available": raw_available,
             "effective_target": effective_target,
             "available_multiplier": float(B_AVAILABLE_CAPITAL_MULTIPLIER),
+            "order_notional": order_notional,
             "active_positions": active_b,
             "max_positions": max_positions,
             "remaining_slots": remaining_slots,
             "target_notional": target_notional,
-            "reason": "capital_available_tiers",
+            "remainder_buy_min_notional": float(B_REMAINDER_BUY_MIN_NOTIONAL),
+            "reason": "capital_available_order_notional",
         }
     except Exception as exc:
         print(f"[B BUY PLAN] dynamic sizing fallback: {exc}", flush=True)

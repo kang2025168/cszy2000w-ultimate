@@ -64,6 +64,24 @@ class FakeClient:
 
 
 class BCStrategyFlowTests(unittest.TestCase):
+    def test_b_slots_use_order_notional_and_remainder_threshold(self):
+        import app.strategy_b as sb
+
+        self.assertEqual(35, sb._b_remaining_slots_for_available(70000, 2000))
+        self.assertEqual(36, sb._b_remaining_slots_for_available(71251, 2000))
+        self.assertEqual(1, sb._b_remaining_slots_for_available(1500, 2000))
+        self.assertEqual(0, sb._b_remaining_slots_for_available(999, 2000))
+        self.assertEqual(1500, sb._b_next_trade_notional(1500, 2000))
+        self.assertEqual(2000, sb._b_next_trade_notional(2500, 2000))
+
+    def test_b_order_notional_uses_capital_tiers(self):
+        import app.strategy_b as sb
+
+        self.assertEqual(2000, sb._dynamic_b_order_notional(9999))
+        self.assertEqual(2500, sb._dynamic_b_order_notional(10000))
+        self.assertEqual(3000, sb._dynamic_b_order_notional(20000))
+        self.assertEqual(4000, sb._dynamic_b_order_notional(40000))
+
     def test_b_buy_and_sell_round_reach_execution_functions(self):
         import app.bots.runtime_core as tb
         import app.bots.split_core as sc
