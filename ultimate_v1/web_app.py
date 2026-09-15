@@ -2290,16 +2290,24 @@ def _manual_stock_order_payload(payload: dict) -> dict:
     fraction = fractions.get(size)
     if fraction is None:
         return {"ok": False, "error": "额度选项无效"}
-    if order_type != "limit":
-        return {"ok": False, "error": "现在只支持实时价限价单"}
-    order_type = "limit"
+    if order_type not in {"limit", "market"}:
+        return {"ok": False, "error": "订单类型无效"}
 
     quote = _stock_quote_payload(symbol)
     last = _safe_float(quote.get("last"))
     bid = _safe_float(quote.get("bid"))
     ask = _safe_float(quote.get("ask"))
+    client_last = _safe_float(payload.get("client_last"))
+    client_bid = _safe_float(payload.get("client_bid"))
+    client_ask = _safe_float(payload.get("client_ask"))
+    if client_last > 0:
+        last = client_last
+    if client_bid > 0:
+        bid = client_bid
+    if client_ask > 0:
+        ask = client_ask
     limit_price = _safe_float(payload.get("limit_price"))
-    price = limit_price if limit_price > 0 else last
+    price = limit_price if order_type == "limit" and limit_price > 0 else last
     if price <= 0:
         return {"ok": False, "error": "暂时没有可用报价"}
 
@@ -2358,18 +2366,26 @@ def _manual_stock_order_payload(payload: dict) -> dict:
         return preview
 
     from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import LimitOrderRequest
+    from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
     client = alpaca_gateway.trading_client(pool=pool)
     order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
-    req = LimitOrderRequest(
-        symbol=symbol,
-        qty=qty,
-        side=order_side,
-        limit_price=alpaca_gateway.stock_limit_price(price),
-        time_in_force=TimeInForce.DAY,
-        extended_hours=True,
-    )
+    if order_type == "market":
+        req = MarketOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=order_side,
+            time_in_force=TimeInForce.DAY,
+        )
+    else:
+        req = LimitOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=order_side,
+            limit_price=alpaca_gateway.stock_limit_price(price),
+            time_in_force=TimeInForce.DAY,
+            extended_hours=True,
+        )
     order = client.submit_order(order_data=req)
     order_id = str(getattr(order, "id", "") or getattr(order, "order_id", "") or "")
     status = str(getattr(order, "status", "") or "")
@@ -3515,6 +3531,7 @@ INDEX_HTML = r"""<!doctype html>
               <label for="manualBuyOrderType">订单类型</label>
               <select id="manualBuyOrderType" onchange="updateManualOrderType('buy')">
                 <option value="limit" selected>实时价限价</option>
+                <option value="market">市价</option>
               </select>
             </div>
             <div class="manual-field">
@@ -3529,7 +3546,7 @@ INDEX_HTML = r"""<!doctype html>
               <label for="manualBuyLimitPrice">买入限价</label>
               <div class="manual-limit-control" id="manualBuyLimitControl">
                 <button onclick="stepManualLimit('buy', -0.01)" title="买入限价 -0.01">-</button>
-                <input id="manualBuyLimitPrice" type="number" min="0" step="0.01" placeholder="自动" oninput="updateManualBStopNotice()" />
+                <input id="manualBuyLimitPrice" type="number" min="0" step="0.01" placeholder="自动" oninput="markManualLimitEdited('buy'); updateManualBStopNotice()" />
                 <button onclick="stepManualLimit('buy', 0.01)" title="买入限价 +0.01">+</button>
               </div>
             </div>
@@ -3541,6 +3558,7 @@ INDEX_HTML = r"""<!doctype html>
               <label for="manualSellOrderType">订单类型</label>
               <select id="manualSellOrderType" onchange="updateManualOrderType('sell')">
                 <option value="limit" selected>实时价限价</option>
+                <option value="market">市价</option>
               </select>
             </div>
             <div class="manual-field">
@@ -3560,7 +3578,7 @@ INDEX_HTML = r"""<!doctype html>
               <label for="manualSellLimitPrice">卖出限价</label>
               <div class="manual-limit-control" id="manualSellLimitControl">
                 <button onclick="stepManualLimit('sell', -0.01)" title="卖出限价 -0.01">-</button>
-                <input id="manualSellLimitPrice" type="number" min="0" step="0.01" placeholder="自动" />
+                <input id="manualSellLimitPrice" type="number" min="0" step="0.01" placeholder="自动" oninput="markManualLimitEdited('sell')" />
                 <button onclick="stepManualLimit('sell', 0.01)" title="卖出限价 +0.01">+</button>
               </div>
             </div>
@@ -3572,6 +3590,7 @@ INDEX_HTML = r"""<!doctype html>
               <label for="manualShortOrderType">订单类型</label>
               <select id="manualShortOrderType" onchange="updateManualOrderType('short')">
                 <option value="limit" selected>实时价限价</option>
+                <option value="market">市价</option>
               </select>
             </div>
             <div class="manual-field">
@@ -5502,13 +5521,18 @@ INDEX_HTML = r"""<!doctype html>
           Number(payload.bid || 0) > 0 ? money(payload.bid) : '--',
           Number(payload.ask || 0) > 0 ? money(payload.ask) : '--'
         );
-        if (seedLimits && Number(payload.limit_price || payload.last || 0) > 0) {
+        if (Number(payload.last || payload.snapshot_last || payload.limit_price || 0) > 0) {
           const buyInput = document.getElementById('manualBuyLimitPrice');
           const sellInput = document.getElementById('manualSellLimitPrice');
-          const buyPrice = Number(payload.limit_price || payload.ask || payload.last || 0);
           const realtimePrice = Number(payload.last || payload.snapshot_last || 0);
-          if (buyInput && !buyInput.value && buyPrice > 0) buyInput.value = buyPrice.toFixed(2);
-          if (sellInput && !sellInput.value && realtimePrice > 0) sellInput.value = realtimePrice.toFixed(2);
+          if (buyInput && realtimePrice > 0 && buyInput.dataset.userEdited !== '1') {
+            buyInput.value = realtimePrice.toFixed(2);
+            buyInput.dataset.autoPrice = buyInput.value;
+          }
+          if (sellInput && realtimePrice > 0 && sellInput.dataset.userEdited !== '1') {
+            sellInput.value = realtimePrice.toFixed(2);
+            sellInput.dataset.autoPrice = sellInput.value;
+          }
         }
         const shortInput = document.getElementById('manualShortLimitPrice');
         const realtimePrice = Number(payload.last || payload.snapshot_last || 0);
@@ -5533,9 +5557,7 @@ INDEX_HTML = r"""<!doctype html>
       if (box) box.classList.toggle('show', type === 'limit');
       if (type === 'limit') {
         const input = document.getElementById(ids[2]);
-        const n = Number(side === 'buy'
-          ? (latestManualQuote?.limit_price || latestManualQuote?.ask || latestManualQuote?.last || 0)
-          : (latestManualQuote?.last || latestManualQuote?.snapshot_last || 0));
+        const n = Number(latestManualQuote?.last || latestManualQuote?.snapshot_last || 0);
         if (input && !input.value && n > 0) input.value = n.toFixed(2);
       }
       if (side === 'buy') updateManualBStopNotice();
@@ -5550,8 +5572,7 @@ INDEX_HTML = r"""<!doctype html>
       if (side === 'buy') updateManualBStopNotice();
     }
     function markManualLimitEdited(side) {
-      if (side !== 'short') return;
-      const input = document.getElementById('manualShortLimitPrice');
+      const input = document.getElementById(side === 'sell' ? 'manualSellLimitPrice' : side === 'short' ? 'manualShortLimitPrice' : 'manualBuyLimitPrice');
       if (!input) return;
       input.dataset.userEdited = input.value && input.value !== input.dataset.autoPrice ? '1' : '0';
     }
@@ -5561,26 +5582,32 @@ INDEX_HTML = r"""<!doctype html>
         alert('先输入股票代码');
         return null;
       }
+      const type = document.getElementById(side === 'sell' ? 'manualSellOrderType' : side === 'short' ? 'manualShortOrderType' : 'manualBuyOrderType')?.value || 'limit';
       return {
         symbol,
         side,
         execute,
-        order_type: document.getElementById(side === 'sell' ? 'manualSellOrderType' : side === 'short' ? 'manualShortOrderType' : 'manualBuyOrderType')?.value || 'limit',
+        order_type: type,
         pool: document.getElementById('manualBuyPool')?.value || 'C',
         size: document.getElementById(side === 'sell' ? 'manualSellSize' : side === 'short' ? 'manualShortSize' : 'manualBuySize')?.value || '1/4',
-        limit_price: document.getElementById(side === 'sell' ? 'manualSellLimitPrice' : side === 'short' ? 'manualShortLimitPrice' : 'manualBuyLimitPrice')?.value || ''
+        limit_price: type === 'limit' ? (document.getElementById(side === 'sell' ? 'manualSellLimitPrice' : side === 'short' ? 'manualShortLimitPrice' : 'manualBuyLimitPrice')?.value || '') : '',
+        client_last: latestManualQuote?.last || latestManualQuote?.snapshot_last || '',
+        client_bid: latestManualQuote?.bid || '',
+        client_ask: latestManualQuote?.ask || ''
       };
     }
     function manualOrderText(p) {
       const sideText = p.side === 'buy' ? '买入' : p.side === 'short' ? '卖空' : '卖出';
-      const typeText = `实时价限价 ${money(p.price)}`;
+      const typeText = p.order_type === 'market'
+        ? `市价（按当前价 ${money(p.price)} 估算，最终以成交回报为准）`
+        : `实时价限价 ${money(p.price)}`;
       const basis = p.side === 'buy' || p.side === 'short'
         ? `${p.pool} 资金池可用 ${money(p.available)} 的 ${p.size}`
         : `当前持仓 ${Number(p.held_qty || 0).toFixed(4)} 股的 ${p.size === 'full' ? '全仓' : p.size}`;
       const stopLine = p.auto_stop_loss
         ? `\n策略 B 自动止损：${money(p.stop_loss_price)}（${p.stop_loss_rule || '初始止损'}）`
         : '';
-      return `${sideText} ${p.symbol}\n订单类型：${typeText}\n估算数量：${Math.floor(Number(p.qty || 0))} 股\n估算金额：${money(p.notional)}\n计算依据：${basis}\nBid / Ask：${Number(p.bid || 0) > 0 ? money(p.bid) : '--'} / ${Number(p.ask || 0) > 0 ? money(p.ask) : '--'}${stopLine}\n\n确认执行后会提交 Alpaca 订单。`;
+      return `${sideText} ${p.symbol}\n订单类型：${typeText}\n估算数量：${Math.floor(Number(p.qty || 0))} 股\n估算金额：${money(p.notional)}\n计算依据：${basis}\n页面实时价：${Number(p.last || 0) > 0 ? money(p.last) : '--'}\nBid / Ask：${Number(p.bid || 0) > 0 ? money(p.bid) : '--'} / ${Number(p.ask || 0) > 0 ? money(p.ask) : '--'}${stopLine}\n\n确认执行后会提交 Alpaca 订单。`;
     }
     async function previewManualStockOrder(side) {
       const req = manualOrderPayload(side, false);
