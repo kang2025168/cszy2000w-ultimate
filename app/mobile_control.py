@@ -271,13 +271,7 @@ def _submit_sell_position(symbol: str):
     """
     手机控制台手动卖出持仓。
 
-    盘前/盘后 Alpaca 不接受 market order，只接受：
-      - limit order
-      - time_in_force=day
-      - extended_hours=True
-
-    所以这里用当前价下方一点点的限价卖单，让它尽量成为可成交的
-    marketable limit order，同时避免真正 market order 在扩展时段被拒。
+    按券商当前价提交 DAY 限价卖单。
     """
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest
@@ -298,17 +292,12 @@ def _submit_sell_position(symbol: str):
     if price_f <= 0:
         raise RuntimeError(f"{symbol} current_price missing")
 
-    limit_price = _limit_price_for_stock(price_f * (1.0 - SELL_LIMIT_BUFFER_PCT))
-    if limit_price <= 0:
-        raise RuntimeError(f"{symbol} invalid limit_price")
-
     req = LimitOrderRequest(
         symbol=symbol,
         qty=str(qty),
         side=OrderSide.SELL,
+        limit_price=round(price_f, 2),
         time_in_force=TimeInForce.DAY,
-        limit_price=limit_price,
-        extended_hours=True,
     )
     order = tc.submit_order(order_data=req)
 
@@ -318,7 +307,7 @@ def _submit_sell_position(symbol: str):
         "symbol": symbol,
         "qty": qty,
         "current_price": price_f,
-        "limit_price": limit_price,
+        "limit_price": 0.0,
         "order_id": getattr(order, "id", ""),
         "status": getattr(order, "status", ""),
     }
@@ -328,7 +317,7 @@ def _submit_sell_all_positions():
     """
     一键清仓：只处理股票持仓。
 
-    每只股票都按“当前价下方 buffer”的扩展时段 DAY 限价卖单提交。
+    每只股票都按 DAY 当前价限价单提交。
     如果某只失败，不影响其它股票继续提交，最后把成功/失败汇总返回。
     """
     tc = _get_trading_client()
@@ -826,10 +815,9 @@ def _positions_table(rows) -> str:
         tds = "".join(tds_parts)
         symbol = str(r.get("symbol") or "").strip().upper()
         if symbol and _is_equity_position(r):
-            limit_price = r.get("sell_limit") or ""
             current_price = r.get("current_price") or ""
             action = f"""
-            <form method="post" action="/sell_position" onsubmit="return confirm('确认卖出 {symbol} 全部持仓？\\n当前价: {current_price}\\n卖出限价: {limit_price}\\n订单: DAY + extended_hours=True');">
+            <form method="post" action="/sell_position" onsubmit="return confirm('确认按当前价限价卖出 {symbol} 全部持仓？\\n当前价参考: {current_price}\\n订单: DAY 限价单');">
               <input type="hidden" name="symbol" value="{_esc(symbol)}">
               <button class="danger mini" type="submit">卖出</button>
             </form>
@@ -1055,7 +1043,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = _submit_sell_position(symbol)
                 msg = (
                     f"已提交卖出 {result['symbol']} qty={result['qty']} "
-                    f"limit={result['limit_price']} status={result['status']} order={result['order_id']}"
+                    f"market status={result['status']} order={result['order_id']}"
                 )
             except Exception as e:
                 msg = f"卖出失败: {str(e)[:120]}"
@@ -1190,8 +1178,8 @@ class Handler(BaseHTTPRequestHandler):
           <details class="card" style="margin-top:12px" open>
             <summary>券商持仓</summary>
             <div id="account-box">{parts["account"]}</div>
-            <p class="muted">卖出按钮会提交 extended_hours=True 的 DAY 限价卖单，限价≈当前价*(1-{SELL_LIMIT_BUFFER_PCT:.2%})。</p>
-            <form method="post" action="/sell_all_positions" onsubmit="return confirm('确认一键清仓全部股票持仓？\\n每只股票都会按 当前价*(1-{SELL_LIMIT_BUFFER_PCT:.2%}) 提交 DAY + extended_hours=True 限价卖单。');">
+            <p class="muted">卖出按钮会提交 DAY 当前价限价卖单。</p>
+            <form method="post" action="/sell_all_positions" onsubmit="return confirm('确认一键清仓全部股票持仓？\\n每只股票都会提交 DAY 当前价限价单。');">
               <button class="danger" type="submit">一键清仓</button>
             </form>
             <div id="positions-box" style="margin-top:10px">{parts["positions"]}</div>

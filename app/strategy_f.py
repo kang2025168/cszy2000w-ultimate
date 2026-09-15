@@ -19,6 +19,7 @@ import traceback
 from datetime import datetime, timedelta
 
 import pymysql
+from ultimate_v1.yahoo_market_data import get_yahoo_stock_quote
 
 from app.strategy_b import (
     B_DATA_FEED,
@@ -33,7 +34,6 @@ from app.strategy_b import (
     _sleep_for_rate_limit,
     _snapshot_http,
     _submit_limit_buy_qty,
-    _submit_limit_qty_ext,
     _submit_market_qty,
     get_snapshot_realtime,
 )
@@ -286,40 +286,23 @@ def _get_realtime_daily_bar(code: str):
     if not code:
         raise RuntimeError("empty symbol")
 
-    _sleep_for_rate_limit()
-    r = _snapshot_http(code, B_DATA_FEED)
-
-    if r.status_code != 200:
-        raise RuntimeError(f"snapshot http {r.status_code}: {r.text[:200]}")
-
-    js = r.json()
-    db = js.get("dailyBar") or {}
-    lt = js.get("latestTrade") or {}
-    lq = js.get("latestQuote") or {}
-    pb = js.get("prevDailyBar") or {}
-
-    bid = _safe_float(lq.get("bp"), 0.0)
-    ask = _safe_float(lq.get("ap"), 0.0)
-
-    last = _safe_float(lt.get("p"), 0.0)
-    if last <= 0:
-        last = _safe_float(db.get("c"), 0.0)
-    if last <= 0 and bid > 0 and ask > 0:
-        last = (bid + ask) / 2.0
-
-    open_ = _safe_float(db.get("o"), last)
-    high = _safe_float(db.get("h"), last)
-    low = _safe_float(db.get("l"), last)
-    prev_close = _safe_float(pb.get("c"), 0.0)
+    quote = get_yahoo_stock_quote(code)
+    bid = _safe_float(quote.bid, 0.0)
+    ask = _safe_float(quote.ask, 0.0)
+    last = _safe_float(quote.last, 0.0)
+    open_ = _safe_float(quote.day_open, last)
+    high = _safe_float(quote.day_high, last)
+    low = _safe_float(quote.day_low, last)
+    prev_close = _safe_float(quote.prev_close or quote.regular_close, 0.0)
 
     if last <= 0 or prev_close <= 0:
-        raise RuntimeError(f"snapshot missing fields: last={last} prev_close={prev_close}")
+        raise RuntimeError(f"yahoo quote missing fields: last={last} prev_close={prev_close}")
 
     high = max(high, last)
     low = min(low if low > 0 else last, last)
 
     return {
-        "date": db.get("t") or "realtime",
+        "date": quote.as_of or "realtime",
         "open": open_,
         "high": high,
         "low": low,
@@ -327,7 +310,7 @@ def _get_realtime_daily_bar(code: str):
         "prev_close": prev_close,
         "bid": bid,
         "ask": ask,
-        "feed": B_DATA_FEED,
+        "feed": quote.source,
     }
 
 
@@ -895,8 +878,7 @@ def strategy_F_buy(code: str) -> bool:
             print(f"[F BUY] {code} skip: qty={qty} target={target:.2f} price={price:.2f}", flush=True)
             return False
 
-        raw_limit = (ask * 1.003) if ask > 0 else (price * 1.005)
-        raw_limit = max(raw_limit, price * 1.002)
+        raw_limit = price
 
         if max_reclaim_price > 0:
             raw_limit = min(raw_limit, max_reclaim_price)
@@ -1124,7 +1106,7 @@ def _f_sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason:
     stage = int(float(row.get("b_stage") or 0))
     sl = row.get("stop_loss_price")
 
-    order = _submit_limit_qty_ext(tc, code, qty, side="sell", limit_price=limit_price)
+    order = _submit_market_qty(tc, code, qty, side="sell")
     order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
     status = str(getattr(order, "status", "") or "")
 
@@ -1169,7 +1151,7 @@ def _f_sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason:
         b_last_profit=0,
         b_stage=stage if remaining_qty > 0 else 0,
         last_order_side="sell",
-        last_order_intent=_intent_short(f"{reason} limit={limit_price:.2f} sold={sold_qty}"),
+        last_order_intent=_intent_short(f"{reason} market ref={limit_price:.2f} sold={sold_qty}"),
         last_order_id=str(order_id or ""),
         last_order_time=now_str,
         updated_at=now_str,

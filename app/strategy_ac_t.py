@@ -232,21 +232,21 @@ def _submit_limit_and_wait(client, symbol: str, qty: int, side: str, price: floa
     if qty <= 0 or price <= 0:
         return FillResult(False, error="invalid qty/price")
     side_enum = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
-    # 用“市价化限价单”提高成交概率，同时避免直接 market order 在特殊时段表现不可控。
-    limit_price = _money(price * (1 + BUY_LIMIT_BUFFER_PCT)) if side_enum == OrderSide.BUY else _money(price * (1 - SELL_LIMIT_BUFFER_PCT))
+    limit_price = _money(price)
     if DRY_RUN:
-        print(f"[AC_T DRY] {side} {symbol} qty={qty} limit={limit_price:.2f}", flush=True)
+        print(f"[AC_T DRY] {side} {symbol} qty={qty} limit ref={limit_price:.2f}", flush=True)
         return FillResult(True, order_id="DRY_RUN", status="filled", filled_qty=qty, filled_avg_price=_money(price))
 
     try:
+        order_data = LimitOrderRequest(
+            symbol=symbol,
+            qty=str(int(qty)),
+            side=side_enum,
+            time_in_force=TimeInForce.DAY,
+            limit_price=limit_price,
+        )
         order = client.submit_order(
-            order_data=LimitOrderRequest(
-                symbol=symbol,
-                qty=str(int(qty)),
-                side=side_enum,
-                time_in_force=TimeInForce.DAY,
-                limit_price=limit_price,
-            )
+            order_data=order_data
         )
     except Exception as exc:
         return FillResult(False, error=str(exc))
@@ -975,7 +975,7 @@ def process_ac_t_symbol(conn, client, row: dict) -> str:
     if not params:
         return "skip:bad_ac_type"
 
-    raw_price = float(get_latest_stock_price(symbol) or 0)
+    raw_price = float(get_latest_stock_price(symbol, pool=ac_type) or 0)
     if raw_price <= 0:
         return "skip:no_price"
     current_price = _money(raw_price)
@@ -1015,7 +1015,10 @@ def process_ac_t_symbol(conn, client, row: dict) -> str:
 
 def run_strategy_ac_t_once(symbol: str | None = None, group: str | None = "C") -> list[dict]:
     ensure_schema()
-    client = trading_client()
+    group = str(group or "C").strip().upper()
+    if group not in {"A", "C"}:
+        group = "C"
+    client = trading_client(pool=group)
     results: list[dict] = []
     with db_conn() as conn:
         rows = load_ac_t_rows(conn, symbol=symbol, group=group)

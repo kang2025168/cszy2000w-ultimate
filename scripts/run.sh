@@ -85,6 +85,11 @@ case "$cmd" in
     echo "$(ts) ===== START ultimate_v1 rebalance report ====="
     exec python -u -m ultimate_v1.rebalance_monthly
     ;;
+  ultimate_monthly_invest)
+    echo "$(ts) ===== START A/C monthly investment ====="
+    shift
+    exec python -u -m ultimate_v1.monthly_investment "$@"
+    ;;
   ultimate_strategy)
     echo "$(ts) ===== START ultimate_v1 strategy runner ====="
     shift
@@ -130,7 +135,7 @@ case "$cmd" in
     exit 0
     ;;
   *)
-    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_ac_t|strategy_a|b_buy_bot|b_sell_bot|f_buy_bot|f_sell_bot|ops_volume|price_categories_once|price_categories_loop|unlock_can_sell|ultimate_startup|ultimate_web|ultimate_sync_positions|ultimate_flatten_d|ultimate_rebalance|ultimate_strategy|ultimate_dashboard_bot|ultimate_risk_bot|ultimate_rebalance_bot|ultimate_ac_bot|ultimate_d_buy_bot|ultimate_d_sell_bot|ultimate_q_sell_bot|healthcheck}" >&2
+    echo "Usage: ./scripts/run.sh {main|getdata_full|strategy_ac_t|strategy_a|b_buy_bot|b_sell_bot|f_buy_bot|f_sell_bot|ops_volume|price_categories_once|price_categories_loop|unlock_can_sell|ultimate_startup|ultimate_web|ultimate_sync_positions|ultimate_flatten_d|ultimate_rebalance|ultimate_monthly_invest|ultimate_strategy|ultimate_dashboard_bot|ultimate_risk_bot|ultimate_rebalance_bot|ultimate_ac_bot|ultimate_d_buy_bot|ultimate_d_sell_bot|ultimate_q_sell_bot|healthcheck}" >&2
     exit 2
     ;;
 esac

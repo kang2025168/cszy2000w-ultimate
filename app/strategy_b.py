@@ -6,12 +6,15 @@ app/strategy_b.py
 
 import os
 import math
+import re
 import time
 import traceback
 from datetime import datetime, timedelta
 
 import pymysql
 import requests
+from ultimate_v1.account_config import credentials_for_profile
+from ultimate_v1.yahoo_market_data import get_yahoo_intraday_volume, get_yahoo_stock_quote
 
 try:
     from zoneinfo import ZoneInfo
@@ -47,17 +50,44 @@ B_MAX_ACTIVE_POSITIONS = int(os.getenv("B_MAX_ACTIVE_POSITIONS", "4"))
 B_MAX_BELOW_OPEN_PCT = float(os.getenv("B_MAX_BELOW_OPEN_PCT", "0.015"))
 B_MAX_PULLBACK_FROM_HIGH_PCT = float(os.getenv("B_MAX_PULLBACK_FROM_HIGH_PCT", "0.03"))
 B_REQUIRE_INTRADAY_VOLUME = int(os.getenv("B_REQUIRE_INTRADAY_VOLUME", "0"))
-B_VOLUME_RATIO_EARLY = float(os.getenv("B_VOLUME_RATIO_EARLY", "0.15"))
-B_VOLUME_RATIO_MID = float(os.getenv("B_VOLUME_RATIO_MID", "0.30"))
-B_VOLUME_RATIO_LATE = float(os.getenv("B_VOLUME_RATIO_LATE", "0.45"))
+B_MIN_PREV_DAY_VOLUME = int(float(os.getenv("B_MIN_PREV_DAY_VOLUME", "3000000")))
+B_READY_LOOKBACK_DAYS = int(os.getenv("B_READY_LOOKBACK_DAYS", "35"))
+B_READY_AVG_VOLUME_DAYS = int(os.getenv("B_READY_AVG_VOLUME_DAYS", "20"))
+B_READY_MIN_PRICE = float(os.getenv("B_READY_MIN_PRICE", os.getenv("STRONG_MIN_PRICE", "5")))
+B_READY_MIN_VOLUME = float(os.getenv("B_READY_MIN_VOLUME", os.getenv("STRONG_MIN_VOLUME", "3000000")))
+B_READY_MIN_DAY_VOLUME = float(os.getenv("B_READY_MIN_DAY_VOLUME", os.getenv("B_READY_MIN_VOLUME", "3000000")))
+B_READY_MIN_DOLLAR_VOLUME = float(os.getenv("B_READY_MIN_DOLLAR_VOLUME", os.getenv("STRONG_MIN_DOLLAR_VOLUME", "5000000")))
+B_READY_MIN_GAIN_PCT = float(os.getenv("B_READY_MIN_GAIN_PCT", os.getenv("STRONG_MIN_GAIN_PCT", "0.05")))
+B_READY_MAX_GAIN_PCT = float(os.getenv("B_READY_MAX_GAIN_PCT", os.getenv("STRONG_MAX_GAIN_PCT", "0.15")))
+B_READY_MIN_UP_STREAK = int(os.getenv("B_READY_MIN_UP_STREAK", os.getenv("STRONG_MIN_UP_STREAK", "2")))
+B_READY_MAX_UP_STREAK = int(os.getenv("B_READY_MAX_UP_STREAK", os.getenv("STRONG_MAX_UP_STREAK", "4")))
+B_READY_MIN_CLOSE_POSITION = float(os.getenv("B_READY_MIN_CLOSE_POSITION", os.getenv("STRONG_MIN_CLOSE_POSITION", "0.80")))
+B_READY_MIN_VOLUME_RATIO = float(os.getenv("B_READY_MIN_VOLUME_RATIO", os.getenv("STRONG_MIN_VOLUME_RATIO", "1.2")))
+B_READY_LIMIT = int(os.getenv("B_READY_LIMIT", "50"))
+B_READY_WINDOW_TRADING_DAYS = int(os.getenv("B_READY_WINDOW_TRADING_DAYS", "5"))
+B_READY_REPLACE = os.getenv("B_READY_REPLACE", "1").strip().lower() not in {"0", "false", "no", "off"}
+B_READY_REQUIRE_GREEN = os.getenv("B_READY_REQUIRE_GREEN", "1").strip().lower() not in {"0", "false", "no", "off"}
 B_VOLUME_T1_LA = os.getenv("B_VOLUME_T1_LA", "07:30")
 B_VOLUME_T2_LA = os.getenv("B_VOLUME_T2_LA", "09:30")
+B_MIN_REALTIME_VOLUME = int(float(os.getenv("B_MIN_REALTIME_VOLUME", "100000")))
+B_MIN_REALTIME_DOLLAR_VOLUME = float(os.getenv("B_MIN_REALTIME_DOLLAR_VOLUME", "1000000"))
+B_RVOL_EARLY = float(os.getenv("B_RVOL_EARLY", "1.8"))
+B_RVOL_MID = float(os.getenv("B_RVOL_MID", "1.4"))
+B_RVOL_LATE = float(os.getenv("B_RVOL_LATE", "1.15"))
+B_MARKET_OPEN_LA = os.getenv("B_MARKET_OPEN_LA", "06:30")
+B_MARKET_CLOSE_LA = os.getenv("B_MARKET_CLOSE_LA", "13:00")
 B_SCORE_TABLE = os.getenv("B_SCORE_TABLE", "strategy_b_buy_scores")
 B_SCORE_TOP_N = int(os.getenv("B_SCORE_TOP_N", "3"))
 B_SCORE_INTERVAL_MINUTES = int(os.getenv("B_SCORE_INTERVAL_MINUTES", "5"))
 B_SCORE_CONFIRMATIONS = int(os.getenv("B_SCORE_CONFIRMATIONS", "3"))
 B_SCORE_LOOKBACK_MINUTES = int(os.getenv("B_SCORE_LOOKBACK_MINUTES", "30"))
 B_SCORE_LOG_EACH_CANDIDATE = int(os.getenv("B_SCORE_LOG_EACH_CANDIDATE", "1"))
+B_MARKET_FILTER_ENABLED = int(os.getenv("B_MARKET_FILTER_ENABLED", "1"))
+B_MARKET_SCORE_MIN = float(os.getenv("B_MARKET_SCORE_MIN", "55"))
+B_MARKET_MAX_VIX = float(os.getenv("B_MARKET_MAX_VIX", "28"))
+B_MARKET_WARN_VIX = float(os.getenv("B_MARKET_WARN_VIX", "22"))
+B_MARKET_MAX_QQQ_DROP_PCT = float(os.getenv("B_MARKET_MAX_QQQ_DROP_PCT", "-0.80"))
+B_MARKET_MAX_DOWNTREND_QQQ_DROP_PCT = float(os.getenv("B_MARKET_MAX_DOWNTREND_QQQ_DROP_PCT", "-0.30"))
 B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "1000"))
 B_MIN_OPEN_BUYING_POWER = float(os.getenv("B_MIN_OPEN_BUYING_POWER", "1000"))
 
@@ -87,6 +117,25 @@ B_BUY_WINDOW_START_LA = os.getenv("B_BUY_WINDOW_START_LA", "06:50")
 B_BUY_WINDOW_END_LA = os.getenv("B_BUY_WINDOW_END_LA", "10:40")
 LA_TZ = ZoneInfo("America/Los_Angeles") if ZoneInfo else None
 
+B_INITIAL_STOP_MULT = float(os.getenv("B_INITIAL_STOP_MULT", "0.95"))
+B_TRAIL_LOCK_START_PCT = float(os.getenv("B_TRAIL_LOCK_START_PCT", "0.05"))
+B_TRAIL_LOCK_SL_MULT = float(os.getenv("B_TRAIL_LOCK_SL_MULT", "1.00"))
+B_INITIAL_STOP_GRACE_SECONDS = int(os.getenv("B_INITIAL_STOP_GRACE_SECONDS", "180"))
+B_CATASTROPHIC_STOP_LOSS_PCT = float(os.getenv("B_CATASTROPHIC_STOP_LOSS_PCT", "-0.08"))
+B_PEAK_GIVEBACK_RULES = (
+    (0.50, 0.10),
+    (0.30, 0.07),
+    (0.15, 0.05),
+    (0.08, 0.035),
+)
+B_STAGE_SELL_RULES = (
+    (1, 0.20, None, None, 0.20),
+    (2, 0.35, None, None, 0.20),
+    (3, 0.60, None, None, 0.15),
+    (4, 0.85, None, None, 0.10),
+    (5, 1.20, None, None, 0.10),
+)
+
 # 买入后同步 position
 B_POS_WAIT_SEC = int(os.getenv("B_POS_WAIT_SEC", "20"))
 B_POS_RETRY = int(os.getenv("B_POS_RETRY", "2"))
@@ -95,12 +144,7 @@ ALPACA_DATA_BASE_URL = os.getenv("ALPACA_DATA_BASE_URL", "https://data.alpaca.ma
 B_DATA_FEED = os.getenv("B_DATA_FEED", "iex").strip().lower()
 
 TRADE_ENV = (os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper").strip().lower()
-if TRADE_ENV == "live":
-    APCA_API_KEY_ID = os.getenv("APCA_API_KEY_ID", "") or os.getenv("LIVE_APCA_API_KEY_ID", "") or os.getenv("ALPACA_KEY", "")
-    APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY", "") or os.getenv("LIVE_APCA_API_SECRET_KEY", "") or os.getenv("ALPACA_SECRET", "")
-else:
-    APCA_API_KEY_ID = os.getenv("APCA_API_KEY_ID", "") or os.getenv("PAPER_APCA_API_KEY_ID", "") or os.getenv("ALPACA_KEY", "")
-    APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY", "") or os.getenv("PAPER_APCA_API_SECRET_KEY", "") or os.getenv("ALPACA_SECRET", "")
+APCA_API_KEY_ID, APCA_API_SECRET_KEY, _B_PAPER_ACCOUNT = credentials_for_profile(pool="B")
 
 MAX_INTENT_LEN = int(os.getenv("B_INTENT_MAXLEN", "70"))
 
@@ -111,6 +155,102 @@ _snapshot_cache = {}  # code -> (ts, price, prev_close, feed)
 
 FILL_POLL_TIMES = int(os.getenv("B_FILL_POLL_TIMES", "5"))
 FILL_POLL_SLEEP = float(os.getenv("B_FILL_POLL_SLEEP", "0.4"))
+
+
+def get_strategy_b_runtime_config() -> dict:
+    """Return the live Strategy B buy/sell parameters used by the bot."""
+    return {
+        "candidate": {
+            "source": "stock_prices_pool -> stock_operations",
+            "lookback_days": B_READY_LOOKBACK_DAYS,
+            "avg_volume_days": B_READY_AVG_VOLUME_DAYS,
+            "min_price": B_READY_MIN_PRICE,
+            "min_avg_volume": B_READY_MIN_VOLUME,
+            "min_day_volume": B_READY_MIN_DAY_VOLUME,
+            "min_dollar_volume": B_READY_MIN_DOLLAR_VOLUME,
+            "min_gain_pct": B_READY_MIN_GAIN_PCT,
+            "max_gain_pct": B_READY_MAX_GAIN_PCT,
+            "min_up_streak": B_READY_MIN_UP_STREAK,
+            "max_up_streak": B_READY_MAX_UP_STREAK,
+            "min_close_position": B_READY_MIN_CLOSE_POSITION,
+            "min_volume_ratio": B_READY_MIN_VOLUME_RATIO,
+            "require_green_day": B_READY_REQUIRE_GREEN,
+            "limit": B_READY_LIMIT,
+            "window_trading_days": B_READY_WINDOW_TRADING_DAYS,
+            "replace_existing": B_READY_REPLACE,
+        },
+        "score": {
+            "table": B_SCORE_TABLE,
+            "top_n": B_SCORE_TOP_N,
+            "interval_minutes": B_SCORE_INTERVAL_MINUTES,
+            "confirmations": B_SCORE_CONFIRMATIONS,
+            "lookback_minutes": B_SCORE_LOOKBACK_MINUTES,
+            "log_each_candidate": bool(B_SCORE_LOG_EACH_CANDIDATE),
+        },
+        "market": {
+            "enabled": bool(B_MARKET_FILTER_ENABLED),
+            "score_min": B_MARKET_SCORE_MIN,
+            "max_vix": B_MARKET_MAX_VIX,
+            "warn_vix": B_MARKET_WARN_VIX,
+            "max_qqq_drop_pct": B_MARKET_MAX_QQQ_DROP_PCT / 100.0,
+            "max_downtrend_qqq_drop_pct": B_MARKET_MAX_DOWNTREND_QQQ_DROP_PCT / 100.0,
+            "rule": "risk_state score gate: block risk_off, block panic vix, block downtrend with weak QQQ; allow healthy pullbacks",
+        },
+        "buy": {
+            "price_source": f"alpaca:{B_DATA_FEED}",
+            "window": f"{B_BUY_WINDOW_START_LA}-{B_BUY_WINDOW_END_LA} LA",
+            "min_day_up_pct": B_MIN_UP_PCT,
+            "max_buy_day_up_pct": B_MAX_BUY_UP_PCT,
+            "max_entry_up_pct": B_MAX_ENTRY_UP_PCT,
+            "min_price": B_MIN_PRICE,
+            "max_active_positions": B_MAX_ACTIVE_POSITIONS,
+            "max_below_open_pct": B_MAX_BELOW_OPEN_PCT,
+            "max_pullback_from_high_pct": B_MAX_PULLBACK_FROM_HIGH_PCT,
+            "require_intraday_volume": bool(B_REQUIRE_INTRADAY_VOLUME),
+            "intraday_volume_note": "disabled: no reliable realtime volume feed" if B_REQUIRE_INTRADAY_VOLUME != 1 else "enabled: realtime intraday volume/RVOL check",
+            "min_prev_day_volume": B_MIN_PREV_DAY_VOLUME,
+            "min_realtime_volume": B_MIN_REALTIME_VOLUME,
+            "min_realtime_dollar_volume": B_MIN_REALTIME_DOLLAR_VOLUME,
+            "rvol_early": B_RVOL_EARLY,
+            "rvol_mid": B_RVOL_MID,
+            "rvol_late": B_RVOL_LATE,
+            "min_buying_power": B_MIN_BUYING_POWER,
+            "min_open_buying_power": B_MIN_OPEN_BUYING_POWER,
+            "target_notional_usd": B_TARGET_NOTIONAL_USD,
+            "max_notional_usd": B_MAX_NOTIONAL_USD,
+            "dynamic_sizing": bool(B_USE_DYNAMIC_CAPITAL_SIZING),
+            "dynamic_min_trade_notional": B_DYNAMIC_MIN_TRADE_NOTIONAL,
+            "dynamic_max_trade_notional": B_DYNAMIC_MAX_TRADE_NOTIONAL,
+            "bp_use_ratio": B_BP_USE_RATIO,
+            "remainder_buy_min_notional": B_REMAINDER_BUY_MIN_NOTIONAL,
+            "cooldown_minutes": B_COOLDOWN_MINUTES,
+            "limit_mode": "DAY extended" if B_ALLOW_EXTENDED else "IOC regular",
+            "notional_rule": "min(target_notional, max_notional, buying_power * bp_use_ratio)",
+        },
+        "sell": {
+            "order_type": "limit_at_realtime_price",
+            "initial_stop_pct": B_INITIAL_STOP_MULT - 1.0,
+            "trail_lock_start_pct": B_TRAIL_LOCK_START_PCT,
+            "trail_lock_profit_pct": B_TRAIL_LOCK_SL_MULT - 1.0,
+            "initial_stop_grace_seconds": B_INITIAL_STOP_GRACE_SECONDS,
+            "catastrophic_stop_loss_pct": B_CATASTROPHIC_STOP_LOSS_PCT,
+            "flash_wait_rules": [
+                {"min_profit_pct": 0.30, "wait_minutes": 3},
+                {"min_profit_pct": 0.15, "wait_minutes": 2},
+            ],
+            "peak_giveback_rules": [
+                {"min_peak_gain_pct": min_gain, "giveback_pct": giveback}
+                for min_gain, giveback in B_PEAK_GIVEBACK_RULES
+            ],
+            "stage_sell_rules": [
+                {"stage": stage, "profit_pct": profit, "sell_ratio": sell_ratio}
+                for stage, profit, _sl_mult, _add_ratio, sell_ratio in B_STAGE_SELL_RULES
+            ],
+            "structure_exit_stage": 3,
+            "same_day_sell_allowed": True,
+            "add_position": False,
+        },
+    }
 
 
 def _d(msg: str):
@@ -127,6 +267,28 @@ def _intent_short(s: str) -> str:
     if len(s) <= MAX_INTENT_LEN:
         return s
     return s[: MAX_INTENT_LEN - 3] + "..."
+
+
+DECISION_LOG_TAG = "[CSZY_DECISION]"
+
+
+def _decision_log(side: str, symbol: str, event: str, **fields) -> None:
+    parts = [
+        DECISION_LOG_TAG,
+        "strategy=B",
+        f"side={str(side or '').strip().lower()}",
+        f"symbol={str(symbol or '').strip().upper()}",
+        f"event={str(event or '').strip().lower()}",
+    ]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        safe_key = re.sub(r"[^A-Za-z0-9_]+", "_", str(key).strip()).strip("_").lower()
+        if not safe_key:
+            continue
+        safe_value = str(value).replace("\n", " ").replace("\r", " ").strip()
+        parts.append(f"{safe_key}={safe_value}")
+    print(" ".join(parts), flush=True)
 
 
 def _hhmm_to_minutes(s: str, default: str) -> int:
@@ -158,6 +320,8 @@ def _is_b_buy_window_open():
 
 
 def _alpaca_headers():
+    global APCA_API_KEY_ID, APCA_API_SECRET_KEY, _B_PAPER_ACCOUNT
+    APCA_API_KEY_ID, APCA_API_SECRET_KEY, _B_PAPER_ACCOUNT = credentials_for_profile(pool="B")
     if not (APCA_API_KEY_ID and APCA_API_SECRET_KEY):
         raise RuntimeError("Alpaca key missing: APCA_API_KEY_ID / APCA_API_SECRET_KEY")
     return {
@@ -233,28 +397,137 @@ def get_snapshot_realtime(code: str):
         if (now - ts) <= SNAPSHOT_CACHE_SEC:
             return price, prev_close, feed
 
-    _sleep_for_rate_limit()
-
-    r = _snapshot_http(code, B_DATA_FEED)
-    if r.status_code == 200:
-        price, prev_close = _parse_snapshot(r.json())
-        _snapshot_cache[code] = (time.time(), price, prev_close, B_DATA_FEED)
-        return price, prev_close, B_DATA_FEED
-
-    raise RuntimeError(f"snapshot http {r.status_code}: {r.text[:200]}")
+    resp = _snapshot_http(code, B_DATA_FEED)
+    if resp.status_code != 200:
+        raise RuntimeError(f"alpaca snapshot http={resp.status_code} body={resp.text[:160]}")
+    price, prev_close = _parse_snapshot(resp.json())
+    feed = f"alpaca:{B_DATA_FEED}"
+    _snapshot_cache[code] = (time.time(), price, prev_close, feed)
+    return price, prev_close, feed
 
 
 # ✅ 优化：TradingClient 单例，不再每次新建
 _trading_client = None
+_trading_client_signature = None
 
 def _get_trading_client():
-    global _trading_client
-    if _trading_client is not None:
+    global _trading_client, _trading_client_signature, APCA_API_KEY_ID, APCA_API_SECRET_KEY, _B_PAPER_ACCOUNT
+    key, secret, paper_account = credentials_for_profile(pool="B")
+    signature = (key, secret, paper_account)
+    if _trading_client is not None and _trading_client_signature == signature:
         return _trading_client
     from alpaca.trading.client import TradingClient
-    paper = (TRADE_ENV != "live")
-    _trading_client = TradingClient(APCA_API_KEY_ID, APCA_API_SECRET_KEY, paper=paper)
+    APCA_API_KEY_ID, APCA_API_SECRET_KEY, _B_PAPER_ACCOUNT = key, secret, paper_account
+    _trading_client = TradingClient(APCA_API_KEY_ID, APCA_API_SECRET_KEY, paper=bool(_B_PAPER_ACCOUNT))
+    _trading_client_signature = signature
     return _trading_client
+
+
+def _is_quote_transient_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return any(
+        token in text
+        for token in (
+            "yahoo",
+            "too many requests",
+            "rate limit",
+            "network is unreachable",
+            "failed to establish a new connection",
+            "max retries exceeded",
+        )
+    )
+
+
+def _market_environment_check() -> tuple[bool, dict]:
+    """B 开仓环境闸门：过滤明显风险状态，但允许健康回踩中的强势股。"""
+    if B_MARKET_FILTER_ENABLED != 1:
+        return True, {"score": 100.0, "reason": "market_filter_disabled"}
+
+    try:
+        from ultimate_v1.risk_controller import get_risk_state
+
+        state = get_risk_state()
+        trend = str(getattr(state, "market_trend", "") or "")
+        mode = str(getattr(state, "mode", "") or "")
+        reason = str(getattr(state, "reason", "") or "")
+        vix = float(getattr(state, "vix", 0.0) or 0.0)
+        qqq_change = float(getattr(state, "qqq_change_pct", 0.0) or 0.0)
+        risk_multiplier = float(getattr(state, "risk_multiplier", 1.0) or 0.0)
+        block_all = bool(getattr(state, "block_all_new", False))
+        block_b = bool(getattr(state, "block_b", False))
+
+        notes = []
+        score = 100.0
+
+        if block_all or block_b:
+            notes.append("risk_state_block")
+            score -= 100.0
+        if mode == "RISK_OFF":
+            notes.append("risk_off")
+            score -= 80.0
+        elif mode == "SAFE":
+            notes.append("safe_mode")
+            score -= 18.0
+
+        if trend == "向下":
+            notes.append("qqq_downtrend")
+            score -= 42.0
+        elif trend == "横盘":
+            notes.append("sideways")
+            score -= 10.0
+        elif trend == "向上":
+            notes.append("uptrend")
+            score += 8.0
+        else:
+            notes.append("trend_unknown")
+            score -= 8.0
+
+        if vix >= B_MARKET_MAX_VIX:
+            notes.append(f"vix_panic={vix:.1f}")
+            score -= 55.0
+        elif vix >= B_MARKET_WARN_VIX:
+            notes.append(f"vix_elevated={vix:.1f}")
+            score -= 20.0
+
+        if qqq_change <= B_MARKET_MAX_QQQ_DROP_PCT:
+            notes.append(f"qqq_drop={qqq_change:.2f}%")
+            score -= 35.0
+        elif qqq_change < 0:
+            notes.append(f"qqq_pullback={qqq_change:.2f}%")
+            score -= min(18.0, abs(qqq_change) * 8.0)
+
+        if trend == "向下" and qqq_change <= B_MARKET_MAX_DOWNTREND_QQQ_DROP_PCT:
+            notes.append("downtrend_confirmed_by_intraday")
+            score -= 25.0
+
+        if risk_multiplier <= 0:
+            notes.append("risk_multiplier_zero")
+            score -= 80.0
+        elif risk_multiplier < 0.5:
+            notes.append(f"risk_multiplier_low={risk_multiplier:.2f}")
+            score -= 18.0
+
+        allow = score >= B_MARKET_SCORE_MIN
+        detail = {
+            "allow": allow,
+            "score": round(float(score), 2),
+            "min_score": float(B_MARKET_SCORE_MIN),
+            "trend": trend or "--",
+            "mode": mode or "--",
+            "vix": round(float(vix), 2),
+            "qqq_change_pct": round(float(qqq_change), 2),
+            "risk_multiplier": round(float(risk_multiplier), 2),
+            "reason": ",".join(notes) or reason or "market_ok",
+            "risk_reason": reason,
+        }
+        return allow, detail
+    except Exception as exc:
+        return True, {
+            "allow": True,
+            "score": 0.0,
+            "min_score": float(B_MARKET_SCORE_MIN),
+            "reason": f"market_filter_unavailable:{str(exc)[:80]}",
+        }
 
 
 def _get_buying_power(trading_client) -> float:
@@ -278,14 +551,37 @@ def _is_cooldown(last_order_time, last_order_side) -> bool:
 
 
 def _submit_market_qty(trading_client, code: str, qty: int, side: str):
-    from alpaca.trading.requests import MarketOrderRequest
+    from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
-    req = MarketOrderRequest(
+    price, _prev_close, _feed = get_snapshot_realtime(code)
+    limit_price = round(float(price or 0.0), 2)
+    if limit_price <= 0:
+        raise RuntimeError(f"invalid realtime limit price for {code}")
+    req = LimitOrderRequest(
         symbol=code,
         qty=int(qty),
         side=(OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL),
+        limit_price=limit_price,
         time_in_force=TimeInForce.DAY,
+    )
+    return trading_client.submit_order(order_data=req)
+
+
+def _submit_limit_sell_qty(trading_client, code: str, qty: int, limit_price: float):
+    from alpaca.trading.requests import LimitOrderRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce
+
+    price = round(float(limit_price or 0.0), 2)
+    if price <= 0:
+        raise RuntimeError(f"invalid sell limit price: {limit_price}")
+    tif = TimeInForce.DAY if B_ALLOW_EXTENDED else TimeInForce.IOC
+    req = LimitOrderRequest(
+        symbol=code,
+        qty=int(qty),
+        side=OrderSide.SELL,
+        limit_price=price,
+        time_in_force=tif,
         extended_hours=bool(B_ALLOW_EXTENDED),
     )
     return trading_client.submit_order(order_data=req)
@@ -505,34 +801,29 @@ def get_snapshot_quote_realtime(code: str):
     if not code:
         raise RuntimeError("empty symbol")
 
-    _sleep_for_rate_limit()
-
-    r = _snapshot_http(code, B_DATA_FEED)
-    if r.status_code != 200:
-        raise RuntimeError(f"snapshot http {r.status_code}: {r.text[:200]}")
-
-    js = r.json()
-
-    lt = js.get("latestTrade") or {}
-    lq = js.get("latestQuote") or {}
-    db = js.get("dailyBar") or {}
-    pb = js.get("prevDailyBar") or {}
-
-    last_price = float(lt["p"]) if lt.get("p") is not None else None
-    bid = float(lq["bp"]) if lq.get("bp") is not None else None
-    ask = float(lq["ap"]) if lq.get("ap") is not None else None
-    day_open = float(db["o"]) if db.get("o") is not None else None
-    day_high = float(db["h"]) if db.get("h") is not None else None
-    prev_close = float(pb["c"]) if pb.get("c") is not None else None
+    resp = _snapshot_http(code, B_DATA_FEED, retries=1)
+    if resp.status_code != 200:
+        raise RuntimeError(f"alpaca quote http={resp.status_code} body={resp.text[:160]}")
+    js = resp.json()
+    latest_trade = js.get("latestTrade") or {}
+    latest_quote = js.get("latestQuote") or {}
+    daily = js.get("dailyBar") or {}
+    prev = js.get("prevDailyBar") or {}
+    bid = float(latest_quote.get("bp") or 0.0)
+    ask = float(latest_quote.get("ap") or 0.0)
+    last_price = float(latest_trade.get("p") or 0.0)
+    if last_price <= 0 and bid > 0 and ask > 0:
+        last_price = (bid + ask) / 2.0
 
     return {
         "last_price": last_price,
-        "bid": bid,
-        "ask": ask,
-        "day_open": day_open,
-        "day_high": day_high,
-        "prev_close": prev_close,
-        "feed": B_DATA_FEED,
+        "bid": bid or None,
+        "ask": ask or None,
+        "day_open": float(daily.get("o") or 0) or None,
+        "day_high": float(daily.get("h") or 0) or None,
+        "day_volume": int(float(daily.get("v") or 0)),
+        "prev_close": float(prev.get("c") or 0) or None,
+        "feed": f"alpaca:{B_DATA_FEED}",
     }
 
 
@@ -576,29 +867,14 @@ def _get_extended_quote_realtime(code: str):
     if not code:
         raise RuntimeError("empty symbol")
 
-    _sleep_for_rate_limit()
-    r = _snapshot_http(code, B_DATA_FEED)
-    if r.status_code != 200:
-        raise RuntimeError(f"snapshot http {r.status_code}: {r.text[:200]}")
-
-    js = r.json()
-    lt = js.get("latestTrade") or {}
-    lq = js.get("latestQuote") or {}
-    db = js.get("dailyBar") or {}
-    pb = js.get("prevDailyBar") or {}
-
-    last = float(lt.get("p") or 0.0)
-    bid = float(lq.get("bp") or 0.0)
-    ask = float(lq.get("ap") or 0.0)
-    if last <= 0 and bid > 0 and ask > 0:
-        last = (bid + ask) / 2.0
-
-    regular_close = float(db.get("c") or 0.0)
-    prev_close = float(pb.get("c") or 0.0)
-    if regular_close <= 0:
-        regular_close = prev_close
+    data = get_snapshot_quote_realtime(code)
+    last = float(data.get("last_price") or 0.0)
+    bid = float(data.get("bid") or 0.0)
+    ask = float(data.get("ask") or 0.0)
+    regular_close = float(data.get("prev_close") or 0.0)
+    prev_close = regular_close
     if last <= 0 or regular_close <= 0:
-        raise RuntimeError(f"extended quote missing fields: last={last} regular_close={regular_close}")
+        raise RuntimeError(f"alpaca extended quote missing fields: last={last} regular_close={regular_close}")
 
     return {
         "last": last,
@@ -606,7 +882,7 @@ def _get_extended_quote_realtime(code: str):
         "ask": ask,
         "regular_close": regular_close,
         "prev_close": prev_close,
-        "feed": B_DATA_FEED,
+        "feed": data.get("feed") or f"alpaca:{B_DATA_FEED}",
     }
 
 def _cancel_open_buy_orders(tc, code: str) -> int:
@@ -803,7 +1079,8 @@ def strategy_B_premarket_manage(code: str) -> bool:
         return False
     except Exception as e:
         print(f"[B PRE] {code} error: {e}", flush=True)
-        traceback.print_exc()
+        if not _is_quote_transient_error(e):
+            traceback.print_exc()
         return False
     finally:
         try:
@@ -840,7 +1117,7 @@ def strategy_B_afterhours_add(code: str) -> bool:
         price = float(q["last"])
         regular_close = float(q["regular_close"])
         after_gain = (price - regular_close) / regular_close if regular_close > 0 else 0.0
-        limit_price = round(regular_close * 1.03, 2)
+        limit_price = round(price, 2)
         add_qty = max(int(math.floor(real_qty * 0.50)), 1)
 
         print(
@@ -902,7 +1179,8 @@ def strategy_B_afterhours_add(code: str) -> bool:
         return True
     except Exception as e:
         print(f"[B AH ADD] {code} error: {e}", flush=True)
-        traceback.print_exc()
+        if not _is_quote_transient_error(e):
+            traceback.print_exc()
         return False
     finally:
         try:
@@ -915,7 +1193,7 @@ def strategy_B_afterhours_add(code: str) -> bool:
 
 
 
-def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
+def _sell_qty(conn, code: str, qty: int, reason: str, limit_price: float | None = None) -> bool:
     qty = int(qty or 0)
     if qty <= 0:
         return False
@@ -928,10 +1206,12 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
     real_qty = _get_real_position_qty(tc, code)
     if real_qty is None:
         print(f"[B SELL] {code} skip: failed to query Alpaca real position, reason={reason}", flush=True)
+        _decision_log("sell", code, "sell_skip", reason="real_position_query_failed", detail=reason)
         return False
 
     if real_qty == 0:
         print(f"[B SELL] {code} skip: no real Alpaca position, db_qty={qty}, reason={reason}", flush=True)
+        _decision_log("sell", code, "sell_skip", reason="no_real_position", db_qty=qty, detail=reason)
         _update_ops_fields(
             conn, code,
             qty=0, is_bought=0, can_sell=0, can_buy=0,
@@ -958,13 +1238,25 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
     old_cost = float(row.get("cost_price") or 0.0)
 
     # ============================================================
-    # 2) 提交市价卖单
+    # 2) 提交实时价限价卖单
     # ============================================================
-    order = _submit_market_qty(tc, code, qty, side="sell")
+    if not limit_price or float(limit_price) <= 0:
+        try:
+            price, _prev_close, _feed = get_snapshot_realtime(code)
+            limit_price = float(price or 0.0)
+        except Exception:
+            limit_price = 0.0
+    if not limit_price or float(limit_price) <= 0:
+        print(f"[B SELL] {code} skip: invalid realtime sell limit price={limit_price}", flush=True)
+        _decision_log("sell", code, "sell_skip", reason="invalid_sell_limit_price", detail=reason)
+        return False
+
+    _decision_log("sell", code, "order_submit", qty=qty, reason=reason, real_qty=real_qty, limit=f"{float(limit_price):.2f}")
+    order = _submit_limit_sell_qty(tc, code, qty, limit_price=float(limit_price))
     order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
     order_status = str(getattr(order, "status", "") or "")
     print(
-        f"[B SELL] {code} order submitted: id={order_id} status={order_status} req_qty={qty}",
+        f"[B SELL] {code} limit order submitted: id={order_id} status={order_status} req_qty={qty} limit={float(limit_price):.2f}",
         flush=True,
     )
 
@@ -973,6 +1265,7 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
     # ============================================================
     if order_status.lower() in ("rejected", "expired"):
         print(f"[B SELL] {code} immediate {order_status}, no position change", flush=True)
+        _decision_log("sell", code, "order_reject", order_id=order_id, status=order_status, reason=reason)
         _update_ops_fields(
             conn, code,
             last_order_side="sell",
@@ -998,6 +1291,7 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
             f"[B SELL] {code} no sell fill: order_id={order_id} status={final_status} reason={reason}",
             flush=True,
         )
+        _decision_log("sell", code, "order_no_fill", order_id=order_id, status=final_status, reason=reason)
         _update_ops_fields(
             conn, code,
             last_order_side="sell",
@@ -1087,6 +1381,18 @@ def _sell_qty(conn, code: str, qty: int, reason: str) -> bool:
         f"stage={new_b_stage} base_qty={new_base_qty} reason={reason} order_id={order_id}",
         flush=True,
     )
+    _decision_log(
+        "sell",
+        code,
+        "order_filled",
+        order_id=order_id,
+        sold=sold_qty,
+        req=qty,
+        remain=remaining_qty,
+        stage=new_b_stage,
+        price=f"{sell_price:.2f}" if sell_price else None,
+        reason=reason,
+    )
 
     if remaining_qty == 0:
         _write_monster_watchlist(conn, code, reason, sell_price, row)
@@ -1127,10 +1433,10 @@ def _sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason: s
     old_peak_price = float(row.get("b_peak_price") or 0.0)
     old_cost = float(row.get("cost_price") or 0.0)
 
-    order = _submit_limit_qty_ext(tc, code, qty, side="sell", limit_price=limit_price)
+    order = _submit_market_qty(tc, code, qty, side="sell")
     order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
     status = str(getattr(order, "status", "") or "")
-    print(f"[B EXT SELL] {code} limit sell submitted id={order_id} status={status} qty={qty} limit={limit_price:.2f}", flush=True)
+    print(f"[B EXT SELL] {code} market sell submitted id={order_id} status={status} qty={qty} ref={limit_price:.2f}", flush=True)
     if status.lower() in ("rejected", "expired"):
         _update_ops_fields(
             conn, code,
@@ -1159,7 +1465,7 @@ def _sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason: s
         conn, code,
         qty=int(remaining_qty),
         last_order_side="sell",
-        last_order_intent=_intent_short(f"{reason} limit={limit_price:.2f} sold={sold_qty}"),
+        last_order_intent=_intent_short(f"{reason} market ref={limit_price:.2f} sold={sold_qty}"),
         last_order_id=str(order_id or ""),
         last_order_time=now_str,
         is_bought=1 if remaining_qty > 0 else 0,
@@ -1184,7 +1490,7 @@ def _sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason: s
 
 def _buy_add_qty(conn, code: str, add_qty: int, reason: str, snap_price: float) -> bool:
     """
-    加仓。snap_price 现在仅作日志参考,真实成本基从 Alpaca 拿(优先 position avg,
+    加仓。snap_price 用作当前价限价，真实成本基从 Alpaca 拿(优先 position avg,
     回退 order filled_avg_price)。
     """
     add_qty = int(add_qty or 0)
@@ -1194,9 +1500,12 @@ def _buy_add_qty(conn, code: str, add_qty: int, reason: str, snap_price: float) 
     tc = _get_trading_client()
 
     # ============================================================
-    # 1) 提交市价加仓单
+    # 1) 按当前价提交限价加仓单
     # ============================================================
-    order = _submit_market_qty(tc, code, add_qty, side="buy")
+    limit_price = round(float(snap_price or 0.0), 2)
+    if limit_price <= 0:
+        return False
+    order = _submit_limit_buy_qty(tc, code, add_qty, limit_price=limit_price)
     order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
     order_status = str(getattr(order, "status", "") or "")
     print(
@@ -1440,6 +1749,37 @@ def _get_prev_close_from_db(conn, code: str):
         return 0.0
 
 
+def _get_prev_trading_day_volume(conn, code: str) -> tuple[int, str]:
+    """读取昨天/前一个已完成交易日成交量，买入前作为硬流动性条件。"""
+    today = _now_la().date() if LA_TZ else datetime.now().date()
+    sql = f"""
+    SELECT `date`, volume
+    FROM `{PRICES_TABLE}`
+    WHERE `symbol`=%s
+      AND volume > 0
+      AND `date` < %s
+    ORDER BY `date` DESC
+    LIMIT 1
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (code, today))
+        row = cur.fetchone() or {}
+    try:
+        volume = int(float(row.get("volume") or 0))
+    except Exception:
+        volume = 0
+    return volume, str(row.get("date") or "")
+
+
+def _prev_day_volume_check(conn, code: str) -> tuple[bool, int, str, str]:
+    volume, volume_date = _get_prev_trading_day_volume(conn, code)
+    if volume <= 0:
+        return False, volume, volume_date, "missing_prev_day_volume"
+    if volume <= B_MIN_PREV_DAY_VOLUME:
+        return False, volume, volume_date, f"prev_day_volume={volume} <= min={B_MIN_PREV_DAY_VOLUME}"
+    return True, volume, volume_date, f"ok prev_day_volume={volume} > {B_MIN_PREV_DAY_VOLUME}"
+
+
 def _count_active_b_positions(conn) -> int:
     sql = f"""
     SELECT COUNT(*) AS n
@@ -1613,41 +1953,45 @@ def _get_avg_volume20(conn, code: str) -> float:
         return 0.0
 
 
-def _get_ops_intraday_volume(conn, code: str) -> int:
-    sql = f"""
-    SELECT intraday_volume
-    FROM `{OPS_TABLE}`
-    WHERE stock_code=%s AND stock_type='B'
-    LIMIT 1;
-    """
+def _get_realtime_intraday_volume(code: str) -> int:
     try:
-        with conn.cursor() as cur:
-            cur.execute(sql, (code,))
-            row = cur.fetchone() or {}
-        return int(float(row.get("intraday_volume") or 0))
+        return int(get_yahoo_intraday_volume(code) or 0)
     except Exception:
         return 0
 
 
-def _required_intraday_volume_ratio(now_dt=None) -> float:
+def _required_intraday_rvol(now_dt=None) -> float:
     now_dt = now_dt or _now_la()
     now_min = now_dt.hour * 60 + now_dt.minute
     t1 = _hhmm_to_minutes(B_VOLUME_T1_LA, "07:30")
     t2 = _hhmm_to_minutes(B_VOLUME_T2_LA, "09:30")
     if now_min < t1:
-        return B_VOLUME_RATIO_EARLY
+        return B_RVOL_EARLY
     if now_min < t2:
-        return B_VOLUME_RATIO_MID
-    return B_VOLUME_RATIO_LATE
+        return B_RVOL_MID
+    return B_RVOL_LATE
 
 
-def _intraday_volume_check(conn, code: str):
+def _market_elapsed_ratio(now_dt=None) -> float:
+    now_dt = now_dt or _now_la()
+    now_min = now_dt.hour * 60 + now_dt.minute
+    open_min = _hhmm_to_minutes(B_MARKET_OPEN_LA, "06:30")
+    close_min = _hhmm_to_minutes(B_MARKET_CLOSE_LA, "13:00")
+    session_minutes = max(close_min - open_min, 1)
+    elapsed = min(max(now_min - open_min, 1), session_minutes)
+    return elapsed / session_minutes
+
+
+def _intraday_volume_check(conn, code: str, current_price: float = 0.0):
     if B_REQUIRE_INTRADAY_VOLUME != 1:
         return True, 0, 0.0, 0.0, 0.0, "disabled"
 
-    intraday_volume = _get_ops_intraday_volume(conn, code)
+    intraday_volume = _get_realtime_intraday_volume(code)
     avg_volume20 = _get_avg_volume20(conn, code)
-    required_ratio = _required_intraday_volume_ratio()
+    required_rvol = _required_intraday_rvol()
+    elapsed_ratio = _market_elapsed_ratio()
+    required_ratio = elapsed_ratio * required_rvol
+    realtime_dollar_volume = float(intraday_volume) * float(current_price or 0.0)
 
     if intraday_volume <= 0:
         return False, intraday_volume, avg_volume20, required_ratio, 0.0, "missing_intraday_volume"
@@ -1655,17 +1999,45 @@ def _intraday_volume_check(conn, code: str):
         return False, intraday_volume, avg_volume20, required_ratio, 0.0, "missing_avg_volume20"
 
     volume_ratio = float(intraday_volume) / float(avg_volume20)
-    if volume_ratio < required_ratio:
+    if intraday_volume < B_MIN_REALTIME_VOLUME:
         return (
             False,
             intraday_volume,
             avg_volume20,
             required_ratio,
             volume_ratio,
-            f"volume_ratio={volume_ratio:.2%} < required={required_ratio:.2%}",
+            f"volume={intraday_volume} < min_volume={B_MIN_REALTIME_VOLUME}",
+        )
+    if realtime_dollar_volume < B_MIN_REALTIME_DOLLAR_VOLUME:
+        return (
+            False,
+            intraday_volume,
+            avg_volume20,
+            required_ratio,
+            volume_ratio,
+            f"dollar_volume={realtime_dollar_volume:.0f} < min_dollar={B_MIN_REALTIME_DOLLAR_VOLUME:.0f}",
         )
 
-    return True, intraday_volume, avg_volume20, required_ratio, volume_ratio, "ok"
+    expected_volume_now = float(avg_volume20) * max(elapsed_ratio, 1.0 / 390.0)
+    rvol = float(intraday_volume) / expected_volume_now if expected_volume_now > 0 else 0.0
+    if rvol < required_rvol:
+        return (
+            False,
+            intraday_volume,
+            avg_volume20,
+            required_ratio,
+            volume_ratio,
+            f"rvol={rvol:.2f} < required_rvol={required_rvol:.2f} elapsed={elapsed_ratio:.2%}",
+        )
+
+    return (
+        True,
+        intraday_volume,
+        avg_volume20,
+        required_ratio,
+        volume_ratio,
+        f"ok rvol={rvol:.2f}>={required_rvol:.2f} dollar_volume={realtime_dollar_volume:.0f}",
+    )
 
 
 def _intraday_reversal_reject(ref_price: float, day_open: float, day_high: float):
@@ -1706,14 +2078,9 @@ def _b_max_buy_price(prev_close: float) -> float:
 
 def _b_entry_limit_price(price: float, ask: float, prev_close: float) -> tuple[float, float, float]:
     price = float(price or 0.0)
-    ask = float(ask or 0.0)
-    if ask > 0:
-        raw_limit = ask * 1.002
-    else:
-        raw_limit = price * 1.003
-    raw_limit = max(raw_limit, price * 1.001)
-
+    _ = ask
     max_buy_price = _b_max_buy_price(prev_close)
+    raw_limit = price
     capped_limit = min(raw_limit, max_buy_price) if max_buy_price > 0 else raw_limit
     return round(float(capped_limit), 2), round(float(raw_limit), 2), max_buy_price
 
@@ -1765,6 +2132,7 @@ def _b_score_log(message: str) -> None:
 
 def _score_b_reject(code: str, reason: str) -> None:
     _b_score_log(f"[B SCORE CHECK] {code} reject: {reason}")
+    _decision_log("buy", code, "score_reject", reason=reason)
 
 
 def _score_b_candidate(conn, code: str):
@@ -1845,6 +2213,11 @@ def _score_b_candidate(conn, code: str):
         _score_b_reject(code, f"weak intraday price {reversal_reason}")
         return None
 
+    prev_vol_ok, prev_day_volume, prev_volume_date, prev_volume_reason = _prev_day_volume_check(conn, code)
+    if not prev_vol_ok:
+        _score_b_reject(code, f"{prev_volume_reason} date={prev_volume_date or '--'}")
+        return None
+
     (
         volume_ok,
         intraday_volume,
@@ -1852,7 +2225,7 @@ def _score_b_candidate(conn, code: str):
         required_volume_ratio,
         volume_ratio,
         volume_reason,
-    ) = _intraday_volume_check(conn, code)
+    ) = _intraday_volume_check(conn, code, price)
     if not volume_ok:
         _score_b_reject(
             code,
@@ -1886,6 +2259,20 @@ def _score_b_candidate(conn, code: str):
         f"volume={intraday_volume}/{avg_volume20:.0f} ratio={volume_ratio:.2%} "
         f"required={required_volume_ratio:.2%}"
     )
+    _decision_log(
+        "buy",
+        code,
+        "score_pass",
+        score=f"{score:.4f}",
+        price=f"{price:.2f}",
+        trigger=f"{trigger:.2f}",
+        day_up=f"{day_up_pct:.2%}",
+        entry_up=f"{entry_up_pct:.2%}",
+        prev_day_volume=prev_day_volume,
+        prev_volume_date=prev_volume_date,
+        volume=f"{intraday_volume}/{avg_volume20:.0f}",
+        rvol=f"{volume_ratio:.2%}",
+    )
 
     return {
         "symbol": code,
@@ -1899,6 +2286,7 @@ def _score_b_candidate(conn, code: str):
         "reason": (
             f"day_up={day_up_pct:.2%} entry_up={entry_up_pct:.2%} "
             f"pullback={pullback_from_high:.2%} below_open={below_open:.2%} "
+            f"prev_vol={prev_day_volume}({prev_volume_date}) "
             f"vol={intraday_volume}/{avg_volume20:.0f}({volume_ratio:.2%}>={required_volume_ratio:.2%}) "
             f"avg_vol20={avg_volume20:.0f}"
         )[:255],
@@ -1914,6 +2302,17 @@ def strategy_B_rank_and_confirm(codes) -> list[str]:
     """
     codes = sorted({(c or "").strip().upper() for c in (codes or []) if (c or "").strip()})
     if not codes:
+        return []
+
+    market_ok, market_detail = _market_environment_check()
+    if not market_ok:
+        print(
+            f"[B SCORE] skip: market_filter score={market_detail.get('score')} "
+            f"min={market_detail.get('min_score')} trend={market_detail.get('trend')} "
+            f"qqq={market_detail.get('qqq_change_pct')}% vix={market_detail.get('vix')} "
+            f"reason={market_detail.get('reason')}",
+            flush=True,
+        )
         return []
 
     buy_window_open, now_la, window_start, window_end = _is_b_buy_window_open()
@@ -2044,6 +2443,14 @@ def strategy_B_rank_and_confirm(codes) -> list[str]:
         confirmed = [str(r.get("symbol") or "").upper() for r in rows if r.get("symbol")]
         if confirmed:
             print(f"[B SCORE] confirmed={','.join(confirmed)}", flush=True)
+            for symbol in confirmed:
+                _decision_log(
+                    "buy",
+                    symbol,
+                    "score_confirmed",
+                    confirmations=int(B_SCORE_CONFIRMATIONS),
+                    lookback_min=int(B_SCORE_LOOKBACK_MINUTES),
+                )
         else:
             pending_sql = f"""
             SELECT
@@ -2117,6 +2524,28 @@ def strategy_B_buy(code: str) -> bool:
     code = (code or "").strip().upper()
     print(f"[B BUY] {code}", flush=True)
 
+    market_ok, market_detail = _market_environment_check()
+    if not market_ok:
+        print(
+            f"[B BUY] {code} skip: market_filter score={market_detail.get('score')} "
+            f"min={market_detail.get('min_score')} trend={market_detail.get('trend')} "
+            f"qqq={market_detail.get('qqq_change_pct')}% vix={market_detail.get('vix')} "
+            f"reason={market_detail.get('reason')}",
+            flush=True,
+        )
+        _decision_log(
+            "buy",
+            code,
+            "buy_skip",
+            reason="market_filter",
+            market_score=market_detail.get("score"),
+            market_trend=market_detail.get("trend"),
+            qqq_change_pct=market_detail.get("qqq_change_pct"),
+            vix=market_detail.get("vix"),
+            detail=market_detail.get("reason"),
+        )
+        return False
+
     buy_window_open, now_la, window_start, window_end = _is_b_buy_window_open()
     if not buy_window_open:
         print(
@@ -2150,9 +2579,11 @@ def strategy_B_buy(code: str) -> bool:
 
         if can_buy != 1:
             print(f"[B BUY] {code} skip: can_buy={can_buy}", flush=True)
+            _decision_log("buy", code, "buy_skip", reason=f"can_buy={can_buy}")
             return False
         if is_bought == 1:
             print(f"[B BUY] {code} skip: already bought", flush=True)
+            _decision_log("buy", code, "buy_skip", reason="already_bought")
             return False
         if trigger <= 0:
             print(f"[B BUY] {code} skip: invalid trigger={trigger:.2f}", flush=True)
@@ -2222,6 +2653,7 @@ def strategy_B_buy(code: str) -> bool:
             return False
         if not (price > trigger):
             print(f"[B BUY] {code} skip: price={price:.2f} <= trigger={trigger:.2f}", flush=True)
+            _decision_log("buy", code, "buy_skip", reason="price_below_trigger", price=f"{price:.2f}", trigger=f"{trigger:.2f}")
             return False
         if not (day_up_pct > B_MIN_UP_PCT):
             print(
@@ -2252,6 +2684,24 @@ def strategy_B_buy(code: str) -> bool:
             print(f"[B BUY] {code} skip: weak intraday price {reversal_reason}", flush=True)
             return False
 
+        prev_vol_ok, prev_day_volume, prev_volume_date, prev_volume_reason = _prev_day_volume_check(conn, code)
+        if not prev_vol_ok:
+            print(
+                f"[B BUY] {code} skip: {prev_volume_reason} "
+                f"date={prev_volume_date or '--'}",
+                flush=True,
+            )
+            _decision_log(
+                "buy",
+                code,
+                "buy_skip",
+                reason="prev_day_volume_filter",
+                detail=prev_volume_reason,
+                prev_day_volume=prev_day_volume,
+                prev_volume_date=prev_volume_date,
+            )
+            return False
+
         (
             volume_ok,
             intraday_volume,
@@ -2259,13 +2709,22 @@ def strategy_B_buy(code: str) -> bool:
             required_volume_ratio,
             volume_ratio,
             volume_reason,
-        ) = _intraday_volume_check(conn, code)
+        ) = _intraday_volume_check(conn, code, price)
         if not volume_ok:
             print(
                 f"[B BUY] {code} skip: intraday volume {volume_reason} "
                 f"vol={intraday_volume} avg20={avg_volume20:.0f} "
                 f"required={required_volume_ratio:.2%}",
                 flush=True,
+            )
+            _decision_log(
+                "buy",
+                code,
+                "buy_skip",
+                reason=f"intraday_volume_{volume_reason}",
+                volume=intraday_volume,
+                avg20=f"{avg_volume20:.0f}",
+                required=f"{required_volume_ratio:.2%}",
             )
             return False
         print(
@@ -2381,6 +2840,17 @@ def strategy_B_buy(code: str) -> bool:
             f"day_up={day_up_pct*100:.2f}% bp={buying_power:.2f}",
             flush=True,
         )
+        _decision_log(
+            "buy",
+            code,
+            "order_submit",
+            qty=qty,
+            est=f"{used_notional:.2f}",
+            price=f"{price:.2f}",
+            limit=f"{limit_price:.2f}",
+            day_up=f"{day_up_pct:.2%}",
+            bp=f"{buying_power:.2f}",
+        )
 
         # 防御：先取消同 symbol 下任何残留的 open 买单
         _cancel_open_buy_orders(tc, code)
@@ -2396,6 +2866,7 @@ def strategy_B_buy(code: str) -> bool:
         # 立即终态拒单 → 快速失败
         if order_status.lower() in ("rejected", "expired"):
             print(f"[B BUY] {code} immediate {order_status}, no wait", flush=True)
+            _decision_log("buy", code, "order_reject", order_id=order_id, status=order_status)
             _write_buy_cooldown(conn, code, order_id, f"REJECT_IMMEDIATE status={order_status}")
             return False
 
@@ -2414,6 +2885,7 @@ def strategy_B_buy(code: str) -> bool:
                 f"[B BUY] {code} no fill: order_id={order_id} status={final_status}",
                 flush=True,
             )
+            _decision_log("buy", code, "order_no_fill", order_id=order_id, status=final_status)
             _write_buy_cooldown(conn, code, order_id, f"NO_FILL status={final_status}")
             return False
 
@@ -2423,7 +2895,7 @@ def strategy_B_buy(code: str) -> bool:
         # ============================================================
         # 6) 落库
         # ============================================================
-        init_sl = float(cost_price) * 0.98
+        init_sl = float(cost_price) * B_INITIAL_STOP_MULT
 
         last_stage = 0
         base_qty = int(qty_to_write)
@@ -2482,11 +2954,24 @@ def strategy_B_buy(code: str) -> bool:
             f"day_up={day_up_pct*100:.2f}% limit={limit_price:.2f}",
             flush=True,
         )
+        _decision_log(
+            "buy",
+            code,
+            "order_filled",
+            order_id=order_id,
+            qty=qty_to_write,
+            cost=f"{cost_price:.2f}",
+            sl=f"{init_sl:.2f}",
+            day_up=f"{day_up_pct:.2%}",
+            limit=f"{limit_price:.2f}",
+        )
         return True
 
     except Exception as e:
         print(f"[B BUY] {code} ❌ error: {e}", flush=True)
-        traceback.print_exc()
+        _decision_log("buy", code, "error", reason=str(e)[:120])
+        if not _is_quote_transient_error(e):
+            traceback.print_exc()
         try:
             if conn:
                 _write_buy_cooldown(conn, code, order_id, f"ERR {str(e)[:60]}")
@@ -3158,8 +3643,8 @@ def strategy_B_sell(code: str) -> bool:
     设计哲学：
     1) 不加仓 —— 初始仓位即最终仓位,简化心智
     2) Stage 仅作"分层落袋的触发器",不再控 SL
-    3) 普通B用更紧的保护：初始 -2%，涨 3% 后锁 1%
-    4) 涨 5% 后启用“最高价回撤保护”，防止利润大幅回吐
+    3) 普通B给动量波动空间：初始 -5%，涨 5% 后抬到成本线
+    4) 涨 8% 后启用“最高价回撤保护”，防止利润大幅回吐
     5) 保留 Stage 分层止盈 / 闪崩 pending stop / 结构退出；不再限制买入当天卖出
 
     搭配建议：
@@ -3180,22 +3665,19 @@ def strategy_B_sell(code: str) -> bool:
     ENABLE_STRUCTURE_EXIT_STAGE = 3  # +60% 后启用 K 线结构退出
 
     # 普通B止损参数：
-    # - 买入后初始止损由 strategy_B_buy 写入 cost*0.98。
-    # - 如果历史记录没有 stop_loss_price，这里也会补成 cost*0.98。
-    # - 当前涨幅 >= 3% 后，止损抬到 cost*1.01，锁 1% 利润。
-    TRAIL_LOCK_START_PCT = 0.03
-    TRAIL_LOCK_SL_MULT = 1.01
-    INITIAL_STOP_GRACE_SECONDS = int(os.getenv("B_INITIAL_STOP_GRACE_SECONDS", "180"))
-    CATASTROPHIC_STOP_LOSS_PCT = float(os.getenv("B_CATASTROPHIC_STOP_LOSS_PCT", "-0.05"))
+    # - 买入后初始止损由 strategy_B_buy 写入 cost*0.95。
+    # - 如果历史记录没有 stop_loss_price，这里也会补成 cost*0.95。
+    # - 当前涨幅 >= 5% 后，止损抬到 cost*1.00，先保护本金。
+    TRAIL_LOCK_START_PCT = B_TRAIL_LOCK_START_PCT
+    TRAIL_LOCK_SL_MULT = B_TRAIL_LOCK_SL_MULT
+    INITIAL_STOP_GRACE_SECONDS = B_INITIAL_STOP_GRACE_SECONDS
+    CATASTROPHIC_STOP_LOSS_PCT = B_CATASTROPHIC_STOP_LOSS_PCT
 
     # 最高价回撤保护：
     # 这不是替代分层止盈，而是保护“已经涨起来但又回落”的剩余仓位。
     # 涨幅越大，允许从高点回撤的空间越大，避免妖股后期被太早洗掉。
     PEAK_GIVEBACK_RULES = [
-        (0.40, 0.05),   # 最高涨 >=40%，从最高价回撤 5% 卖
-        (0.20, 0.035),  # 最高涨 >=20%，从最高价回撤 3.5% 卖
-        (0.10, 0.025),  # 最高涨 >=10%，从最高价回撤 2.5% 卖
-        (0.05, 0.02),   # 最高涨 >=5%，从最高价回撤 2% 卖
+        *B_PEAK_GIVEBACK_RULES,
     ]
 
     # 现在账户不再受日内交易限制，买入后立刻允许按止损/止盈规则卖出。
@@ -3206,11 +3688,7 @@ def strategy_B_sell(code: str) -> bool:
     # 总落袋: 20+16+10+5+4 ≈ 55%,留 45% 仓位裸奔到天上
     STAGE_RULES = [
         # stage, profit_pct, sl_mult, add_ratio, sell_ratio
-        (1, 0.20, None, None, 0.20),  # +20%  卖 20% (第一次落袋)
-        (2, 0.35, None, None, 0.20),  # +35%  卖 20%
-        (3, 0.60, None, None, 0.15),  # +60%  卖 15% (开启结构退出)
-        (4, 0.85, None, None, 0.10),  # +85%  卖 10%
-        (5, 1.20, None, None, 0.10),  # +120% 卖 10%
+        *B_STAGE_SELL_RULES,
     ]
 
     # ============================================================
@@ -3335,8 +3813,8 @@ def strategy_B_sell(code: str) -> bool:
     def _calc_dynamic_trail_sl(cost_, price_, sl_old_):
         """
         普通B动态止损：
-          1) 初始 SL = cost*0.98，由买入落库；这里兜底补齐。
-          2) 当前涨幅 >= 3% 后，SL 抬到 cost*1.01，锁 1% 利润。
+          1) 初始 SL = cost*0.95，由买入落库；这里兜底补齐。
+          2) 当前涨幅 >= 5% 后，SL 抬到 cost*1.00，保护本金。
           3) 更高涨幅不在这里继续抬 SL，交给“最高价回撤保护”处理。
         """
         cost_ = _safe_float(cost_, 0.0)
@@ -3509,8 +3987,8 @@ def strategy_B_sell(code: str) -> bool:
 
         # ----- 1) 补初始 SL -----
         if sl <= 0:
-            # 普通B初始止损统一用 cost*0.98，避免 trigger/entry_open 把止损抬到买入价上方。
-            init_sl = float(cost) * 0.98 if cost > 0 else 0
+            # 普通B初始止损统一用 cost*0.95，给动量股正常震荡空间。
+            init_sl = float(cost) * B_INITIAL_STOP_MULT if cost > 0 else 0
             if init_sl > 0:
                 sl = _cap_sl_below_price(init_sl, price)
                 try:
@@ -3559,7 +4037,7 @@ def strategy_B_sell(code: str) -> bool:
                     f"pullback={giveback_pct:.2%} profit_now={profit_now:.2f} peak_profit={peak_profit:.2f}"
                 )
                 print(f"[B SELL] {code} peak giveback sell qty={qty} reason={reason}", flush=True)
-                traded = _sell_qty(conn, code, qty, reason) or traded
+                traded = _sell_qty(conn, code, qty, reason, limit_price=price) or traded
                 return traded
 
         # ----- 3) 已存在的 pending stop -----
@@ -3586,7 +4064,7 @@ def strategy_B_sell(code: str) -> bool:
                     return False
                 reason = f"PENDING_STOP_TIMEOUT price={price:.2f} <= pending_sl={pending_sl:.2f} waited={flash_wait_minutes}m"
                 print(f"[B SELL] {code} pending stop timeout sell qty={qty} reason={reason}", flush=True)
-                traded = _sell_qty(conn, code, qty, reason) or traded
+                traded = _sell_qty(conn, code, qty, reason, limit_price=price) or traded
                 if traded:
                     _clear_pending_stop(conn, code)
                 return traded
@@ -3638,7 +4116,7 @@ def strategy_B_sell(code: str) -> bool:
 
                 reason = f"PENDING_STOP_TIMEOUT price={price:.2f} <= pending_sl={pending_sl2:.2f} waited={flash_wait_minutes}m"
                 print(f"[B SELL] {code} timeout hard stop sell qty={qty} reason={reason}", flush=True)
-                traded = _sell_qty(conn, code, qty, reason) or traded
+                traded = _sell_qty(conn, code, qty, reason, limit_price=price) or traded
                 if traded:
                     _clear_pending_stop(conn, code)
                 return traded
@@ -3652,7 +4130,7 @@ def strategy_B_sell(code: str) -> bool:
 
             reason = f"STOP price={price:.2f} <= sl={sl:.2f}"
             print(f"[B SELL] {code} hard stop sell qty={qty} reason={reason}", flush=True)
-            traded = _sell_qty(conn, code, qty, reason) or traded
+            traded = _sell_qty(conn, code, qty, reason, limit_price=price) or traded
             return traded
         else:
             if pending_since:
@@ -3683,7 +4161,7 @@ def strategy_B_sell(code: str) -> bool:
                                 f"price={price:.2f} qty={sell_qty} last_stage={last_stage}"
                             )
                             print(f"[B SELL] {code} jump sell qty={sell_qty} reason={reason}", flush=True)
-                            sell_ok = _sell_qty(conn, code, sell_qty, reason)
+                            sell_ok = _sell_qty(conn, code, sell_qty, reason, limit_price=price)
                             traded = sell_ok or traded
 
                             row_after = _load_one_b_row(conn, code) or {}
@@ -3745,7 +4223,7 @@ def strategy_B_sell(code: str) -> bool:
 
                             reason = f"STAGE{stage}_SELL{int(sell_ratio * 100)} price={price:.2f} qty={sell_qty}"
                             print(f"[B SELL] {code} sell qty={sell_qty} reason={reason}", flush=True)
-                            sell_ok = _sell_qty(conn, code, sell_qty, reason)
+                            sell_ok = _sell_qty(conn, code, sell_qty, reason, limit_price=price)
                             traded = sell_ok or traded
 
                             row3 = _load_one_b_row(conn, code) or {}
@@ -3786,14 +4264,15 @@ def strategy_B_sell(code: str) -> bool:
                         return False
                     reason = f"STRUCT_EXIT close0={c0:.2f} < min3={min3:.2f}"
                     print(f"[B SELL] {code} structure exit qty={qty} reason={reason}", flush=True)
-                    traded = _sell_qty(conn, code, qty, reason) or traded
+                    traded = _sell_qty(conn, code, qty, reason, limit_price=price) or traded
                     return traded
 
         return traded
 
     except Exception as e:
         print(f"[B SELL] {code} ❌ error: {e}", flush=True)
-        traceback.print_exc()
+        if not _is_quote_transient_error(e):
+            traceback.print_exc()
         return False
 
     finally:

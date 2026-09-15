@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from . import alpaca_gateway
+from .account_config import load_account_config, profile_for_pool
 from .config import env_float, settings
 from .db import db_conn, fetch_all
 from .risk_controller import get_risk_state
@@ -46,17 +47,17 @@ class CapitalAllocation:
 
 
 def get_account_snapshot():
-    return alpaca_gateway.get_account_snapshot()
+    return alpaca_gateway.get_account_snapshot(profile=profile_for_pool("B"))
 
 
 POOL_BROKERS = {
-    "A": "fidelity",
-    "B": "alpaca",
-    "C": "alpaca",
-    "D": "webull",
+    "A": "retirement",
+    "B": "trading",
+    "C": "trading",
+    "D": "trading",
 }
 POOL_GROUPS = ("A", "B", "C", "D")
-BASE_POOL_WEIGHTS = {"A": 0.20, "B": 0.50, "C": 0.20, "D": 0.10}
+BASE_POOL_WEIGHTS = {"A": 1.00, "B": 0.50, "C": 0.30, "D": 0.20}
 DISABLED_POOL_TRANSFER = {"A": "B", "C": "B", "D": "C"}
 
 
@@ -80,20 +81,21 @@ def _manual_account_snapshot(prefix: str) -> alpaca_gateway.AccountSnapshot:
 
 
 def get_broker_account_snapshots() -> dict[str, alpaca_gateway.AccountSnapshot]:
-    """按券商读取资金快照；A/D 与 Alpaca 互不借用余额。"""
-    alpaca = get_account_snapshot()
-    if alpaca is None:
-        alpaca = alpaca_gateway.AccountSnapshot(0.0, 0.0, 0.0, 0.0, account_blocked=True, trading_blocked=True)
-    return {
-        "alpaca": alpaca,
-        "fidelity": _manual_account_snapshot("FIDELITY"),
-        "webull": _manual_account_snapshot("WEBULL"),
-    }
+    """按账户 profile 读取资金快照；A/B/C/D 不互相借用余额。"""
+    config = load_account_config()
+    names = set((config.get("pool_profiles") or {}).values()) | {profile_for_pool("B", config)}
+    snaps: dict[str, alpaca_gateway.AccountSnapshot] = {}
+    for name in sorted(n for n in names if n):
+        snap = alpaca_gateway.get_account_snapshot(profile=name)
+        if snap is None:
+            snap = alpaca_gateway.AccountSnapshot(0.0, 0.0, 0.0, 0.0, account_blocked=True, trading_blocked=True)
+        snaps[name] = snap
+    return snaps
 
 
 def _aggregate_account_snapshot(snaps: dict[str, alpaca_gateway.AccountSnapshot]) -> alpaca_gateway.AccountSnapshot:
     """合并展示用账户快照，交易阻断状态只继承 Alpaca 实盘通道。"""
-    alpaca = snaps.get("alpaca") or alpaca_gateway.AccountSnapshot(0.0, 0.0, 0.0, 0.0)
+    alpaca = snaps.get(profile_for_pool("B")) or alpaca_gateway.AccountSnapshot(0.0, 0.0, 0.0, 0.0)
     equity = sum(float(s.equity or 0) for s in snaps.values())
     buying_power = sum(float(s.buying_power or 0) for s in snaps.values())
     cash = sum(float(s.cash or 0) for s in snaps.values())
@@ -203,7 +205,7 @@ def resolve_margin_usage_pct(risk=None) -> tuple[str, float, str]:
 
 
 def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
-    """读取当前资金模式的基础比例；A/B/C 是本金池比例，D 是独立保证金额度比例。"""
+    """读取当前资金模式的基础比例；A 独立，B/C/D 在原保证金账户内分配。"""
     try:
         risk = get_risk_state()
         if risk.recommended_weights:
@@ -218,11 +220,11 @@ def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
         print(f"[CAPITAL WARN] dynamic weights unavailable, fallback mode weights: {exc}", flush=True)
 
     a, b, c, d = {
-        "NORMAL": (0.20, 0.30, 0.50, 0.30),
-        "SAFE": (0.35, 0.15, 0.50, 0.10),
-        "ATTACK": (0.15, 0.35, 0.50, 0.30),
-        "RISK_OFF": (0.60, 0.00, 0.40, 0.00),
-    }.get(mode, (0.20, 0.30, 0.50, 0.30))
+        "NORMAL": (1.00, 0.50, 0.30, 0.20),
+        "SAFE": (1.00, 0.40, 0.40, 0.20),
+        "ATTACK": (1.00, 0.60, 0.25, 0.15),
+        "RISK_OFF": (1.00, 0.00, 0.80, 0.20),
+    }.get(mode, (1.00, 0.50, 0.30, 0.20))
     allow_d = d > 0
     return {"A": a, "B": b, "C": c, "D": d}, allow_d
 
@@ -264,10 +266,11 @@ def _pool_base_percents() -> dict[str, float]:
         "D": _setting_float("D_ACCOUNT_CAPITAL_PCT", BASE_POOL_WEIGHTS["D"]),
     }
     enabled = pool_enabled_settings()
-    adjusted = {group: 0.0 for group in POOL_GROUPS}
-    active = [group for group in POOL_GROUPS if enabled[group]]
+    adjusted = {"A": max(0.0, raw["A"]) if enabled.get("A") else 0.0, "B": 0.0, "C": 0.0, "D": 0.0}
+    active = [group for group in ("B", "C", "D") if enabled[group]]
     if not active:
-        return {"A": 0.0, "B": 1.0, "C": 0.0, "D": 0.0}
+        adjusted["B"] = 1.0
+        return adjusted
 
     def destination(group: str) -> str:
         seen = set()
@@ -285,11 +288,13 @@ def _pool_base_percents() -> dict[str, float]:
             return active[0]
         return max(active, key=lambda g: raw[g])
 
-    for group, weight in raw.items():
+    for group in ("B", "C", "D"):
+        weight = raw[group]
         adjusted[destination(group)] += max(0.0, weight)
-    total = sum(adjusted.values())
+    total = sum(adjusted[group] for group in ("B", "C", "D"))
     if total > 0:
-        adjusted = {group: value / total for group, value in adjusted.items()}
+        for group in ("B", "C", "D"):
+            adjusted[group] = adjusted[group] / total
     return adjusted
 
 
@@ -300,7 +305,8 @@ def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpac
     pool_base_percents = _pool_base_percents()
 
     def pool_snapshot(group: str) -> alpaca_gateway.AccountSnapshot:
-        return broker_snaps.get(POOL_BROKERS[group]) or snap
+        profile = profile_for_pool(group)
+        return broker_snaps.get(profile) or broker_snaps.get(POOL_BROKERS[group]) or snap
 
     base_targets = {
         "A": pool_snapshot("A").equity * pool_base_percents["A"],
@@ -335,41 +341,32 @@ def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpac
                         risk_target,
                         group_snap.equity,
                         group_snap.buying_power,
-                        f"monthly allocation auto-created broker={POOL_BROKERS[group]}",
+                        f"monthly allocation auto-created broker={profile_for_pool(group)}",
                     ),
                 )
-                # 如果本月资金池已经存在，但策略比例规则升级了，只修正比例变化的行。
-                # 这样可以把旧的 D=0 自动升级成 D=30%，同时不因为账户 equity 波动重写整月资金池。
                 cur.execute(
                     """
                     UPDATE capital_pools
                     SET mode=%s, base_percent=%s, base_target_capital=%s,
+                        total_risk_percent=%s, pool_risk_percent=%s,
+                        risk_target_capital=%s,
                         source_equity=%s, source_buying_power=%s,
-                        notes='monthly allocation policy upgraded',
+                        notes='realtime allocation refreshed',
                         updated_at=NOW()
                     WHERE allocation_month=%s
                       AND strategy_group=%s
-                      AND (
-                        mode<>%s
-                        OR ABS(base_percent - %s) > 0.0001
-                        OR (%s IN ('A','D') AND ABS(COALESCE(source_equity, 0) - %s) > 0.01)
-                        OR (%s IN ('A','D') AND ABS(COALESCE(source_buying_power, 0) - %s) > 0.01)
-                      )
                     """,
                     (
                         mode,
                         pool_base_percents[group],
                         base_targets[group],
+                        total_pct,
+                        pool_pct[group],
+                        risk_target,
                         group_snap.equity,
                         group_snap.buying_power,
                         month,
                         group,
-                        mode,
-                        pool_base_percents[group],
-                        group,
-                        group_snap.equity,
-                        group,
-                        group_snap.buying_power,
                     ),
                 )
     return month
@@ -472,7 +469,7 @@ def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
         margin_usage_reason=margin_reason,
         used=used,
         available=available,
-        pool_brokers=POOL_BROKERS.copy(),
+        pool_brokers={group: profile_for_pool(group) for group in ("A", "B", "C", "D")},
         broker_snapshots={name: _snapshot_payload(value) for name, value in broker_snaps.items()},
     )
 

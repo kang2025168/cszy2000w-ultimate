@@ -212,13 +212,30 @@ def _fetch_yahoo_chart_volume(symbol: str):
             return None
 
         meta = result.get("meta") or {}
+        meta_time = meta.get("regularMarketTime")
+        meta_date = None
+        if meta_time is not None:
+            try:
+                meta_date = datetime.fromtimestamp(int(meta_time), LA_TZ).date() if LA_TZ else datetime.fromtimestamp(int(meta_time)).date()
+            except Exception:
+                meta_date = None
+
+        today = _now_la().date()
         meta_volume = meta.get("regularMarketVolume")
-        if meta_volume is not None:
+        if meta_volume is not None and meta_date == today:
             return symbol, int(float(meta_volume))
 
         quote = ((result.get("indicators") or {}).get("quote") or [None])[0] or {}
         volumes = quote.get("volume") or []
-        volume = int(sum(int(float(v or 0)) for v in volumes))
+        timestamps = result.get("timestamp") or []
+        volume = 0
+        for ts, v in zip(timestamps, volumes):
+            try:
+                bar_dt = datetime.fromtimestamp(int(ts), LA_TZ) if LA_TZ else datetime.fromtimestamp(int(ts))
+                if bar_dt.date() == today:
+                    volume += int(float(v or 0))
+            except Exception:
+                continue
         return (symbol, volume) if volume > 0 else None
     except Exception:
         return None

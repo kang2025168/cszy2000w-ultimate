@@ -153,6 +153,8 @@ def read_symbols_from_csv(path: str) -> list[str]:
             s = str(row[0]).strip().upper()
             if not s or s.startswith("#"):
                 continue
+            if s in {"SYMBOL", "TICKER", "CODE"}:
+                continue
             # 过滤明显不合法
             if len(s) > 10:
                 continue

@@ -142,12 +142,12 @@ def _underlying_price(symbol: str) -> tuple[float, str]:
 
         price, _prev_close, feed = get_snapshot_realtime(symbol)
         if float(price or 0) > 0:
-            return float(price), f"alpaca_snapshot_{feed}"
+            return float(price), f"stock_quote_{feed}"
     except Exception:
         pass
     price = alpaca_gateway.get_latest_stock_price(symbol)
     if price > 0:
-        return price, "alpaca_realtime"
+        return price, "stock_quote_yahoo"
     price = _latest_local_close(symbol)
     if price > 0:
         return price, "local_close"

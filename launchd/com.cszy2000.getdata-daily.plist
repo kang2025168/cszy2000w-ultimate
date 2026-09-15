@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cszy2000.getdata-daily</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/likang/cszy2000w-ultimate/scripts/local_getdata_daily.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/likang/cszy2000w-ultimate</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>17</integer>
+    <key>Minute</key>
+    <integer>20</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/likang/cszy2000w-ultimate/logs/getdata_daily_launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/likang/cszy2000w-ultimate/logs/getdata_daily_launchd.err.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

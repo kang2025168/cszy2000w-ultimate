@@ -119,6 +119,7 @@ if [[ -n "$TABLES" ]]; then
     --triggers \
     --events \
     --set-gtid-purged=OFF \
+    --no-tablespaces \
     --default-character-set=utf8mb4 \
     "${REMOTE_DB_NAME}" ${TABLES} > "${DUMP_FILE}"
 else
@@ -133,6 +134,7 @@ else
     --triggers \
     --events \
     --set-gtid-purged=OFF \
+    --no-tablespaces \
     --default-character-set=utf8mb4 \
     "${REMOTE_DB_NAME}" > "${DUMP_FILE}"
 fi

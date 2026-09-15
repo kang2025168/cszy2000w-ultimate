@@ -112,6 +112,44 @@ _CONTROL = {
 }
 
 
+class _TimestampedStream:
+    def __init__(self, wrapped, level: str = "PRINT"):
+        self._wrapped = wrapped
+        self._level = level
+        self._line_start = True
+
+    def write(self, text):
+        if not text:
+            return self._wrapped.write(text)
+        total = 0
+        for part in str(text).splitlines(True):
+            if self._line_start and part.strip():
+                prefix = datetime.now().strftime("%Y-%m-%d %H:%M:%S") + f" | {self._level} | "
+                total += self._wrapped.write(prefix)
+            total += self._wrapped.write(part)
+            self._line_start = part.endswith("\n")
+        return total
+
+    def flush(self):
+        return self._wrapped.flush()
+
+    def isatty(self):
+        return bool(getattr(self._wrapped, "isatty", lambda: False)())
+
+    @property
+    def encoding(self):
+        return getattr(self._wrapped, "encoding", "utf-8")
+
+
+def _install_timestamped_stdio():
+    if os.getenv("BOT_PREFIX_STDIO_TS", "1") != "1":
+        return
+    if not isinstance(sys.stdout, _TimestampedStream):
+        sys.stdout = _TimestampedStream(sys.stdout, "PRINT")
+    if not isinstance(sys.stderr, _TimestampedStream):
+        sys.stderr = _TimestampedStream(sys.stderr, "ERROR")
+
+
 def setup_logger():
     """创建当前机器人独立日志。"""
     logger = logging.getLogger(f"{BOT_PROCESS_NAME}_{TRADE_ENV}")
@@ -142,6 +180,7 @@ def setup_logger():
 
 
 log = setup_logger()
+_install_timestamped_stdio()
 log.info(
     f"[ENV] bot={BOT_PROCESS_NAME} env={TRADE_ENV} "
     f"key_prefix={(os.environ.get('APCA_API_KEY_ID', '')[:5] or '<EMPTY>')}"

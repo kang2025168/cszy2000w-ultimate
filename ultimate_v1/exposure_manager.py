@@ -196,12 +196,12 @@ def _account_equity() -> float:
     return _safe_float((row or {}).get("equity"))
 
 
-def _latest_position_map() -> dict[str, float]:
+def _latest_position_map(pool: str | None = None) -> dict[str, float]:
     """读取 Alpaca 真实持仓，自动执行时用它限制卖出数量。"""
     try:
-        positions = alpaca_gateway.list_positions()
+        positions = alpaca_gateway.list_positions(pool=pool)
     except Exception as exc:
-        print(f"[REBALANCE] cannot load Alpaca positions: {exc}", flush=True)
+        print(f"[REBALANCE] cannot load Alpaca positions pool={pool or 'default'}: {exc}", flush=True)
         return {}
     out = {}
     for pos in positions:
@@ -461,16 +461,22 @@ def _group_allowed(side: str, group: str) -> bool:
     return os.getenv(f"REBALANCE_ALLOW_{group}_{side}", "1" if group in {"B", "F", "D"} or side == "BUY" else "0") == "1"
 
 
-def _submit_market(symbol: str, side: str, qty: int):
+def _submit_stock_order(symbol: str, side: str, qty: int, price: float = 0.0, group: str | None = None):
     from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import MarketOrderRequest
+    from alpaca.trading.requests import LimitOrderRequest
 
-    tc = alpaca_gateway.trading_client()
-    req = MarketOrderRequest(
+    tc = alpaca_gateway.trading_client(pool=group)
+    order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+    limit_price = alpaca_gateway.stock_limit_price(price)
+    if limit_price <= 0:
+        raise RuntimeError("missing current price for limit order")
+    req = LimitOrderRequest(
         symbol=symbol,
         qty=int(qty),
-        side=OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL,
+        side=order_side,
         time_in_force=TimeInForce.DAY,
+        limit_price=limit_price,
+        extended_hours=True,
     )
     return tc.submit_order(order_data=req)
 
@@ -486,7 +492,7 @@ def execute_exposure_plan(plan: ExposurePlan) -> list[dict]:
     min_trade = env_float("REBALANCE_MIN_TRADE_USD", 100.0)
     bought = 0.0
     sold = 0.0
-    real_qty = _latest_position_map()
+    real_qty_by_group: dict[str, dict[str, float]] = {}
     results: list[dict] = []
 
     for action in plan.actions:
@@ -514,12 +520,13 @@ def execute_exposure_plan(plan: ExposurePlan) -> list[dict]:
         else:
             qty = int(math.floor(float(action["qty"])))
             if side == "sell":
+                real_qty = real_qty_by_group.setdefault(group, _latest_position_map(pool=group))
                 qty = min(qty, int(math.floor(real_qty.get(str(action["symbol"]), 0.0))))
             if qty <= 0:
                 reason = "qty_floor_zero"
             else:
                 try:
-                    order = _submit_market(str(action["symbol"]), side, qty)
+                    order = _submit_stock_order(str(action["symbol"]), side, qty, price, group=group)
                     order_id = str(getattr(order, "id", "") or getattr(order, "order_id", "") or "")
                     status = "submitted"
                     if side == "buy":

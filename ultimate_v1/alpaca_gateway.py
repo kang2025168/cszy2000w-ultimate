@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from .config import alpaca_credentials, env_str, settings
+from .account_config import credentials_for_profile
+from .config import env_str, settings
+from .yahoo_market_data import get_yahoo_latest_stock_price
 
 
 @dataclass
@@ -47,21 +49,19 @@ def _bool_attr(obj, name: str, default: bool = False) -> bool:
         return default
 
 
-def trading_client():
+def trading_client(pool: str | None = None, profile: str | None = None):
     from alpaca.trading.client import TradingClient
 
-    s = settings()
-    key, secret, paper = alpaca_credentials(s)
+    key, secret, paper = credentials_for_profile(profile, pool)
     if not key or not secret:
         raise RuntimeError("缺少 Alpaca API 密钥")
     return TradingClient(key, secret, paper=paper)
 
 
-def stock_data_client():
+def stock_data_client(pool: str | None = None, profile: str | None = None):
     from alpaca.data.historical import StockHistoricalDataClient
 
-    s = settings()
-    key, secret, _paper = alpaca_credentials(s)
+    key, secret, _paper = credentials_for_profile(profile, pool)
     if not key or not secret:
         raise RuntimeError("缺少 Alpaca API 密钥")
     return StockHistoricalDataClient(key, secret)
@@ -91,14 +91,27 @@ def get_daily_closes(symbol: str, days: int = 60, feed: str | None = None) -> li
     return closes
 
 
-def get_latest_stock_price(symbol: str, feed: str | None = None) -> float:
-    """读取 Alpaca 最新股票成交价；没有成交价时用 bid/ask 中间价。"""
+def get_latest_stock_price(symbol: str, feed: str | None = None, pool: str | None = None, profile: str | None = None) -> float:
+    """读取最新股票价格。
+
+    默认使用 Alpaca，保持策略主流程只依赖券商接口。
+    如需临时走 Yahoo，可设置 STOCK_PRICE_PROVIDER=yahoo。
+    """
+    provider = env_str("STOCK_PRICE_PROVIDER", "alpaca").lower()
+    if provider == "yahoo":
+        try:
+            return get_yahoo_latest_stock_price(symbol)
+        except Exception as exc:
+            print(f"[PRICE] Yahoo latest price failed {symbol}: {exc}", flush=True)
+            if env_str("STOCK_PRICE_FALLBACK_ALPACA", "0").lower() not in {"1", "true", "yes", "on"}:
+                return 0.0
+
     from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeRequest
 
     symbol = (symbol or "").strip().upper()
     if not symbol:
         return 0.0
-    client = stock_data_client()
+    client = stock_data_client(pool=pool, profile=profile)
     feed_name = feed or env_str("ALPACA_DATA_FEED", "iex")
 
     try:
@@ -127,10 +140,10 @@ def get_latest_stock_price(symbol: str, feed: str | None = None) -> float:
     return 0.0
 
 
-def get_account_snapshot() -> AccountSnapshot | None:
+def get_account_snapshot(pool: str | None = None, profile: str | None = None) -> AccountSnapshot | None:
     """读取账户资金快照；失败时返回 None，调用方必须禁止新开仓。"""
     try:
-        acct = trading_client().get_account()
+        acct = trading_client(pool=pool, profile=profile).get_account()
         snap = AccountSnapshot(
             equity=_float_attr(acct, "equity"),
             buying_power=_float_attr(acct, "buying_power"),
@@ -166,22 +179,27 @@ def account_trade_block_reason(snap: AccountSnapshot | None) -> str:
     return ""
 
 
-def list_positions() -> list:
-    return list(trading_client().get_all_positions())
+def list_positions(pool: str | None = None, profile: str | None = None) -> list:
+    return list(trading_client(pool=pool, profile=profile).get_all_positions())
 
 
-def submit_market_sell(symbol: str, qty: float):
-    """提交市价卖单，主要给 D 类收盘强平使用。"""
+def submit_market_sell(symbol: str, qty: float, pool: str | None = None, profile: str | None = None):
+    """兼容旧调用名：按当前实时价提交 DAY 限价卖单。"""
     from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import MarketOrderRequest
+    from alpaca.trading.requests import LimitOrderRequest
 
-    request = MarketOrderRequest(
+    current_price = get_latest_stock_price(symbol, pool=pool, profile=profile)
+    limit_price = stock_limit_price(current_price)
+    if limit_price <= 0:
+        raise RuntimeError(f"current price unavailable for {symbol}")
+    request = LimitOrderRequest(
         symbol=symbol,
         qty=qty,
         side=OrderSide.SELL,
+        limit_price=limit_price,
         time_in_force=TimeInForce.DAY,
     )
-    return trading_client().submit_order(order_data=request)
+    return trading_client(pool=pool, profile=profile).submit_order(order_data=request)
 
 
 def stock_limit_price(price: float) -> float:
@@ -198,7 +216,7 @@ def _is_equity_position(position) -> bool:
 
 
 def submit_current_price_limit_sell_all(dry_run: bool = False) -> dict:
-    """按 Alpaca 持仓 current_price 对所有股票持仓提交限价卖单。"""
+    """对所有股票持仓按当前实时价提交 DAY 限价卖单。"""
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest
 
@@ -211,13 +229,12 @@ def submit_current_price_limit_sell_all(dry_run: bool = False) -> dict:
             continue
         symbol = str(getattr(pos, "symbol", "") or "").strip().upper()
         qty = float(getattr(pos, "qty", 0) or 0)
-        current_price = float(getattr(pos, "current_price", 0) or 0)
-        limit_price = stock_limit_price(current_price)
+        current_price = get_latest_stock_price(symbol) or float(getattr(pos, "current_price", 0) or 0)
         row = {
             "symbol": symbol,
             "qty": qty,
             "current_price": current_price,
-            "limit_price": limit_price,
+            "limit_price": 0.0,
             "status": "DRY_RUN" if dry_run else "",
             "order_id": "",
             "error": "",
@@ -227,7 +244,7 @@ def submit_current_price_limit_sell_all(dry_run: bool = False) -> dict:
             row["error"] = "qty<=0 or empty symbol"
             results.append(row)
             continue
-        if limit_price <= 0:
+        if current_price <= 0:
             row["status"] = "ERROR"
             row["error"] = "current_price missing"
             results.append(row)
@@ -238,9 +255,8 @@ def submit_current_price_limit_sell_all(dry_run: bool = False) -> dict:
                     symbol=symbol,
                     qty=str(getattr(pos, "qty", qty)),
                     side=OrderSide.SELL,
+                    limit_price=stock_limit_price(current_price),
                     time_in_force=TimeInForce.DAY,
-                    limit_price=limit_price,
-                    extended_hours=True,
                 )
                 order = client.submit_order(order_data=req)
                 row["status"] = str(getattr(order, "status", "") or "")
