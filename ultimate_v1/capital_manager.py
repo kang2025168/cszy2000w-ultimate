@@ -247,7 +247,7 @@ def _market_exposure_pct(risk) -> float:
 
 
 def _risk_percents() -> tuple[float, dict[str, float]]:
-    """计算 A/B/C 有效可用额度：保证金上限 × 市场仓位目标。"""
+    """计算 B/C 有效保证金额度；A 养老金现金账户不使用总杠杆。"""
     risk = get_risk_state()
     total_pct = resolve_margin_usage_pct(risk)[1] * _market_exposure_pct(risk)
     enabled = pool_enabled_settings()
@@ -256,6 +256,14 @@ def _risk_percents() -> tuple[float, dict[str, float]]:
         for group in POOL_GROUPS
     }
     return total_pct, pool_pct
+
+
+def _risk_target_for_group(group: str, base_target: float, total_pct: float, pool_pct: dict[str, float]) -> float:
+    """A 是独立养老金现金账户，D 已经用 buying_power；只有 B/C 使用总杠杆系数。"""
+    group = (group or "").upper()
+    if group in {"A", "D"}:
+        return base_target * pool_pct[group]
+    return base_target * total_pct * pool_pct[group]
 
 
 def _pool_base_percents() -> dict[str, float]:
@@ -319,7 +327,7 @@ def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpac
         with conn.cursor() as cur:
             for group in ("A", "B", "C", "D"):
                 group_snap = pool_snapshot(group)
-                risk_target = base_targets[group] * pool_pct[group] if group == "D" else base_targets[group] * total_pct * pool_pct[group]
+                risk_target = _risk_target_for_group(group, base_targets[group], total_pct, pool_pct)
                 cur.execute(
                     """
                     INSERT IGNORE INTO capital_pools (
@@ -405,7 +413,7 @@ def refresh_capital_pool_usage(month: date | None = None) -> list[dict]:
                 if not row:
                     continue
                 base_target = float(row.get("base_target_capital") or 0)
-                risk_target = base_target * pool_pct[group] if group == "D" else base_target * total_pct * pool_pct[group]
+                risk_target = _risk_target_for_group(group, base_target, total_pct, pool_pct)
                 used_capital = used[group]
                 available = max(0.0, risk_target - used_capital)
                 used_percent = used_capital / risk_target if risk_target > 0 else 0.0

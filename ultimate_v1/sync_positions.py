@@ -229,12 +229,50 @@ def _sync_stock_operations_from_positions(positions: list[Any]) -> dict[str, int
                 continue
 
             alpaca_symbols.add(symbol)
+            avg = _position_avg(pos)
+            current = _position_current(pos)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT strategy_group, stock_type, qty
+                    FROM position_holdings
+                    WHERE UPPER(symbol)=%s
+                      AND status='open'
+                      AND COALESCE(qty,0)>0
+                      AND (strategy_group IN ('A','B','C','D','F') OR stock_type IN ('A','B','C','D','F'))
+                    """,
+                    (symbol,),
+                )
+                split_rows = list(cur.fetchall() or [])
+            if len(split_rows) > 1:
+                local_total = sum(_as_float(item.get("qty"), 0.0) for item in split_rows)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        UPDATE `{table}`
+                        SET close_price=%s,
+                            current_price=%s,
+                            last_capital_check_at=%s,
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE stock_code=%s
+                          AND COALESCE(is_bought,0)=1
+                          AND COALESCE(NULLIF(strategy_group,''), stock_type) IN ('A','B','C','D','F')
+                        """,
+                        (current, current, now_text, symbol),
+                    )
+                stats["held"] += 1
+                stats["updated"] += int(len(split_rows))
+                print(
+                    f"[OPS SPLIT SYNC] symbol={symbol} broker_qty={qty:g} "
+                    f"local_total={local_total:g} groups={len(split_rows)} preserve_group_qty=1",
+                    flush=True,
+                )
+                continue
+
             group = _resolve_strategy_group(conn, table, symbol)
             if group == "B":
                 stats["default_b"] += 1
 
-            avg = _position_avg(pos)
-            current = _position_current(pos)
             qty_value = _stock_operation_qty_value(qty, columns.get("qty"))
             if float(qty_value or 0) <= 0 and qty > 0:
                 # 旧 INT 表无法管理碎股卖出，但仍然保留 position_holdings 展示。

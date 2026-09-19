@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-"""Monthly scheduled buys for long-term A/C pools."""
+"""Monthly scheduled buys for long-term pools.
+
+A uses monthly retirement-account investing. C is a core holding / intraday T
+pool, so it is intentionally excluded from automatic monthly buying by default.
+"""
 
 import json
 import time
@@ -24,7 +28,7 @@ DEFAULT_CONFIG = {
     "timezone": "America/Los_Angeles",
     "groups": {
         "A": {"enabled": True, "budget_fraction": 1.0, "max_symbols": 20, "order_type": "limit"},
-        "C": {"enabled": True, "budget_fraction": 1.0, "max_symbols": 20, "order_type": "limit"},
+        "C": {"enabled": False, "budget_fraction": 0.0, "max_symbols": 1, "order_type": "limit"},
     },
 }
 

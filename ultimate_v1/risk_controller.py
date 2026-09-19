@@ -261,8 +261,14 @@ def _fetch_market_inputs() -> tuple[str, str, float, float, float, str]:
         return trend, f"yfinance 失败，使用环境变量判断：RISK_QQQ_CHANGE_PCT={qqq_change_pct:.2f}%, trend={trend}", qqq_price, qqq_change_pct, vix, vix_source
 
 
-def _daily_equity_rows() -> list[tuple[date, float]]:
-    """读取每天最后一条账户快照，用于日亏、连亏、回撤。"""
+def _risk_broker_profile() -> str:
+    """B/C/D 共用保证金账户，组合风控只读取该账户。"""
+    return env_str("RISK_BROKER_PROFILE", "trading").strip().lower() or "trading"
+
+
+def _daily_equity_rows(profile: str | None = None) -> list[tuple[date, float]]:
+    """读取指定账户每天最后一条快照，用于日亏、连亏、回撤。"""
+    profile = (profile or _risk_broker_profile()).strip().lower()
     try:
         from .db import fetch_all
 
@@ -273,12 +279,15 @@ def _daily_equity_rows() -> list[tuple[date, float]]:
             JOIN (
                 SELECT DATE(created_at) AS d, MAX(created_at) AS max_created_at
                 FROM account_equity_snapshots
+                WHERE broker_profile=%s
                 GROUP BY DATE(created_at)
             ) latest
               ON DATE(s.created_at)=latest.d AND s.created_at=latest.max_created_at
+            WHERE s.broker_profile=%s
             ORDER BY s.created_at
             LIMIT 5000
-            """
+            """,
+            (profile, profile),
         )
     except Exception as exc:
         print(f"[RISK ACCOUNT] cannot read equity snapshots: {exc}", flush=True)
@@ -302,11 +311,19 @@ def _daily_equity_rows() -> list[tuple[date, float]]:
     return result
 
 
-def _latest_snapshot_equity() -> float | None:
+def _latest_snapshot_equity(profile: str | None = None) -> float | None:
+    profile = (profile or _risk_broker_profile()).strip().lower()
     try:
         from .db import fetch_one
 
-        row = fetch_one("SELECT equity FROM account_equity_snapshots ORDER BY created_at DESC LIMIT 1")
+        row = fetch_one(
+            """
+            SELECT equity FROM account_equity_snapshots
+            WHERE broker_profile=%s
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (profile,),
+        )
         if row:
             equity = _safe_float(row.get("equity"), 0.0)
             if equity > 0:
@@ -317,20 +334,39 @@ def _latest_snapshot_equity() -> float | None:
 
 
 def _current_account_equity() -> tuple[float | None, str]:
+    profile = _risk_broker_profile()
     if env_bool("RISK_USE_LIVE_ACCOUNT_METRICS", True):
         try:
             from . import alpaca_gateway
 
-            snap = alpaca_gateway.get_account_snapshot()
+            snap = alpaca_gateway.get_account_snapshot(profile=profile)
             if snap and snap.equity > 0:
-                return snap.equity, "Alpaca实时账户"
+                return snap.equity, f"Alpaca实时账户({profile})"
         except Exception as exc:
             print(f"[RISK ACCOUNT] live account unavailable: {exc}", flush=True)
 
-    latest = _latest_snapshot_equity()
+    latest = _latest_snapshot_equity(profile)
     if latest is not None:
         return latest, "数据库最新快照"
     return None, "环境变量兜底"
+
+
+def _continuous_equity_segment(rows: list[tuple[date, float]]) -> tuple[list[tuple[date, float]], bool]:
+    """在疑似入出金或账户切换处重置回撤基准。"""
+    if len(rows) < 2:
+        return rows, False
+
+    reset_ratio = max(0.05, env_float("RISK_EQUITY_RESET_RATIO", 0.35))
+    segment_start = 0
+    for idx in range(1, len(rows)):
+        previous = rows[idx - 1][1]
+        current = rows[idx][1]
+        if previous <= 0:
+            segment_start = idx
+            continue
+        if abs(current - previous) / previous >= reset_ratio:
+            segment_start = idx
+    return rows[segment_start:], segment_start > 0
 
 
 def _fetch_account_risk_metrics() -> tuple[float, int, float, str]:
@@ -346,7 +382,7 @@ def _fetch_account_risk_metrics() -> tuple[float, int, float, str]:
         )
 
     current_equity, source = _current_account_equity()
-    rows = _daily_equity_rows()
+    rows = _daily_equity_rows(_risk_broker_profile())
     if current_equity is None:
         from .config import env_int
 
@@ -365,6 +401,10 @@ def _fetch_account_risk_metrics() -> tuple[float, int, float, str]:
             rows.append((today, current_equity))
     else:
         rows = [(today, current_equity)]
+
+    rows, baseline_reset = _continuous_equity_segment(rows)
+    if baseline_reset:
+        source = f"{source}；资金变动后重建基准"
 
     previous_equity = None
     for day, equity in reversed(rows[:-1]):

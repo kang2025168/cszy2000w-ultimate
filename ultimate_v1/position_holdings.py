@@ -174,14 +174,55 @@ def sync_open_holding_from_position(pos, strategy_group: str = "B") -> None:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, strategy_group, stock_type, capital_pool
+                SELECT id, strategy_group, stock_type, capital_pool, qty,
+                       avg_entry_price, notes
                 FROM position_holdings
                 WHERE symbol=%s AND status='open'
-                    ORDER BY FIELD(strategy_group, 'A','C','B','F','D','UNKNOWN') ASC, id DESC LIMIT 1
+                ORDER BY FIELD(strategy_group, 'A','C','B','F','D','UNKNOWN') ASC, id DESC
                 """,
                 (symbol,),
             )
-            row = cur.fetchone()
+            open_rows = list(cur.fetchall() or [])
+            if len(open_rows) > 1:
+                local_total = sum(float(item.get("qty") or 0) for item in open_rows)
+                mismatch = abs(local_total - qty) > 0.0001
+                for item in open_rows:
+                    local_qty = float(item.get("qty") or 0)
+                    local_avg = float(item.get("avg_entry_price") or avg or 0)
+                    local_market_value = local_qty * current
+                    local_unrealized = local_qty * (current - local_avg)
+                    local_unrealized_pct = (current - local_avg) / local_avg if local_avg > 0 else 0.0
+                    note = str(item.get("notes") or "")
+                    sync_note = f"split_sync broker_total={qty:g} local_total={local_total:g}"
+                    if mismatch:
+                        note = sync_note
+                    cur.execute(
+                        """
+                        UPDATE position_holdings
+                        SET current_price=%s, market_value=%s, cost_basis=%s,
+                            unrealized_pnl=%s, unrealized_pnl_pct=%s,
+                            holding_days=IF(entry_time IS NULL, 0, DATEDIFF(NOW(), entry_time)),
+                            notes=%s, last_update_time=NOW()
+                        WHERE id=%s
+                        """,
+                        (
+                            current,
+                            local_market_value,
+                            local_qty * local_avg,
+                            local_unrealized,
+                            local_unrealized_pct,
+                            note,
+                            item["id"],
+                        ),
+                    )
+                print(
+                    f"[POSITION SPLIT SYNC] symbol={symbol} broker_qty={qty:g} "
+                    f"local_total={local_total:g} groups={len(open_rows)} mismatch={int(mismatch)}",
+                    flush=True,
+                )
+                return
+
+            row = open_rows[0] if open_rows else None
             if row:
                 # 同步券商真实仓位时，优先保留人工维护的股票类型。
                 # 旧数据常见情况是 strategy_group=UNKNOWN，但 stock_type 已经被改成 A/B/C/D。

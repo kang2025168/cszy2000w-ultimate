@@ -29,7 +29,21 @@ def refresh_dashboard_state(sync_positions: bool = False) -> list[dict]:
     if allocation is None:
         heartbeat(BOT_NAME, "blocked", "账户快照失败，资金状态不可用")
         return []
-    write_account_snapshot(allocation.equity, allocation.buying_power, allocation.cash, allocation.portfolio_value)
+    for profile, snapshot in allocation.broker_snapshots.items():
+        write_account_snapshot(
+            snapshot.get("equity", 0.0),
+            snapshot.get("buying_power", 0.0),
+            snapshot.get("cash", 0.0),
+            snapshot.get("portfolio_value", 0.0),
+            broker_profile=profile,
+        )
+    write_account_snapshot(
+        allocation.equity,
+        allocation.buying_power,
+        allocation.cash,
+        allocation.portfolio_value,
+        broker_profile="combined",
+    )
 
     rows = []
     for group in ("A", "B", "C", "D"):

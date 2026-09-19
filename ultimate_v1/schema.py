@@ -81,6 +81,21 @@ def _column_exists(conn, table: str, column: str) -> bool:
         return int(cur.fetchone()["n"]) > 0
 
 
+def _index_exists(conn, table: str, index: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+              AND INDEX_NAME = %s
+            """,
+            (table, index),
+        )
+        return int(cur.fetchone()["n"]) > 0
+
+
 def _varchar_length(conn, table: str, column: str) -> int | None:
     """读取 VARCHAR 字段长度，用于旧表自动升级。"""
     with conn.cursor() as cur:
@@ -348,6 +363,7 @@ def ensure_control_state_tables() -> None:
                 """
                 CREATE TABLE IF NOT EXISTS account_equity_snapshots (
                   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  broker_profile VARCHAR(32) NOT NULL DEFAULT 'trading',
                   equity DECIMAL(18,2) DEFAULT 0,
                   buying_power DECIMAL(18,2) DEFAULT 0,
                   cash DECIMAL(18,2) DEFAULT 0,
@@ -357,6 +373,20 @@ def ensure_control_state_tables() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+            if not _column_exists(conn, "account_equity_snapshots", "broker_profile"):
+                cur.execute(
+                    """
+                    ALTER TABLE account_equity_snapshots
+                    ADD COLUMN broker_profile VARCHAR(32) NOT NULL DEFAULT 'legacy' AFTER id
+                    """
+                )
+            if not _index_exists(conn, "account_equity_snapshots", "idx_equity_profile_created"):
+                cur.execute(
+                    """
+                    CREATE INDEX idx_equity_profile_created
+                    ON account_equity_snapshots (broker_profile, created_at)
+                    """
+                )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS exposure_state (
@@ -401,6 +431,29 @@ def ensure_control_state_tables() -> None:
                   INDEX idx_round_id (round_id),
                   INDEX idx_symbol_status (symbol, status),
                   INDEX idx_created_at (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS manual_trade_records (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  event_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  symbol VARCHAR(32) NOT NULL,
+                  side VARCHAR(12) NOT NULL,
+                  strategy_group VARCHAR(8) NOT NULL,
+                  qty DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  filled_qty DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  price DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  filled_avg_price DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  order_type VARCHAR(16) NOT NULL DEFAULT 'limit',
+                  status VARCHAR(32) NOT NULL DEFAULT 'submitted',
+                  note VARCHAR(512) NULL,
+                  order_id VARCHAR(128) NOT NULL,
+                  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  UNIQUE KEY uk_manual_trade_order_id (order_id),
+                  INDEX idx_manual_trade_event_time (event_time),
+                  INDEX idx_manual_trade_symbol (symbol)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )

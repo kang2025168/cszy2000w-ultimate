@@ -191,7 +191,7 @@ def load_ac_t_rows(conn, symbol: str | None = None, group: str | None = "C") -> 
             f"""
             SELECT *
             FROM `{TABLE}`
-            WHERE COALESCE(ac_t_enabled, 1)=1
+            WHERE COALESCE(ac_t_enabled, 0)=1
               -- 必须显式标记 ac_t_type，避免误扫旧 C 策略或普通 A/C 记录。
               AND UPPER(COALESCE(NULLIF(ac_t_type, ''), ''))=%s
               {symbol_filter}

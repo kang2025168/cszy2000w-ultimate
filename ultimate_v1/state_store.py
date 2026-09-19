@@ -204,16 +204,24 @@ def add_command(bot_name: str, command: str, payload: dict | None = None) -> Non
             )
 
 
-def write_account_snapshot(equity: float, buying_power: float, cash: float, portfolio_value: float) -> None:
+def write_account_snapshot(
+    equity: float,
+    buying_power: float,
+    cash: float,
+    portfolio_value: float,
+    broker_profile: str = "trading",
+) -> None:
     """保存账户资金快照，用于网页收益曲线。"""
+    profile = str(broker_profile or "trading").strip().lower() or "trading"
     with db_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO account_equity_snapshots (equity, buying_power, cash, portfolio_value)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO account_equity_snapshots
+                    (broker_profile, equity, buying_power, cash, portfolio_value)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (equity, buying_power, cash, portfolio_value),
+                (profile, equity, buying_power, cash, portfolio_value),
             )
 
 
@@ -245,9 +253,11 @@ def equity_curve(period: str = "week") -> dict:
             JOIN (
                 SELECT DATE(created_at) AS d, MAX(created_at) AS max_created_at
                 FROM account_equity_snapshots
+                WHERE broker_profile IN ('legacy', 'combined')
                 GROUP BY DATE(created_at)
             ) latest
               ON DATE(s.created_at)=latest.d AND s.created_at=latest.max_created_at
+            WHERE s.broker_profile IN ('legacy', 'combined')
             ORDER BY s.created_at
             LIMIT 5000
             """
@@ -259,12 +269,14 @@ def equity_curve(period: str = "week") -> dict:
                s.equity, s.buying_power, s.cash, s.portfolio_value, s.created_at
         FROM account_equity_snapshots s
         JOIN (
-            SELECT DATE(created_at) AS d, MAX(created_at) AS max_created_at
-            FROM account_equity_snapshots
-            WHERE DATE(created_at) BETWEEN %s AND %s
-            GROUP BY DATE(created_at)
-        ) latest
+                SELECT DATE(created_at) AS d, MAX(created_at) AS max_created_at
+                FROM account_equity_snapshots
+                WHERE broker_profile IN ('legacy', 'combined')
+                  AND DATE(created_at) BETWEEN %s AND %s
+                GROUP BY DATE(created_at)
+            ) latest
           ON DATE(s.created_at)=latest.d AND s.created_at=latest.max_created_at
+        WHERE s.broker_profile IN ('legacy', 'combined')
         ORDER BY s.created_at
         LIMIT 2000
         """,
