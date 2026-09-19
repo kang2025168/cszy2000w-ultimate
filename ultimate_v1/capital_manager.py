@@ -57,8 +57,8 @@ POOL_BROKERS = {
     "D": "trading",
 }
 POOL_GROUPS = ("A", "B", "C", "D")
-BASE_POOL_WEIGHTS = {"A": 1.00, "B": 0.50, "C": 0.30, "D": 0.20}
-DISABLED_POOL_TRANSFER = {"A": "B", "C": "B", "D": "C"}
+BASE_POOL_WEIGHTS = {"A": 1.00, "B": 0.40, "C": 0.40, "D": 0.20}
+DISABLED_POOL_TRANSFER = {"C": "B", "D": "C"}
 
 
 def _manual_account_snapshot(prefix: str) -> alpaca_gateway.AccountSnapshot:
@@ -220,11 +220,11 @@ def _mode_weights(mode: str) -> tuple[dict[str, float], bool]:
         print(f"[CAPITAL WARN] dynamic weights unavailable, fallback mode weights: {exc}", flush=True)
 
     a, b, c, d = {
-        "NORMAL": (1.00, 0.50, 0.30, 0.20),
+        "NORMAL": (1.00, 0.40, 0.40, 0.20),
         "SAFE": (1.00, 0.40, 0.40, 0.20),
         "ATTACK": (1.00, 0.60, 0.25, 0.15),
         "RISK_OFF": (1.00, 0.00, 0.80, 0.20),
-    }.get(mode, (1.00, 0.50, 0.30, 0.20))
+    }.get(mode, (1.00, 0.40, 0.40, 0.20))
     allow_d = d > 0
     return {"A": a, "B": b, "C": c, "D": d}, allow_d
 
@@ -247,7 +247,7 @@ def _market_exposure_pct(risk) -> float:
 
 
 def _risk_percents() -> tuple[float, dict[str, float]]:
-    """计算 B/C 有效保证金额度；A 养老金现金账户不使用总杠杆。"""
+    """计算 B/C/D 有效保证金额度；A 养老金现金账户不使用总杠杆。"""
     risk = get_risk_state()
     total_pct = resolve_margin_usage_pct(risk)[1] * _market_exposure_pct(risk)
     enabled = pool_enabled_settings()
@@ -259,9 +259,9 @@ def _risk_percents() -> tuple[float, dict[str, float]]:
 
 
 def _risk_target_for_group(group: str, base_target: float, total_pct: float, pool_pct: dict[str, float]) -> float:
-    """A 是独立养老金现金账户，D 已经用 buying_power；只有 B/C 使用总杠杆系数。"""
+    """A 独立且无杠杆；B/C/D 同源于保证金账户并使用相同风险系数。"""
     group = (group or "").upper()
-    if group in {"A", "D"}:
+    if group == "A":
         return base_target * pool_pct[group]
     return base_target * total_pct * pool_pct[group]
 
@@ -320,7 +320,7 @@ def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpac
         "A": pool_snapshot("A").equity * pool_base_percents["A"],
         "B": pool_snapshot("B").equity * pool_base_percents["B"],
         "C": pool_snapshot("C").equity * pool_base_percents["C"],
-        "D": pool_snapshot("D").buying_power * pool_base_percents["D"],
+        "D": pool_snapshot("D").equity * pool_base_percents["D"],
     }
     total_pct, pool_pct = _risk_percents()
     with db_conn() as conn:

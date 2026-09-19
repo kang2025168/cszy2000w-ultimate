@@ -401,7 +401,7 @@ STRATEGY_2_DEFAULT_CONFIG = {
             "name": "C 长期股票",
             "broker": "Alpaca",
             "capital": "长期资金",
-            "mission": "负责长期股票账户，按月把 C 可用资金按比例买入；AC 做T只围绕长期仓微调，不做期权，避免隔夜丢失核心仓。",
+            "mission": "负责长期股票账户；B/C/D 在原保证金账户内按 4:4:2 分配，C 接收共享账户增长后的长期额度。AC 做T只围绕明确启用的核心仓微调。",
             "select_rules": [
                 {"key": "c_ac_enabled", "label": "显式启用 AC_T", "value": "ac_t_enabled=1", "unit": "", "enabled": True},
                 {"key": "c_stock_type", "label": "长期成长核心仓", "value": "stock_type=C", "unit": "", "enabled": True},
@@ -826,6 +826,7 @@ def _holdings_payload() -> dict:
             ) h
         ) ranked
         WHERE rn=1
+          AND ABS(COALESCE(qty, 0)) > 0
         ORDER BY FIELD(status, 'open', 'needs_review', 'closed'), strategy_group, symbol
         LIMIT 500
         """
@@ -1229,10 +1230,10 @@ def _schedules_payload() -> dict:
     tasks = [
         {
             "key": "monthly_invest_ac",
-            "name": "A/C 月度按比例买入",
+            "name": "A 养老金月度按比例买入",
             "schedule": f"每月 {load_monthly_invest_config().get('day', 15)} 号",
             "source": "python -m ultimate_v1.monthly_investment --loop",
-            "target": "stock_operations A/C",
+            "target": "stock_operations A",
             "latest_date": get_app_setting("MONTHLY_INVEST_LAST_RUN_AT", ""),
             "latest_rows": 0,
             "total_rows": 0,
@@ -4523,8 +4524,8 @@ INDEX_HTML = r"""<!doctype html>
     function poolRole(g) {
       return {
         A: '养老金账户 / 独立资金',
-        B: '策略B / 原保证金 50%',
-        C: '长期股票 / 原保证金 30%',
+        B: '策略B / 原保证金 40%',
+        C: '长期股票 / 原保证金 40%',
         D: '日内交易 / 原保证金 20%',
       }[g] || '--';
     }
@@ -4597,11 +4598,12 @@ INDEX_HTML = r"""<!doctype html>
       const snapshots = cap.broker_snapshots || {};
       const profiles = cap.pool_brokers || {};
       const equityFor = group => Math.max(0, Number(snapshots[profiles[group]]?.equity || 0));
+      const basePercents = cap.base_percents || {};
       const amounts = {
         A: equityFor('A'),
-        B: equityFor('B') * 0.50,
-        C: equityFor('C') * 0.30,
-        D: equityFor('D') * 0.20,
+        B: equityFor('B') * Number(basePercents.B ?? 0.40),
+        C: equityFor('C') * Number(basePercents.C ?? 0.40),
+        D: equityFor('D') * Number(basePercents.D ?? 0.20),
       };
       const uniqueProfiles = [...new Set(Object.values(profiles).filter(Boolean))];
       const total = uniqueProfiles.reduce((sum, profile) => sum + Math.max(0, Number(snapshots[profile]?.equity || 0)), 0);

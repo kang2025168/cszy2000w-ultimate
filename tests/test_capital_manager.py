@@ -20,7 +20,7 @@ class CapitalManagerTests(unittest.TestCase):
         finally:
             cm.get_risk_state = original_get_risk_state
 
-        self.assertEqual({"A": 0.20, "B": 0.30, "C": 0.50, "D": 0.30}, weights)
+        self.assertEqual({"A": 1.00, "B": 0.40, "C": 0.40, "D": 0.20}, weights)
         self.assertTrue(allow_d)
 
     def test_auto_margin_usage_steps_with_market_condition(self):
@@ -75,6 +75,15 @@ class CapitalManagerTests(unittest.TestCase):
 
         self.assertEqual(0.7, cm._market_exposure_pct(risk))
 
+    def test_risk_target_keeps_a_unlevered_and_scales_bcd_equally(self):
+        import ultimate_v1.capital_manager as cm
+
+        pool_pct = {"A": 1.0, "B": 1.0, "C": 1.0, "D": 1.0}
+        self.assertEqual(1000.0, cm._risk_target_for_group("A", 1000.0, 1.2, pool_pct))
+        self.assertEqual(480.0, cm._risk_target_for_group("B", 400.0, 1.2, pool_pct))
+        self.assertEqual(480.0, cm._risk_target_for_group("C", 400.0, 1.2, pool_pct))
+        self.assertEqual(240.0, cm._risk_target_for_group("D", 200.0, 1.2, pool_pct))
+
     def test_pool_base_percents_follow_base_ratio_and_transfer_rules(self):
         import os
         import ultimate_v1.capital_manager as cm
@@ -97,10 +106,10 @@ class CapitalManagerTests(unittest.TestCase):
 
             def fake_get_app_setting(key, default=""):
                 values = {
-                    "A_ACCOUNT_CAPITAL_PCT": "0.2",
-                    "B_ACCOUNT_CAPITAL_PCT": "0.5",
-                    "C_ACCOUNT_CAPITAL_PCT": "0.2",
-                    "D_ACCOUNT_CAPITAL_PCT": "0.1",
+                    "A_ACCOUNT_CAPITAL_PCT": "1.0",
+                    "B_ACCOUNT_CAPITAL_PCT": "0.4",
+                    "C_ACCOUNT_CAPITAL_PCT": "0.4",
+                    "D_ACCOUNT_CAPITAL_PCT": "0.2",
                     **fake_get_app_setting.flags,
                 }
                 return values.get(key, default)
@@ -113,7 +122,7 @@ class CapitalManagerTests(unittest.TestCase):
             }
 
             cm.get_app_setting = fake_get_app_setting
-            self.assertDictAlmostEqual({"A": 0.2, "B": 0.5, "C": 0.2, "D": 0.1}, cm._pool_base_percents())
+            self.assertDictAlmostEqual({"A": 1.0, "B": 0.4, "C": 0.4, "D": 0.2}, cm._pool_base_percents())
 
             fake_get_app_setting.flags = {
                     "RISK_A_POOL_ENABLED": "0",
@@ -121,7 +130,7 @@ class CapitalManagerTests(unittest.TestCase):
                     "RISK_C_POOL_ENABLED": "1",
                     "RISK_D_POOL_ENABLED": "1",
             }
-            self.assertDictAlmostEqual({"A": 0.0, "B": 0.7, "C": 0.2, "D": 0.1}, cm._pool_base_percents())
+            self.assertDictAlmostEqual({"A": 0.0, "B": 0.4, "C": 0.4, "D": 0.2}, cm._pool_base_percents())
 
             fake_get_app_setting.flags = {
                     "RISK_A_POOL_ENABLED": "1",
@@ -129,7 +138,7 @@ class CapitalManagerTests(unittest.TestCase):
                     "RISK_C_POOL_ENABLED": "0",
                     "RISK_D_POOL_ENABLED": "1",
             }
-            self.assertDictAlmostEqual({"A": 0.2, "B": 0.7, "C": 0.0, "D": 0.1}, cm._pool_base_percents())
+            self.assertDictAlmostEqual({"A": 1.0, "B": 0.8, "C": 0.0, "D": 0.2}, cm._pool_base_percents())
 
             fake_get_app_setting.flags = {
                     "RISK_A_POOL_ENABLED": "1",
@@ -137,7 +146,7 @@ class CapitalManagerTests(unittest.TestCase):
                     "RISK_C_POOL_ENABLED": "1",
                     "RISK_D_POOL_ENABLED": "0",
             }
-            self.assertDictAlmostEqual({"A": 0.2, "B": 0.5, "C": 0.3, "D": 0.0}, cm._pool_base_percents())
+            self.assertDictAlmostEqual({"A": 1.0, "B": 0.4, "C": 0.6, "D": 0.0}, cm._pool_base_percents())
 
             fake_get_app_setting.flags = {
                     "RISK_A_POOL_ENABLED": "0",

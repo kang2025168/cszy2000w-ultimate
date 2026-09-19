@@ -42,6 +42,11 @@ _quote_cache: dict[str, tuple[float, YahooStockQuote]] = {}
 _quote_error_until: dict[str, float] = {}
 
 
+def _yahoo_symbol(symbol: str) -> str:
+    """Translate broker symbols to Yahoo's class-share notation."""
+    return (symbol or "").strip().upper().replace(".", "-")
+
+
 def _safe_float(value, default: float = 0.0) -> float:
     try:
         if value is None or str(value).strip() == "":
@@ -233,6 +238,7 @@ def get_yahoo_stock_quote(symbol: str) -> YahooStockQuote:
     symbol = (symbol or "").strip().upper()
     if not symbol:
         raise RuntimeError("empty symbol")
+    yahoo_symbol = _yahoo_symbol(symbol)
 
     now = time.time()
     cached = _quote_cache.get(symbol)
@@ -245,8 +251,9 @@ def get_yahoo_stock_quote(symbol: str) -> YahooStockQuote:
 
     _sleep_for_yahoo_rate_limit()
     try:
-        quote = _chart_quote(symbol)
+        quote = _chart_quote(yahoo_symbol)
         if quote:
+            quote = replace(quote, symbol=symbol)
             _quote_cache[symbol] = (time.time(), quote)
             return quote
     except Exception as chart_exc:
@@ -266,7 +273,7 @@ def get_yahoo_stock_quote(symbol: str) -> YahooStockQuote:
         raise RuntimeError(f"Yahoo chart failed: {last_chart_exc}; yfinance unavailable: {exc}") from exc
 
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(yahoo_symbol)
         fast_info = getattr(ticker, "fast_info", None)
         last = _fast_value(fast_info, "last_price", "lastPrice", "regular_market_price", "regularMarketPrice")
         prev_close = _fast_value(fast_info, "previous_close", "previousClose", "regular_market_previous_close", "regularMarketPreviousClose")
