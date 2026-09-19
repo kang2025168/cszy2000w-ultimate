@@ -474,12 +474,37 @@ def _is_trade_window() -> bool:
 
 
 def _core_qty(conn, row: dict, real_qty: int) -> int:
-    core = _safe_int(row.get("ac_t_core_qty"))
-    if core > 0:
-        return core
-    fallback = _safe_int(row.get("qty"))
-    core = max(real_qty, fallback)
-    if core > 0:
+    """Return the integer core allocated to this strategy group.
+
+    Broker positions are aggregated by symbol, so a symbol held by both B and C
+    must never use the broker-wide quantity as C's core quantity.
+    """
+    stored = _safe_int(row.get("ac_t_core_qty"))
+    if _state(row) != STATE_IDLE and stored > 0:
+        return stored
+
+    group = _ac_type(row)
+    allocated_qty = 0.0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(qty),0) AS qty
+                FROM position_holdings
+                WHERE UPPER(symbol)=%s
+                  AND UPPER(COALESCE(NULLIF(strategy_group,''),stock_type))=%s
+                  AND status='open'
+                """,
+                (str(row.get("stock_code") or "").upper(), group),
+            )
+            allocated_qty = _safe_float((cur.fetchone() or {}).get("qty"))
+    except Exception as exc:
+        print(f"[AC_T] allocated core lookup failed {row.get('stock_code')}: {exc}", flush=True)
+
+    source_qty = allocated_qty if allocated_qty > 0 else _safe_float(row.get("qty"))
+    core = int(math.floor(max(source_qty, 0.0)))
+    # A/C 做 T 只使用完整股；不足一股的碎股永久留在长期核心仓。
+    if core != stored:
         _set_row(conn, row, {"ac_t_core_qty": core})
         row["ac_t_core_qty"] = core
     return core
@@ -975,12 +1000,21 @@ def process_ac_t_symbol(conn, client, row: dict) -> str:
     if not params:
         return "skip:bad_ac_type"
 
+    state = _state(row)
+    if state == STATE_IDLE and _core_qty(conn, row, 0) <= 0:
+        return "skip:no_core_qty"
+    if (
+        ac_type == "C"
+        and str(row.get("last_order_intent") or "").startswith("C:CORE_AUTO")
+        and _same_day(row.get("last_order_time"))
+    ):
+        return "skip:core_built_today"
+
     raw_price = float(get_latest_stock_price(symbol, pool=ac_type) or 0)
     if raw_price <= 0:
         return "skip:no_price"
     current_price = _money(raw_price)
 
-    state = _state(row)
     if should_force_recover_now(state):
         # 强制恢复优先级最高，即使已经过了新开做T窗口也要执行。
         return force_buyback_core(conn, client, row, current_price)

@@ -59,7 +59,7 @@ def strategy_A_buy(symbol: str) -> StrategyResult:
     symbol = symbol.upper()
     from app.strategy_ac_t import run_strategy_ac_t_once
 
-    result = run_strategy_ac_t_once(symbol=symbol)
+    result = run_strategy_ac_t_once(symbol=symbol, group="A")
     return StrategyResult(True, "A", symbol, "buy", str(result))
 
 
@@ -68,7 +68,7 @@ def strategy_A_sell(symbol: str) -> StrategyResult:
     symbol = symbol.upper()
     from app.strategy_ac_t import run_strategy_ac_t_once
 
-    result = run_strategy_ac_t_once(symbol=symbol)
+    result = run_strategy_ac_t_once(symbol=symbol, group="A")
     return StrategyResult(True, "A", symbol, "sell", str(result))
 
 
@@ -127,7 +127,7 @@ def strategy_C_buy(symbol: str) -> StrategyResult:
     symbol = symbol.upper()
     from app.strategy_ac_t import run_strategy_ac_t_once
 
-    result = run_strategy_ac_t_once(symbol=symbol)
+    result = run_strategy_ac_t_once(symbol=symbol, group="C")
     return StrategyResult(True, "C", symbol, "buy", str(result))
 
 
@@ -136,7 +136,7 @@ def strategy_C_sell(symbol: str) -> StrategyResult:
     symbol = symbol.upper()
     from app.strategy_ac_t import run_strategy_ac_t_once
 
-    result = run_strategy_ac_t_once(symbol=symbol)
+    result = run_strategy_ac_t_once(symbol=symbol, group="C")
     return StrategyResult(True, "C", symbol, "sell", str(result))
 
 

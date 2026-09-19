@@ -15,7 +15,7 @@ from ultimate_v1.strategy_c_watchlist import sync_strategy_c_watchlist
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Sync the canonical 25-stock Strategy C watchlist.")
+    parser = argparse.ArgumentParser(description="Sync the canonical A ETFs and 28-symbol Strategy C watchlist.")
     parser.add_argument("--dry-run", action="store_true", help="Show changes without writing the database.")
     parser.add_argument(
         "--keep-legacy",

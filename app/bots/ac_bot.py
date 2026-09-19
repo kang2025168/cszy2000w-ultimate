@@ -7,6 +7,7 @@ import time
 
 from ultimate_v1.schema import ensure_schema
 from ultimate_v1.state_store import heartbeat, is_bot_enabled
+from ultimate_v1.strategy_c_core import run_strategy_c_core_buy_once
 from app.strategy_ac_t import run_strategy_ac_t_once
 
 BOT_NAME = "ac_bot"
@@ -21,7 +22,23 @@ def run_once(action: str = "scan", symbol: str | None = None, group: str | None 
         return None
     heartbeat(BOT_NAME, "running", f"action={action}")
     if action == "scan":
-        return run_strategy_ac_t_once(symbol=symbol, group=group or "C")
+        if group:
+            core_buy = run_strategy_c_core_buy_once() if group == "C" else None
+            return {
+                "core_buy": core_buy,
+                "t_scan": run_strategy_ac_t_once(symbol=symbol, group=group),
+            }
+
+        try:
+            core_buy = run_strategy_c_core_buy_once()
+        except Exception as exc:
+            core_buy = {"ok": False, "reason": str(exc)}
+            print(f"[AC BOT] C core buy failed, T scan continues: {exc}", flush=True)
+        return {
+            "core_buy": core_buy,
+            "c_t_scan": run_strategy_ac_t_once(symbol=symbol, group="C"),
+            "a_t_scan": run_strategy_ac_t_once(symbol=symbol, group="A"),
+        }
     if action in {"buy", "sell"}:
         if not symbol:
             raise ValueError("A/C manual pass needs --symbol")

@@ -21,7 +21,7 @@ from . import alpaca_gateway
 from .account_config import load_account_config, public_account_config, save_account_config
 from .bot_supervisor import managed_bot_names, process_status, set_bot_runtime, sync_from_controls
 from .capital_manager import get_capital_allocation, get_strategy_used_capital, resolve_margin_usage_pct
-from .config import env_str, settings
+from .config import env_bool, env_float, env_int, env_str, settings
 from .db import db_conn, fetch_all
 from .d_tactical import d_tactical_payload, option_preview, submit_option_combo
 from .exposure_manager import latest_exposure_state, latest_rebalance_actions, refresh_exposure_plan
@@ -340,13 +340,13 @@ STRATEGY_2_DEFAULT_CONFIG = {
     "version": "2.0",
     "capital": {
         "title": "A 养老金 + B 自动策略 + C 长期股票 + D 日内交易",
-        "desc": "A 用养老金账户做长期定投，B 保持简单自动执行并使用 Alpaca 券商数据，C 做长期股票，D 做日内交易。",
+        "desc": "A 用养老金账户定投三只指数基金；B 自动动量；C 按 28 个长期标的自动建仓并做 T；D 做日内交易。",
         "rules": [
             {"key": "a_capital_role", "label": "A 职责", "value": "养老金账户/长期定投", "unit": "", "enabled": True},
             {"key": "b_capital_role", "label": "B 职责", "value": "Alpaca/策略B自动执行", "unit": "", "enabled": True},
             {"key": "c_capital_role", "label": "C 职责", "value": "Alpaca/长期股票", "unit": "", "enabled": True},
             {"key": "d_capital_role", "label": "D 职责", "value": "Alpaca/日内交易", "unit": "", "enabled": True},
-            {"key": "auto_execute", "label": "机器人自动执行", "value": "准备中", "unit": "", "enabled": False},
+            {"key": "auto_execute", "label": "机器人自动执行", "value": "B/C/D 自动，A 按月", "unit": "", "enabled": True},
         ],
     },
     "strategies": [
@@ -401,15 +401,21 @@ STRATEGY_2_DEFAULT_CONFIG = {
             "name": "C 长期股票",
             "broker": "Alpaca",
             "capital": "长期资金",
-            "mission": "负责长期股票账户；B/C/D 在原保证金账户内按 4:4:2 分配，C 接收共享账户增长后的长期额度。AC 做T只围绕明确启用的核心仓微调。",
+            "mission": "B/C/D 在原保证金账户内按 4:4:2 分配。C 有可用现金时按目标权重自动补仓，随后只用完整股做日内 T，碎股始终留在长期核心仓。",
             "select_rules": [
-                {"key": "c_ac_enabled", "label": "显式启用 AC_T", "value": "ac_t_enabled=1", "unit": "", "enabled": True},
-                {"key": "c_stock_type", "label": "长期成长核心仓", "value": "stock_type=C", "unit": "", "enabled": True},
+                {"key": "c_universe", "label": "长期预选池", "value": "28 只（25只股票+QQQ/VOO/XLV）", "unit": "", "enabled": True},
+                {"key": "c_foundation", "label": "指数底仓", "value": "QQQ 12% / VOO 12% / XLV 6%", "unit": "", "enabled": True},
+                {"key": "c_fill_order", "label": "建仓顺序", "value": "指数底仓 → 核心龙头 → 成长卫星", "unit": "", "enabled": True},
+                {"key": "c_stock_type", "label": "持仓归属", "value": "stock_type=C / capital_pool=C", "unit": "", "enabled": True},
                 {"key": "c_up_trigger", "label": "上涨做T触发", "value": 1, "unit": "%", "enabled": True},
                 {"key": "c_down_trigger", "label": "下跌做T触发", "value": 1, "unit": "%", "enabled": True},
             ],
             "buy_rules": [
-                {"key": "c_monthly_buy", "label": "月度买入", "value": "每月15号按比例买入", "unit": "", "enabled": True},
+                {"key": "c_auto_core_buy", "label": "自动建仓", "value": "由环境变量控制", "unit": "", "enabled": True},
+                {"key": "c_core_buy_window", "label": "自动买入窗口", "value": "06:40-12:30", "unit": "LA", "enabled": True},
+                {"key": "c_daily_budget", "label": "每日建仓额度", "value": "C目标资金10%，最多$250", "unit": "", "enabled": True},
+                {"key": "c_order_count", "label": "每轮最多下单", "value": 3, "unit": "笔", "enabled": True},
+                {"key": "c_order_type", "label": "建仓订单", "value": "实时价 DAY 限价碎股单", "unit": "", "enabled": True},
                 {"key": "c_rebound_buy", "label": "低开/下跌反弹买回", "value": 1, "unit": "%", "enabled": True},
                 {"key": "c_buy_limit_buffer", "label": "买入限价缓冲", "value": 0.2, "unit": "%", "enabled": True},
                 {"key": "c_min_hold_minutes", "label": "单腿最短持有", "value": 30, "unit": "分钟", "enabled": True},
@@ -478,6 +484,20 @@ def _strategy_2_config_payload() -> dict:
     except Exception:
         saved = {}
     config = _deep_merge_strategy_config(STRATEGY_2_DEFAULT_CONFIG, saved)
+    for strategy in config.get("strategies", []):
+        if strategy.get("key") != "C":
+            continue
+        runtime_values = {
+            "c_auto_core_buy": "已开启" if env_bool("C_CORE_AUTO_BUY_ENABLED", False) else "已关闭",
+            "c_daily_budget": (
+                f"C目标资金 {env_float('C_CORE_DAILY_BUDGET_PCT', 0.10):.0%}，"
+                f"最多 ${env_float('C_CORE_DAILY_BUDGET_MAX_USD', 250.0):,.0f}"
+            ),
+            "c_order_count": env_int("C_CORE_MAX_ORDERS_PER_RUN", 3),
+        }
+        for rule in strategy.get("buy_rules", []):
+            if rule.get("key") in runtime_values:
+                rule["value"] = runtime_values[rule["key"]]
     return {"ok": True, "config": config}
 
 
@@ -4145,7 +4165,7 @@ INDEX_HTML = r"""<!doctype html>
               <div class="strategy2-hero">
                 <div class="strategy2-title">
                   <h3>系统配置 · 账户、自动化与策略规则</h3>
-                  <p id="strategy2Desc">A 使用养老金账户月投；B 自动策略；C 核心仓做 T；D 日内交易。这里集中查看账户映射、自动化状态和策略参数。</p>
+                  <p id="strategy2Desc">A 使用养老金账户月投；B 自动策略；C 自动建仓并做 T；D 日内交易。这里集中查看账户映射、自动化状态和策略参数。</p>
                 </div>
                 <div class="strategy2-actions">
                   <div class="quote-test-panel">
@@ -4188,7 +4208,7 @@ INDEX_HTML = r"""<!doctype html>
                 <div class="account-config-grid" id="accountConfigGrid"></div>
                 <div class="pool-map-grid" id="poolMapGrid"></div>
                 <div class="monthly-config" id="monthlyConfigGrid"></div>
-                <div class="monthly-result" id="monthlyInvestResult">A 每月 15 号按比例购买；C 不参与月投，只做核心仓和日内 T。</div>
+                <div class="monthly-result" id="monthlyInvestResult">A 每月 15 号按比例购买；C 不参与月投，由 C 机器人持续补齐长期核心仓并做 T。</div>
               </div>
               <div class="schedule-panel">
                 <div class="schedule-head">
@@ -6873,7 +6893,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>`;
       }).join('');
-      const poolLabels = {A:'A 月投/养老金', B:'B 自动策略', C:'C 核心仓做T', D:'D 日内交易'};
+      const poolLabels = {A:'A 月投/养老金', B:'B 自动策略', C:'C 自动建仓/做T', D:'D 日内交易'};
       const profileLabels = {retirement:'养老金账户', trading:'原保证金账户'};
       const fixedPools = {A:'retirement', B:'trading', C:'trading', D:'trading'};
       mapGrid.innerHTML = ['A','B','C','D'].map(group => `
@@ -6890,7 +6910,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="monthly-card"><label>自动执行</label><select id="monthlyAutoExecute"><option value="0" ${monthly.auto_execute ? '' : 'selected'}>只预览</option><option value="1" ${monthly.auto_execute ? 'selected' : ''}>自动下单</option></select></div>
         <div class="monthly-card"><label>A 使用比例</label><input id="monthlyAFraction" type="number" step="0.05" min="0" max="1" value="${esc(groups.A?.budget_fraction ?? 1)}" /></div>
         <div class="monthly-card"><label>A 最大标的</label><input id="monthlyAMax" type="number" min="1" value="${esc(groups.A?.max_symbols || 20)}" /></div>
-        <div class="monthly-card"><label>C 月投</label><div class="account-mode-readonly">不参与月投 · 核心仓做 T</div></div>
+        <div class="monthly-card"><label>C 买入</label><div class="account-mode-readonly">不参与月投 · 有可用资金自动补仓</div></div>
         <div class="monthly-card"><label>订单类型</label><select id="monthlyOrderType"><option value="limit" selected>实时价限价</option></select></div>
       `;
     }
@@ -6965,7 +6985,7 @@ INDEX_HTML = r"""<!doctype html>
     function renderStrategy2Config(config) {
       strategy2Config = config;
       const desc = document.getElementById('strategy2Desc');
-      if (desc) desc.textContent = config?.capital?.desc || 'A 月投，B 自动策略，C 核心仓做 T，D 日内交易；配置页只展示和保存当前系统规则。';
+      if (desc) desc.textContent = config?.capital?.desc || 'A 月投，B 自动策略，C 自动建仓并做 T，D 日内交易；配置页只展示和保存当前系统规则。';
       const status = document.getElementById('strategy2Status');
       if (status) status.textContent = '已加载';
       const capital = document.getElementById('strategy2Capital');

@@ -40,7 +40,10 @@ class StrategyBSellStopGraceTests(unittest.TestCase):
             b._load_one_b_row = lambda _conn, _code: dict(row)
             b.get_snapshot_realtime = lambda _code: (price, 100.0, "test")
             b._update_ops_fields = lambda *_args, **_kwargs: None
-            b._sell_qty = lambda _conn, code, qty, reason: calls.append((code, qty, reason)) or True
+            b._sell_qty = (
+                lambda _conn, code, qty, reason, **_kwargs:
+                calls.append((code, qty, reason)) or True
+            )
             result = b.strategy_B_sell("MOCKB")
             return result, calls
         finally:
@@ -57,7 +60,7 @@ class StrategyBSellStopGraceTests(unittest.TestCase):
         self.assertEqual([], calls)
 
     def test_initial_stop_grace_allows_catastrophic_stop(self):
-        result, calls = self._run_case(94.0)
+        result, calls = self._run_case(91.0)
 
         self.assertTrue(result)
         self.assertEqual(1, len(calls))

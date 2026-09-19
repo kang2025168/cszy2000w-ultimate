@@ -258,7 +258,7 @@ class BCStrategyFlowTests(unittest.TestCase):
         }
         try:
             ac.DRY_RUN = True
-            ac.get_latest_stock_price = lambda _symbol: 101.5
+            ac.get_latest_stock_price = lambda _symbol, **_kwargs: 101.5
             ac._submit_limit_and_wait = (
                 lambda _client, symbol, qty, side, price: ac.FillResult(
                     True, f"mock-{side.lower()}-{symbol}", "filled", qty, price
@@ -310,7 +310,7 @@ class BCStrategyFlowTests(unittest.TestCase):
         }
         try:
             ac.DRY_RUN = True
-            ac.get_latest_stock_price = lambda _symbol: 102.8
+            ac.get_latest_stock_price = lambda _symbol, **_kwargs: 102.8
             ac._submit_limit_and_wait = (
                 lambda _client, symbol, qty, side, price: ac.FillResult(
                     True, f"mock-{side.lower()}-{symbol}", "filled", qty, price

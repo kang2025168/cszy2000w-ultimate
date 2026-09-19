@@ -457,6 +457,30 @@ def ensure_control_state_tables() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS strategy_c_core_buys (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  trade_date DATE NOT NULL,
+                  symbol VARCHAR(32) NOT NULL,
+                  tier INT NOT NULL DEFAULT 3,
+                  target_weight DECIMAL(10,6) NOT NULL DEFAULT 0,
+                  planned_notional DECIMAL(18,2) NOT NULL DEFAULT 0,
+                  limit_price DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  filled_qty DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  filled_avg_price DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  status VARCHAR(32) NOT NULL DEFAULT 'planned',
+                  reason VARCHAR(255) NULL,
+                  order_id VARCHAR(128) NULL,
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  UNIQUE KEY uk_c_core_order_id (order_id),
+                  INDEX idx_c_core_trade_date (trade_date),
+                  INDEX idx_c_core_symbol_date (symbol, trade_date),
+                  INDEX idx_c_core_status (status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
 
 
 def ensure_schema() -> None:
