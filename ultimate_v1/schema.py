@@ -349,6 +349,7 @@ def ensure_control_state_tables() -> None:
                 "f_sell_bot": 0,
                 "d_buy_bot": 0,
                 "d_sell_bot": 0,
+                "d_grid_bot": 0,
                 "q_sell_bot": 0,
             }
             for bot_name, enabled in default_controls.items():
@@ -478,6 +479,84 @@ def ensure_control_state_tables() -> None:
                   INDEX idx_c_core_trade_date (trade_date),
                   INDEX idx_c_core_symbol_date (symbol, trade_date),
                   INDEX idx_c_core_status (status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS d_grid_symbols (
+                  symbol VARCHAR(32) PRIMARY KEY,
+                  enabled TINYINT NOT NULL DEFAULT 0,
+                  lot_notional DECIMAL(18,2) NOT NULL DEFAULT 250,
+                  entry_offset DECIMAL(18,4) NOT NULL DEFAULT 0.03,
+                  profit_offset DECIMAL(18,4) NOT NULL DEFAULT 0.06,
+                  max_spread DECIMAL(18,4) NOT NULL DEFAULT 0.05,
+                  sort_order INT NOT NULL DEFAULT 0,
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS d_candidate_pool (
+                  symbol VARCHAR(32) PRIMARY KEY,
+                  signal_date DATE NOT NULL,
+                  signal_close DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  signal_gain_pct DECIMAL(12,6) NOT NULL DEFAULT 0,
+                  signal_volume BIGINT NOT NULL DEFAULT 0,
+                  signal_dollar_volume DECIMAL(20,2) NOT NULL DEFAULT 0,
+                  avg_range_pct DECIMAL(12,6) NOT NULL DEFAULT 0,
+                  base_score DECIMAL(12,4) NOT NULL DEFAULT 0,
+                  enabled TINYINT NOT NULL DEFAULT 1,
+                  selected_count INT NOT NULL DEFAULT 0,
+                  last_selected_at DATETIME NULL,
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  INDEX idx_d_candidate_date (signal_date),
+                  INDEX idx_d_candidate_enabled (enabled, signal_date)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS d_grid_cycles (
+                  symbol VARCHAR(32) PRIMARY KEY,
+                  state VARCHAR(24) NOT NULL DEFAULT 'IDLE',
+                  cycle_no BIGINT NOT NULL DEFAULT 0,
+                  anchor_price DECIMAL(18,6) DEFAULT 0,
+                  buy_limit DECIMAL(18,6) DEFAULT 0,
+                  buy_order_id VARCHAR(128),
+                  buy_qty DECIMAL(18,6) DEFAULT 0,
+                  buy_filled_qty DECIMAL(18,6) DEFAULT 0,
+                  buy_filled_price DECIMAL(18,6) DEFAULT 0,
+                  sell_limit DECIMAL(18,6) DEFAULT 0,
+                  sell_order_id VARCHAR(128),
+                  sell_filled_price DECIMAL(18,6) DEFAULT 0,
+                  realized_pnl DECIMAL(18,2) DEFAULT 0,
+                  cooldown_until DATETIME,
+                  last_error VARCHAR(512),
+                  state_changed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  INDEX idx_d_grid_state (state)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS d_grid_events (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  symbol VARCHAR(32) NOT NULL,
+                  cycle_no BIGINT NOT NULL DEFAULT 0,
+                  event_type VARCHAR(32) NOT NULL,
+                  state VARCHAR(24) NOT NULL,
+                  order_id VARCHAR(128),
+                  qty DECIMAL(18,6) DEFAULT 0,
+                  price DECIMAL(18,6) DEFAULT 0,
+                  message VARCHAR(512),
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  INDEX idx_d_grid_event_symbol (symbol, created_at),
+                  INDEX idx_d_grid_event_created (created_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )

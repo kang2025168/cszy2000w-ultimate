@@ -31,6 +31,7 @@ from .capital_manager import get_capital_allocation, get_strategy_used_capital, 
 from .config import env_bool, env_float, env_int, env_str, settings
 from .db import db_conn, fetch_all
 from .d_tactical import d_tactical_payload, option_preview, submit_option_combo
+from .d_grid import config_payload as d_grid_config_payload, save_config as save_d_grid_config
 from .exposure_manager import latest_exposure_state, latest_rebalance_actions, refresh_exposure_plan
 from .monthly_investment import load_monthly_invest_config, run_monthly_investment, save_monthly_invest_config
 from .rebalance_monthly import generate_rebalance_report
@@ -920,6 +921,66 @@ def _holdings_payload() -> dict:
             holdings.append(row)
     except Exception as exc:
         print(f"[WEB HOLDINGS] stock_operations candidate pool unavailable: {exc}", flush=True)
+    try:
+        d_rows = fetch_all(
+            """
+            SELECT d.symbol,
+                   'D' AS strategy_group,
+                   'D' AS stock_type,
+                   'candidate' AS status,
+                   0 AS qty,
+                   d.signal_close AS trigger_price,
+                   d.signal_close AS initial_entry_price,
+                   d.signal_close AS avg_entry_price,
+                   d.signal_close AS current_price,
+                   0 AS market_value,
+                   0 AS cost_basis,
+                   0 AS unrealized_pnl,
+                   0 AS unrealized_pnl_pct,
+                   0 AS realized_pnl,
+                   d.signal_date AS entry_time,
+                   NULL AS exit_time,
+                   0 AS holding_days,
+                   NULL AS stop_loss_price,
+                   NULL AS take_profit_price,
+                   0 AS b_stage,
+                   'D' AS capital_pool,
+                   0 AS margin_used,
+                   NULL AS last_order_side,
+                   d.updated_at AS last_update_time,
+                   'd_candidate_pool' AS row_source,
+                   0 AS is_bought,
+                   d.base_score AS d_candidate_score,
+                   d.signal_gain_pct AS d_signal_gain_pct,
+                   d.signal_volume AS d_signal_volume,
+                   CASE WHEN COALESCE(s.enabled, 0)=1 THEN 1 ELSE 0 END AS d_selected,
+                   COALESCE(c.state, 'IDLE') AS d_cycle_state
+            FROM d_candidate_pool d
+            LEFT JOIN d_grid_symbols s ON s.symbol=d.symbol
+            LEFT JOIN d_grid_cycles c ON c.symbol=d.symbol
+            WHERE d.enabled=1
+            ORDER BY d.base_score DESC, d.signal_dollar_volume DESC, d.symbol
+            """
+        )
+        existing_d = {
+            str(row.get("symbol") or "").strip().upper()
+            for row in holdings
+            if str(row.get("strategy_group") or "").strip().upper() == "D"
+        }
+        d_meta = {str(row.get("symbol") or "").strip().upper(): row for row in d_rows}
+        for row in holdings:
+            if str(row.get("strategy_group") or "").strip().upper() != "D":
+                continue
+            meta = d_meta.get(str(row.get("symbol") or "").strip().upper()) or {}
+            row["d_selected"] = int(meta.get("d_selected") or 0)
+            row["d_cycle_state"] = meta.get("d_cycle_state") or "IDLE"
+            row["d_candidate_score"] = meta.get("d_candidate_score")
+        for row in d_rows:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if symbol and symbol not in existing_d:
+                holdings.append(row)
+    except Exception as exc:
+        print(f"[WEB HOLDINGS] D candidate pool unavailable: {exc}", flush=True)
     return {"ok": True, "rows": _enrich_holdings_rows(holdings)}
 
 
@@ -1603,10 +1664,11 @@ def _trade_records_payload() -> dict:
 
 
 def _stock_selection_payload() -> dict:
-    """复盘选股：最新交易日涨幅大于 5%，并标记其中的 B 策略候选。"""
+    """复盘选股：使用 B/D 共用的基础流动性口径，并分别标记候选池。"""
     min_up_pct = _safe_float(env_str("SELECTION_MIN_UP_PCT", "0.05"), 0.05)
-    min_price = _safe_float(env_str("SELECTION_MIN_PRICE", "2"), 2.0)
-    min_volume = _safe_float(env_str("SELECTION_MIN_VOLUME", "1000000"), 1000000.0)
+    min_price = _safe_float(env_str("SELECTION_MIN_PRICE", "5"), 5.0)
+    min_volume = _safe_float(env_str("SELECTION_MIN_VOLUME", "3000000"), 3000000.0)
+    min_dollar_volume = _safe_float(env_str("SELECTION_MIN_DOLLAR_VOLUME", "30000000"), 30000000.0)
     latest = fetch_all("SELECT MAX(DATE(`date`)) AS d FROM stock_prices_pool")
     snapshot_date = (latest[0] or {}).get("d") if latest else None
     if not snapshot_date:
@@ -1639,6 +1701,7 @@ def _stock_selection_payload() -> dict:
             b.last_order_side,
             b.last_order_intent,
             b.updated_at AS b_updated_at
+            ,d.symbol AS d_candidate_symbol
         FROM stock_prices_pool p
         LEFT JOIN stock_prices_pool pp
           ON DATE(pp.`date`) = DATE(%s)
@@ -1653,15 +1716,19 @@ def _stock_selection_payload() -> dict:
                 GROUP BY UPPER(CONVERT(stock_code USING utf8mb4)) COLLATE utf8mb4_unicode_ci
             ) latest_b ON latest_b.id = so.id
         ) b ON UPPER(CONVERT(b.stock_code USING utf8mb4)) COLLATE utf8mb4_unicode_ci = UPPER(CONVERT(p.symbol USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+        LEFT JOIN d_candidate_pool d
+          ON UPPER(CONVERT(d.symbol USING utf8mb4)) COLLATE utf8mb4_unicode_ci = UPPER(CONVERT(p.symbol USING utf8mb4)) COLLATE utf8mb4_unicode_ci
+         AND d.enabled=1 AND DATE(d.signal_date)=DATE(p.`date`)
         WHERE DATE(p.`date`) = DATE(%s)
           AND p.`open` > 0
           AND p.`close` >= %s
           AND COALESCE(p.volume, 0) >= %s
+          AND (p.`close` * COALESCE(p.volume, 0)) >= %s
           AND ((p.`close` - p.`open`) / p.`open`) >= %s
         ORDER BY ((p.`close` - p.`open`) / p.`open`) DESC, UPPER(p.symbol) ASC
         LIMIT 1000
         """,
-        (previous_date or snapshot_date, snapshot_date, min_price, min_volume, min_up_pct),
+        (previous_date or snapshot_date, snapshot_date, min_price, min_volume, min_dollar_volume, min_up_pct),
     )
 
     out = []
@@ -1673,6 +1740,7 @@ def _stock_selection_payload() -> dict:
         can_buy = int(row.get("can_buy") or 0)
         is_bought = int(row.get("is_bought") or 0)
         b_match = bool(row.get("operation_id") and can_buy == 1 and is_bought != 1)
+        d_match = bool(row.get("d_candidate_symbol"))
         item = {
             "symbol": str(row.get("symbol") or "").upper(),
             "snapshot_date": row.get("snapshot_date"),
@@ -1685,6 +1753,8 @@ def _stock_selection_payload() -> dict:
             "prev_close": prev_close,
             "day_change_pct": day_change_pct,
             "b_match": b_match,
+            "d_match": d_match,
+            "dollar_volume": close * _safe_float(row.get("volume")),
             "operation_id": row.get("operation_id"),
             "trigger_price": _safe_float(row.get("trigger_price")),
             "entry_open": _safe_float(row.get("entry_open")),
@@ -1707,6 +1777,7 @@ def _stock_selection_payload() -> dict:
         "min_up_pct": min_up_pct,
         "min_price": min_price,
         "min_volume": min_volume,
+        "min_dollar_volume": min_dollar_volume,
         "rows": out,
         "b_rows": b_rows,
     }
@@ -3304,7 +3375,9 @@ INDEX_HTML = r"""<!doctype html>
     .holding-status.open { color:#08734f; background:#e7f6ef; }
     .holding-status.watch { color:#9a5b00; background:#fff7e6; }
     .holding-status.candidate { color:#075985; background:#e0f2fe; }
+    .holding-status.target { color:#fff; background:#0f766e; box-shadow:0 0 0 3px rgba(15,118,110,.12); }
     .holding-status.closed { color:#667085; background:#eef2f6; }
+    .d-execution-row td { background:#f0fdfa; }
     .pool-delete-btn { min-width:42px; height:28px; border:1px solid #fecaca; border-radius:8px; background:#fff5f5; color:#b42318; font-size:12px; font-weight:950; }
     .pool-delete-btn:hover { background:#fee2e2; border-color:#fca5a5; }
     .neg { color:var(--red); }
@@ -3467,6 +3540,49 @@ INDEX_HTML = r"""<!doctype html>
     .b-config-value.good { color:#08734f; }
     .b-config-value.warn { color:#b45309; }
     .b-config-value.bad { color:#b42318; }
+    .config-subnav { position:sticky; top:8px; z-index:12; display:flex; align-items:center; gap:6px; padding:7px; border:1px solid #d8e4f0; border-radius:8px; background:rgba(255,255,255,.96); box-shadow:0 8px 22px rgba(15,23,42,.08); backdrop-filter:blur(10px); overflow-x:auto; }
+    .config-subnav button { flex:0 0 auto; height:36px; min-width:82px; border:1px solid transparent; border-radius:7px; background:transparent; color:#475467; font-size:12px; font-weight:900; padding:0 13px; }
+    .config-subnav button.active { background:#101828; color:#fff; box-shadow:0 4px 10px rgba(15,23,42,.16); }
+    .config-subnav button:hover:not(.active) { background:#f2f6fb; color:#175cd3; }
+    .config-tab-intro { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:48px; padding:10px 12px; border:1px solid #d8e4f0; border-radius:8px; background:#f8fbff; }
+    .config-tab-intro strong { color:var(--ink); font-size:15px; }
+    .config-tab-intro span { color:var(--muted); font-size:12px; font-weight:800; }
+    .config-log-panel { border:1px solid #d8e4f0; border-radius:8px; padding:16px; background:#fff; }
+    .config-log-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:12px; }
+    .config-log-action { min-height:90px; display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:6px; border:1px solid #dbe6f2; border-radius:8px; background:#f8fbff; padding:14px; text-align:left; }
+    .config-log-action strong { color:var(--ink); font-size:14px; }
+    .config-log-action span { color:var(--muted); font-size:12px; font-weight:800; }
+    .config-module[hidden] { display:none !important; }
+    .strategy2-page[data-active-config-tab="A"] [data-account-profile="trading"],
+    .strategy2-page[data-active-config-tab="A"] [data-pool-map="B"],
+    .strategy2-page[data-active-config-tab="A"] [data-pool-map="C"],
+    .strategy2-page[data-active-config-tab="A"] [data-pool-map="D"] { display:none; }
+    .config-bot-wrap { padding:0 12px 12px; }
+    .config-bot-title { margin:2px 0 8px; color:var(--ink); font-size:13px; font-weight:950; }
+    .config-bot-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+    .config-bot-card { display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:56px; padding:10px; border:1px solid #dbe6f2; border-radius:8px; background:#fbfdff; }
+    .config-bot-name { color:var(--ink); font-size:12px; font-weight:950; }
+    .config-bot-status { color:var(--muted); font-size:10px; font-weight:800; margin-top:3px; }
+    .config-bot-toggle { flex:0 0 auto; height:30px; min-width:58px; border-radius:7px; font-weight:900; }
+    .config-bot-toggle.on { border-color:#a6e3cf; background:#e7f6ef; color:#08734f; }
+    .d-grid-config-panel { border:1px solid #d8e4f0; border-radius:8px; background:#fff; overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,.035); }
+    .d-grid-config-head { min-height:48px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:11px 12px; border-bottom:1px solid #e8eef6; background:#f8fbff; }
+    .d-grid-config-title { color:var(--ink); font-size:15px; font-weight:950; }
+    .d-grid-config-meta { color:var(--muted); font-size:11px; font-weight:850; margin-top:3px; }
+    .d-grid-config-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .d-grid-config-actions button { height:32px; border-radius:8px; font-weight:900; }
+    .d-grid-config-actions .primary { border:0; background:#101828; color:#fff; }
+    .d-grid-runtime { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; padding:12px; border-bottom:1px solid #eef2f6; }
+    .d-grid-field { min-width:0; display:grid; gap:6px; }
+    .d-grid-field label { color:var(--muted); font-size:11px; font-weight:850; }
+    .d-grid-field input, .d-grid-field select { width:100%; height:34px; border:1px solid #d6e2ef; border-radius:8px; padding:0 9px; color:var(--ink); background:#fff; font-weight:850; min-width:0; }
+    .d-grid-symbols { display:grid; gap:8px; padding:12px; }
+    .d-grid-symbol-row { display:grid; grid-template-columns:64px minmax(100px,1fr) repeat(4,minmax(100px,1fr)) minmax(145px,1.15fr) 34px; gap:8px; align-items:end; padding:10px; border:1px solid #dbe6f2; border-radius:8px; background:#fbfdff; }
+    .d-grid-symbol-switch { height:34px; display:flex; align-items:center; gap:7px; color:#344054; font-size:12px; font-weight:900; }
+    .d-grid-symbol-state { min-height:34px; padding:7px 9px; border-radius:8px; background:#eef2f6; color:#475467; font-size:11px; font-weight:850; line-height:1.25; }
+    .d-grid-symbol-state.active { background:#e7f6ef; color:#08734f; }
+    .d-grid-remove { width:34px; height:34px; border-color:#fecaca; color:#b42318; background:#fff; font-size:18px; }
+    .d-grid-flow { margin:0 12px 12px; padding:9px 10px; border-radius:8px; background:#eff8ff; color:#175cd3; font-size:12px; font-weight:850; }
     .account-config-panel { border:1px solid #d8e4f0; border-radius:8px; background:#fff; overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,.035); }
     .account-config-head { min-height:46px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:11px 12px; border-bottom:1px solid #e8eef6; background:linear-gradient(180deg,#fff,#f8fbff); }
     .account-config-title { color:var(--ink); font-size:15px; font-weight:950; }
@@ -3744,6 +3860,15 @@ INDEX_HTML = r"""<!doctype html>
       .schedule-grid { grid-template-columns:1fr; }
       .b-config-head { align-items:flex-start; flex-direction:column; }
       .b-config-grid { grid-template-columns:1fr; }
+      .config-subnav { top:4px; }
+      .config-subnav button { min-width:72px; }
+      .config-tab-intro { align-items:flex-start; flex-direction:column; }
+      .config-log-actions { grid-template-columns:1fr; }
+      .config-bot-grid { grid-template-columns:1fr; }
+      .d-grid-config-head { align-items:flex-start; flex-direction:column; }
+      .d-grid-runtime { grid-template-columns:1fr 1fr; }
+      .d-grid-symbol-row { grid-template-columns:1fr 1fr; align-items:end; }
+      .d-grid-symbol-state { grid-column:1 / -1; }
       .account-config-head { align-items:flex-start; flex-direction:column; }
       .account-config-actions { justify-content:flex-start; }
       .account-config-grid, .pool-map-grid, .monthly-config { grid-template-columns:1fr; }
@@ -3883,7 +4008,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="stock-selection-head">
         <div class="stock-selection-title">
           <h2>选股复盘</h2>
-          <div class="small-muted">最新交易日涨幅大于 5% 的股票，以及其中已经进入 B 策略候选池的股票。</div>
+          <div class="small-muted">按涨幅、价格、成交量和成交额筛选，并分别标记 B 与 D 候选池。</div>
         </div>
         <div class="stock-selection-actions">
           <span class="small-muted" id="stockSelectionStatus">未加载</span>
@@ -4176,7 +4301,17 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div class="lower-page">
             <div class="strategy2-page" id="strategy2Page">
-              <div class="strategy2-hero">
+              <nav class="config-subnav" aria-label="配置模块">
+                <button class="active" data-config-tab="account" onclick="setConfigTab('account')">账户</button>
+                <button data-config-tab="A" onclick="setConfigTab('A')">A 养老金</button>
+                <button data-config-tab="B" onclick="setConfigTab('B')">B 动量</button>
+                <button data-config-tab="C" onclick="setConfigTab('C')">C 长期</button>
+                <button data-config-tab="D" onclick="setConfigTab('D')">D 日内</button>
+                <button data-config-tab="robots" onclick="setConfigTab('robots')">机器人</button>
+                <button data-config-tab="logs" onclick="setConfigTab('logs')">日志</button>
+              </nav>
+              <div class="config-tab-intro" id="configTabIntro"><strong>账户与资金映射</strong><span>A 使用养老金账户，B/C/D 使用原保证金账户。</span></div>
+              <div class="strategy2-hero config-module" data-config-modules="account">
                 <div class="strategy2-title">
                   <h3>系统配置 · 账户、自动化与策略规则</h3>
                   <p id="strategy2Desc">A 使用养老金账户月投；B 自动策略；C 自动建仓并做 T；D 日内交易。这里集中查看账户映射、自动化状态和策略参数。</p>
@@ -4207,7 +4342,7 @@ INDEX_HTML = r"""<!doctype html>
                   </div>
                 </div>
               </div>
-              <div class="account-config-panel">
+              <div class="account-config-panel config-module" data-config-modules="account A">
                 <div class="account-config-head">
                   <div>
                     <div class="account-config-title">账户与资金映射</div>
@@ -4224,7 +4359,7 @@ INDEX_HTML = r"""<!doctype html>
                 <div class="monthly-config" id="monthlyConfigGrid"></div>
                 <div class="monthly-result" id="monthlyInvestResult">A 每月 15 号按比例购买；C 不参与月投，由 C 机器人持续补齐长期核心仓并做 T。</div>
               </div>
-              <div class="schedule-panel">
+              <div class="schedule-panel config-module" data-config-modules="robots">
                 <div class="schedule-head">
                   <div class="schedule-title">自动化任务状态</div>
                   <div class="schedule-meta" id="scheduleMeta">未加载</div>
@@ -4232,8 +4367,12 @@ INDEX_HTML = r"""<!doctype html>
                 <div class="schedule-grid" id="scheduleGrid">
                   <div class="schedule-empty">正在读取任务状态...</div>
                 </div>
+                <div class="config-bot-wrap">
+                  <div class="config-bot-title">交易机器人</div>
+                  <div class="config-bot-grid" id="configBotGrid"><div class="schedule-empty">正在读取机器人状态...</div></div>
+                </div>
               </div>
-              <div class="b-config-panel">
+              <div class="b-config-panel config-module" data-config-modules="B">
                 <div class="b-config-head">
                   <div class="b-config-title">策略 B 买卖规则</div>
                   <div class="b-config-meta" id="strategyBConfigMeta">未加载</div>
@@ -4242,8 +4381,32 @@ INDEX_HTML = r"""<!doctype html>
                   <div class="schedule-empty">正在读取 B 策略配置...</div>
                 </div>
               </div>
-              <div class="strategy2-capital" id="strategy2Capital"></div>
-              <div class="strategy2-grid" id="strategy2Grid"></div>
+              <div class="d-grid-config-panel config-module" data-config-modules="D">
+                <div class="d-grid-config-head">
+                  <div>
+                    <div class="d-grid-config-title">策略 D · 单循环日内做 T</div>
+                    <div class="d-grid-config-meta" id="dGridConfigMeta">未加载</div>
+                  </div>
+                  <div class="d-grid-config-actions">
+                    <button onclick="addDGridSymbol()">添加股票</button>
+                    <button onclick="loadDGridConfig()">重载</button>
+                    <button class="primary" onclick="saveDGridConfig()">保存 D 配置</button>
+                  </div>
+                </div>
+                <div class="d-grid-runtime" id="dGridRuntime"></div>
+                <div class="d-grid-symbols" id="dGridSymbols"><div class="schedule-empty">正在读取 D 策略配置...</div></div>
+                <div class="d-grid-flow">定价：按检查时实时价回落 0.25% 挂买单，成交后按实际成交价上涨 1% 挂卖单。执行顺序：等待买入 → 买单成交 → 挂卖单 → 卖单成交 → 冷却 → 下一轮；上一轮未完成时不会重复下单。</div>
+              </div>
+              <div class="strategy2-capital config-module" data-config-modules="account" id="strategy2Capital"></div>
+              <div class="strategy2-grid config-module" data-config-modules="A B C D" id="strategy2Grid"></div>
+              <div class="config-log-panel config-module" data-config-modules="logs" hidden>
+                <div class="account-config-title">日志与交易记录</div>
+                <div class="account-config-meta">运行日志和真实交易记录继续使用独立日志页面，配置页只保留清晰入口。</div>
+                <div class="config-log-actions">
+                  <button class="config-log-action" onclick="openConfigLogs('bots')"><strong>机器人日志</strong><span>查看各机器人运行、错误和心跳记录</span></button>
+                  <button class="config-log-action" onclick="openConfigLogs('trades')"><strong>交易记录</strong><span>查看自动交易和手动交易记录</span></button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -4424,6 +4587,7 @@ INDEX_HTML = r"""<!doctype html>
     let manualOrderPreview = null;
     let manualSymbolLocked = false;
     let strategy2Config = null;
+    let configTab = 'account';
     let latestStrategyBConfig = null;
     let accountConfig = null;
     let botLogRows = [];
@@ -4736,6 +4900,42 @@ INDEX_HTML = r"""<!doctype html>
         <button class="bot-page-btn" onclick="setBotPage(${botPage + 1})" ${botPage >= botPages.length - 1 ? 'disabled' : ''}>›</button>
         <span class="bot-page-label">${botPage + 1}/${botPages.length}</span>
       `;
+      renderConfigBots(bots, controls);
+    }
+    function renderConfigBots(bots, controls) {
+      const grid = document.getElementById('configBotGrid');
+      if (!grid) return;
+      const labels = {
+        dashboard_bot:'行情与持仓同步', risk_bot:'风险控制', rebalance_bot:'资金调仓',
+        ac_bot:'A/C 长期策略', b_buy_bot:'B 买入', b_sell_bot:'B 卖出',
+        d_grid_bot:'D 日内循环', f_buy_bot:'F 买入', f_sell_bot:'F 卖出'
+      };
+      const hidden = new Set(['d_buy_bot', 'd_sell_bot']);
+      const heartbeatMap = Object.fromEntries((bots || []).map(item => [item.bot_name, item]));
+      const processMap = Object.fromEntries((window.latestBotProcesses || []).map(item => [item.bot_name, item]));
+      const controlRows = (controls || []).filter(item => !hidden.has(item.bot_name));
+      const names = [...new Set([...Object.keys(labels), ...controlRows.map(item => item.bot_name)])]
+        .filter(name => !hidden.has(name) && (labels[name] || heartbeatMap[name] || controlRows.some(item => item.bot_name === name)));
+      const controlMap = Object.fromEntries(controlRows.map(item => [item.bot_name, Number(item.enabled) === 1]));
+      grid.innerHTML = names.map(name => {
+        const heartbeat = heartbeatMap[name];
+        const process = processMap[name];
+        const running = process ? Boolean(process.running) : heartbeat?.status === 'running';
+        const enabled = controlMap[name] !== false;
+        const controllable = Object.prototype.hasOwnProperty.call(controlMap, name);
+        const message = heartbeat?.last_message || (running ? '进程运行中' : '暂无运行心跳');
+        return `<article class="config-bot-card">
+          <div class="config-bot-card-head">
+            <div><strong>${esc(labels[name] || name)}</strong><span>${esc(name)}</span></div>
+            <span class="config-bot-state ${running ? 'running' : ''}">${running ? '运行中' : '未运行'}</span>
+          </div>
+          <div class="config-bot-message" title="${esc(message)}">${esc(message)}</div>
+          <div class="config-bot-card-foot">
+            <span>${heartbeat?.last_seen_at ? `心跳 ${esc(heartbeat.last_seen_at)}` : '暂无心跳时间'}</span>
+            ${controllable ? `<button class="${enabled ? '' : 'primary'}" onclick="toggleBot('${name}', ${enabled ? 'false' : 'true'})">${enabled ? '停用' : '启用'}</button>` : '<span class="small-muted">跟随系统</span>'}
+          </div>
+        </article>`;
+      }).join('') || '<div class="schedule-empty">暂无机器人配置</div>';
     }
     function setBotPage(page) {
       botPage = Math.max(0, Math.min(Number(page || 0), 2));
@@ -5104,6 +5304,7 @@ INDEX_HTML = r"""<!doctype html>
       latestStockSelection = payload || {};
       const rows = latestStockSelection.rows || [];
       const bRows = latestStockSelection.b_rows || [];
+      const dRows = rows.filter(row => row.d_match);
       const status = document.getElementById('stockSelectionStatus');
       if (status) status.textContent = `${new Date().toLocaleTimeString()} 已更新`;
       document.getElementById('gainersCount').textContent = `${rows.length} 只`;
@@ -5112,12 +5313,14 @@ INDEX_HTML = r"""<!doctype html>
       const minUpPct = Number(latestStockSelection.min_up_pct || 0.05);
       const minPrice = Number(latestStockSelection.min_price || 2);
       const minVolume = Number(latestStockSelection.min_volume || 1000000);
+      const minDollarVolume = Number(latestStockSelection.min_dollar_volume || 30000000);
       const filterPills = document.getElementById('gainersFilterPills');
       if (filterPills) {
         filterPills.innerHTML = [
           `涨幅 > ${(minUpPct * 100).toFixed(1)}%`,
           `价格 ≥ ${money(minPrice)}`,
-          `成交量 ≥ ${compactNumber(minVolume)}`
+          `成交量 ≥ ${compactNumber(minVolume)}`,
+          `成交额 ≥ ${compactNumber(minDollarVolume)}`
         ].map(x => `<span class="stock-selection-filter-pill">${x}</span>`).join('');
       }
       document.getElementById('stockSelectionMeta').innerHTML = [
@@ -5126,18 +5329,20 @@ INDEX_HTML = r"""<!doctype html>
         `阈值 > ${(minUpPct * 100).toFixed(1)}%`,
         `价格 ≥ ${money(minPrice)}`,
         `成交量 ≥ ${compactNumber(minVolume)}`,
-        `B 占比 ${rows.length ? (bRows.length / rows.length * 100).toFixed(1) : '0.0'}%`
+        `成交额 ≥ ${compactNumber(minDollarVolume)}`,
+        `B ${bRows.length} 只 / D ${dRows.length} 只`
       ].map(x => `<span class="market-pill">${x}</span>`).join('');
       const strongest = rows[0];
       const avg = rows.length ? rows.reduce((s, r) => s + Number(r.intraday_change_pct || 0), 0) / rows.length : 0;
       document.getElementById('stockSelectionSummary').innerHTML = [
         ['涨幅>5%', `${rows.length}`, ''],
         ['符合B', `${bRows.length}`, 'pos'],
+        ['符合D', `${dRows.length}`, 'pos'],
         ['平均涨幅', pct(avg), 'pos'],
         ['最强股票', strongest ? `${strongest.symbol} ${pct(strongest.intraday_change_pct)}` : '--', 'pos']
       ].map(([label, value, tone]) => `<div class="selection-summary-card"><div class="selection-summary-label">${label}</div><div class="selection-summary-value ${tone}">${value}</div></div>`).join('');
 
-      const gainersHead = ['代码','B','开盘涨幅','昨收涨跌','开','高','低','收','量','操作','B说明'];
+      const gainersHead = ['代码','B / D','开盘涨幅','昨收涨跌','开','高','低','收','量','成交额','操作','B说明'];
       const bHead = ['代码','开盘涨幅','昨收涨跌','触发价','入池收盘','入池日','最近说明'];
       const rowPayload = r => esc(JSON.stringify({
         symbol: r.symbol,
@@ -5163,9 +5368,10 @@ INDEX_HTML = r"""<!doctype html>
       };
       const rowHtml = r => {
         const bLabel = r.b_match ? '<span class="b-match-pill">符合B</span>' : '<span class="b-match-pill off">观察</span>';
+        const dLabel = r.d_match ? '<span class="b-match-pill">符合D</span>' : '';
         return `<tr>
           <td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td>
-          <td>${bLabel}</td>
+          <td>${bLabel}${dLabel}</td>
           <td class="${cls(r.intraday_change_pct)}">${pct(r.intraday_change_pct)}</td>
           <td class="${cls(r.day_change_pct)}">${r.day_change_pct == null ? '--' : pct(r.day_change_pct)}</td>
           <td>${money(r.open)}</td>
@@ -5173,6 +5379,7 @@ INDEX_HTML = r"""<!doctype html>
           <td>${money(r.low)}</td>
           <td>${money(r.close)}</td>
           <td>${compactNumber(r.volume)}</td>
+          <td>${compactNumber(r.dollar_volume)}</td>
           <td class="stock-action-cell">${actionHtml(r)}</td>
           <td class="note-cell" title="${esc(r.last_order_intent || '')}">${esc(r.last_order_intent || '')}</td>
         </tr>`;
@@ -6614,11 +6821,18 @@ INDEX_HTML = r"""<!doctype html>
           const day = Number(r.day_change_pct || 0);
           const status = String(r.status || '');
           const candidate = status.toLowerCase() === 'candidate';
+          const dSelected = String(r.strategy_group || '').toUpperCase() === 'D' && Number(r.d_selected || 0) === 1;
+          const dState = String(r.d_cycle_state || 'IDLE').toUpperCase();
+          const statusHtml = dSelected
+            ? `<span class="holding-status target" title="D 循环状态 ${esc(dState)}">执行标的</span>`
+            : `<span class="holding-status ${holdingStatusClass(status)}">${holdingStatusLabel(status)}</span>`;
           const cAction = cCoreAction(r);
-          const action = cAction || (candidate && r.operation_id
+          const action = dSelected
+            ? `<span class="small-muted">${esc(dState)}</span>`
+            : cAction || (candidate && r.operation_id
             ? `<button class="pool-delete-btn" onclick="deleteStockPoolCandidate(${Number(r.operation_id)})">删</button>`
             : '');
-          return `<tr><td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td><td>${r.strategy_group}</td><td><span class="holding-status ${holdingStatusClass(status)}">${holdingStatusLabel(status)}</span></td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${maybeMoney(r.trigger_price)}</td><td>${candidate ? '--' : Number(r.qty||0).toFixed(4)}</td><td>${maybeMoney(r.initial_entry_price || r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${candidate ? '--' : money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${candidate ? '--' : pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${candidate ? '--' : money(r.realized_pnl)}</td><td>${candidate ? '--' : (r.holding_days || 0)}</td><td>${r.last_update_time || ''}</td><td>${action}</td></tr>`;
+          return `<tr class="${dSelected ? 'd-execution-row' : ''}"><td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td><td>${r.strategy_group}</td><td>${statusHtml}</td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${maybeMoney(r.trigger_price)}</td><td>${candidate ? '--' : Number(r.qty||0).toFixed(4)}</td><td>${maybeMoney(r.initial_entry_price || r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${candidate ? '--' : money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${candidate ? '--' : pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${candidate ? '--' : money(r.realized_pnl)}</td><td>${candidate ? '--' : (r.holding_days || 0)}</td><td>${r.last_update_time || ''}</td><td>${action}</td></tr>`;
         }).join('') +
         blanks + `</tbody>`;
     }
@@ -6878,6 +7092,81 @@ INDEX_HTML = r"""<!doctype html>
       const payload = await api('/api/strategy_b_config');
       renderStrategyBConfig(payload);
     }
+    function dGridSymbolRow(row={}) {
+      const state = String(row.state || 'IDLE');
+      const active = ['BUY_WORKING','SELL_WORKING','CLOSING'].includes(state);
+      const detail = state === 'BUY_WORKING'
+        ? `买单中 · ${money(row.buy_limit || 0)}`
+        : state === 'SELL_WORKING' || state === 'CLOSING'
+          ? `${state === 'CLOSING' ? '收盘处理中' : '卖单中'} · ${Number(row.buy_filled_qty || 0).toFixed(0)}股 · ${money(row.sell_limit || 0)}`
+          : state === 'COOLDOWN'
+            ? `冷却中 · 本轮毛收益 ${money(row.realized_pnl || 0)}`
+            : row.last_error ? `${state} · ${row.last_error}` : state;
+      return `<div class="d-grid-symbol-row" data-d-grid-symbol>
+        <label class="d-grid-symbol-switch"><input type="checkbox" data-field="enabled" ${row.enabled ? 'checked' : ''}>启用</label>
+        <div class="d-grid-field"><label>股票代码</label><input data-field="symbol" value="${esc(row.symbol || '')}" placeholder="例如 SMR"></div>
+        <div class="d-grid-field"><label>单轮资金 $</label><input data-field="lot_notional" type="number" min="1" step="1" value="${Number(row.lot_notional || 250)}"></div>
+        <input data-field="entry_offset" type="hidden" value="0.03">
+        <input data-field="profit_offset" type="hidden" value="0.06">
+        <input data-field="max_spread" type="hidden" value="999">
+        <div class="d-grid-symbol-state ${active ? 'active' : ''}">${esc(detail)}<br>完成轮次 ${Number(row.cycle_no || 0)}</div>
+        <button class="d-grid-remove" title="移除股票" onclick="removeDGridSymbol(this)" ${active ? 'disabled' : ''}>×</button>
+      </div>`;
+    }
+    function renderDGridConfig(payload) {
+      const runtime = document.getElementById('dGridRuntime');
+      const symbols = document.getElementById('dGridSymbols');
+      const meta = document.getElementById('dGridConfigMeta');
+      if (!runtime || !symbols) return;
+      if (!payload?.ok) {
+        symbols.innerHTML = `<div class="schedule-empty">${esc(payload?.error || 'D 策略配置读取失败')}</div>`;
+        if (meta) meta.textContent = '读取失败';
+        return;
+      }
+      if (meta) meta.textContent = `${payload.dry_run ? '模拟模式' : '实盘模式'} · 候选 ${Number(payload.candidate_count || 0)} 只 · 当前 ${payload.auto_selected_symbol || '待选择'}`;
+      runtime.innerHTML = `
+        <div class="d-grid-field"><label>策略开关</label><select id="dGridEnabled"><option value="0" ${!payload.enabled ? 'selected' : ''}>关闭新循环</option><option value="1" ${payload.enabled ? 'selected' : ''}>允许新循环</option></select></div>
+        <div class="d-grid-field"><label>执行模式</label><select id="dGridDryRun"><option value="1" ${payload.dry_run ? 'selected' : ''}>模拟，不提交订单</option><option value="0" ${!payload.dry_run ? 'selected' : ''}>实盘，提交 Alpaca</option></select></div>
+        <div class="d-grid-field"><label>自动选股</label><select id="dAutoSelectEnabled"><option value="1" ${payload.auto_select_enabled ? 'selected' : ''}>开启</option><option value="0" ${!payload.auto_select_enabled ? 'selected' : ''}>关闭</option></select></div>
+        <div class="d-grid-field"><label>重新检查</label><select id="dAutoSelectInterval"><option value="3600" selected>每 1 小时</option></select></div>
+        <div class="d-grid-field"><label>限价买入回落</label><input id="dGridEntryPct" type="number" min="0.01" max="5" step="0.01" value="${(Number(payload.entry_pct || 0.0025) * 100).toFixed(2)}"><span class="small-muted">当前价下方百分比</span></div>
+        <div class="d-grid-field"><label>成交后止盈</label><input id="dGridProfitPct" type="number" min="0.01" max="20" step="0.1" value="${(Number(payload.profit_pct || 0.01) * 100).toFixed(2)}"><span class="small-muted">按实际成交价计算</span></div>
+        <div class="d-grid-field"><label>开始交易</label><input id="dGridOpenTime" type="time" value="${esc(payload.open_time || '06:35')}"></div>
+        <div class="d-grid-field"><label>停止开仓</label><input id="dGridLastEntry" type="time" value="${esc(payload.last_entry_time || '12:30')}"></div>
+        <div class="d-grid-field"><label>收盘平仓</label><input id="dGridFlattenTime" type="time" value="${esc(payload.flatten_time || '12:50')}"></div>
+        <div class="d-grid-field"><label>买单等待秒数</label><input id="dGridBuyTimeout" type="number" min="5" step="1" value="${Number(payload.buy_timeout_seconds || 45)}"></div>
+        <div class="d-grid-field"><label>每轮冷却秒数</label><input id="dGridCooldown" type="number" min="1" step="1" value="${Number(payload.cooldown_seconds || 5)}"></div>
+        <div class="d-grid-field"><label>机器人状态</label><div class="d-grid-symbol-state ${payload.bot_enabled ? 'active' : ''}">${payload.bot_enabled ? '运行开关已开启' : '机器人关闭，保存配置不会自动启动'}</div></div>`;
+      symbols.innerHTML = (payload.symbols || []).map(dGridSymbolRow).join('') || '<div class="schedule-empty">尚未配置股票。点击“添加股票”，基础版最多 2 只。</div>';
+    }
+    async function loadDGridConfig() { renderDGridConfig(await api('/api/d_grid_config')); }
+    function addDGridSymbol() {
+      const box = document.getElementById('dGridSymbols');
+      if (!box) return;
+      const count = box.querySelectorAll('[data-d-grid-symbol]').length;
+      if (count >= 2) { alert('基础版最多配置 2 只股票'); return; }
+      if (!count) box.innerHTML = '';
+      box.insertAdjacentHTML('beforeend', dGridSymbolRow({enabled:false}));
+    }
+    function removeDGridSymbol(button) {
+      button.closest('[data-d-grid-symbol]')?.remove();
+      const box = document.getElementById('dGridSymbols');
+      if (box && !box.querySelector('[data-d-grid-symbol]')) box.innerHTML = '<div class="schedule-empty">尚未配置股票。</div>';
+    }
+    function collectDGridConfig() {
+      const symbols = [...document.querySelectorAll('[data-d-grid-symbol]')].map(row => {
+        const read = name => row.querySelector(`[data-field="${name}"]`);
+        return {enabled:!!read('enabled')?.checked, symbol:String(read('symbol')?.value || '').trim().toUpperCase(), lot_notional:Number(read('lot_notional')?.value || 0), entry_offset:Number(read('entry_offset')?.value || 0), profit_offset:Number(read('profit_offset')?.value || 0), max_spread:Number(read('max_spread')?.value || 0)};
+      }).filter(row => row.symbol);
+      return {enabled:document.getElementById('dGridEnabled')?.value === '1', dry_run:document.getElementById('dGridDryRun')?.value !== '0', auto_select_enabled:document.getElementById('dAutoSelectEnabled')?.value !== '0', auto_select_interval_seconds:Number(document.getElementById('dAutoSelectInterval')?.value || 3600), entry_pct:Number(document.getElementById('dGridEntryPct')?.value || 0.25)/100, profit_pct:Number(document.getElementById('dGridProfitPct')?.value || 1)/100, open_time:document.getElementById('dGridOpenTime')?.value || '06:35', last_entry_time:document.getElementById('dGridLastEntry')?.value || '12:30', flatten_time:document.getElementById('dGridFlattenTime')?.value || '12:50', buy_timeout_seconds:Number(document.getElementById('dGridBuyTimeout')?.value || 45), cooldown_seconds:Number(document.getElementById('dGridCooldown')?.value || 5), symbols};
+    }
+    async function saveDGridConfig() {
+      const config = collectDGridConfig();
+      if (!config.dry_run && config.enabled && !confirm('你正在启用 D 实盘新循环。确认保存实盘配置？')) return;
+      const result = await postJson('/api/d_grid_config', config);
+      if (!result?.ok) { alert(result?.error || 'D 配置保存失败'); return; }
+      renderDGridConfig(result);
+    }
     function renderAccountConfig(payload) {
       accountConfig = payload || null;
       const grid = document.getElementById('accountConfigGrid');
@@ -6996,6 +7285,45 @@ INDEX_HTML = r"""<!doctype html>
           <div class="rule-unit">${esc(rule.unit || '')}</div>
         </div>`;
     }
+    const CONFIG_TAB_COPY = {
+      account:['账户与资金映射','管理养老金账户、原保证金账户、资金池映射和公共系统设置。'],
+      A:['A · 养老金长期账户','独立养老金账户、每月定投与 A 长期持仓规则。'],
+      B:['B · 动量策略','查看入选池、买入确认、市场过滤、仓位和卖出规则。'],
+      C:['C · 长期核心仓','管理长期候选、自动建仓与核心仓日内做 T 规则。'],
+      D:['D · 单循环日内交易','配置 1-2 只股票，上一轮完整卖出后才开启下一轮。'],
+      robots:['机器人与自动化','查看定时任务、交易机器人开关和最近运行状态。'],
+      logs:['日志与交易记录','快速进入机器人日志或真实交易记录。'],
+    };
+    function applyConfigTab() {
+      const page = document.getElementById('strategy2Page');
+      if (page) page.dataset.activeConfigTab = configTab;
+      document.querySelectorAll('[data-config-tab]').forEach(button => button.classList.toggle('active', button.dataset.configTab === configTab));
+      document.querySelectorAll('.config-module').forEach(module => {
+        const tabs = String(module.dataset.configModules || '').split(/\s+/).filter(Boolean);
+        module.hidden = !tabs.includes(configTab);
+      });
+      document.querySelectorAll('[data-strategy-card]').forEach(card => {
+        card.hidden = card.dataset.strategyCard !== configTab;
+      });
+      const intro = document.getElementById('configTabIntro');
+      const copy = CONFIG_TAB_COPY[configTab] || CONFIG_TAB_COPY.account;
+      if (intro) intro.innerHTML = `<strong>${esc(copy[0])}</strong><span>${esc(copy[1])}</span>`;
+    }
+    function setConfigTab(tab) {
+      configTab = CONFIG_TAB_COPY[tab] ? tab : 'account';
+      applyConfigTab();
+      if (configTab === 'account' || configTab === 'A') loadAccountConfig();
+      if (configTab === 'B') loadStrategyBConfig();
+      if (configTab === 'D') loadDGridConfig();
+      if (configTab === 'robots') {
+        loadSchedules();
+        renderConfigBots(latestBotHeartbeats, latestBotControls);
+      }
+    }
+    function openConfigLogs(view) {
+      toggleLogFocus();
+      setLogView(view === 'trades' ? 'trades' : 'bots');
+    }
     function renderStrategy2Config(config) {
       strategy2Config = config;
       const desc = document.getElementById('strategy2Desc');
@@ -7040,6 +7368,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
       `).join('');
+      applyConfigTab();
     }
     async function loadStrategy2Config() {
       const status = document.getElementById('strategy2Status');
@@ -7126,6 +7455,8 @@ INDEX_HTML = r"""<!doctype html>
       if (lowerView === 'strategy') loadSchedules();
       if (lowerView === 'strategy') loadStrategyBConfig();
       if (lowerView === 'strategy') loadAccountConfig();
+      if (lowerView === 'strategy') loadDGridConfig();
+      if (lowerView === 'strategy') applyConfigTab();
     }
     function toggleLowerView() {
       if (lowerView === 'strategy') setLowerView('holdings');
@@ -7370,7 +7701,7 @@ INDEX_HTML = r"""<!doctype html>
       renderLowerView();
       if (lowerView === 'market') await loadMarketCategories(currentCategory);
       if (lowerView === 'strategy') {
-        await Promise.all([loadStrategy2Config(), loadSchedules(), loadStrategyBConfig(), loadAccountConfig()]);
+        await Promise.all([loadStrategy2Config(), loadSchedules(), loadStrategyBConfig(), loadAccountConfig(), loadDGridConfig()]);
       }
       if (document.body.classList.contains('stock-focus')) await loadStockSelection();
       if (document.body.classList.contains('log-focus')) {
@@ -7697,6 +8028,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_account_config_payload())
             elif path == "/api/strategy_b_config":
                 self._send_json(_strategy_b_config_payload())
+            elif path == "/api/d_grid_config":
+                self._send_json(d_grid_config_payload())
             elif path == "/api/rebalance":
                 self._send_json({"ok": True, "rows": generate_rebalance_report()})
             else:
@@ -7808,6 +8141,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_save_strategy_2_config(payload))
             elif path == "/api/account_config":
                 self._send_json(_save_account_config_payload(payload))
+            elif path == "/api/d_grid_config":
+                self._send_json(save_d_grid_config(payload))
             elif path == "/api/monthly_invest":
                 force = bool(payload.get("force") is True)
                 execute = bool(payload.get("execute") is True)

@@ -3,7 +3,7 @@ from __future__ import annotations
 """Alpaca 访问封装：账户、持仓和下单接口都集中在这里。"""
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from .account_config import credentials_for_profile
 from .config import env_str, settings
@@ -26,6 +26,15 @@ class AccountSnapshot:
     trade_suspended_by_user: bool = False
     pattern_day_trader: bool = False
     daytrade_count: int = 0
+
+
+@dataclass
+class StockQuote:
+    symbol: str
+    last: float
+    bid: float
+    ask: float
+    timestamp: datetime | None = None
 
 
 def _float_attr(obj, name: str, default: float = 0.0) -> float:
@@ -138,6 +147,44 @@ def get_latest_stock_price(symbol: str, feed: str | None = None, pool: str | Non
         pass
 
     return 0.0
+
+
+def get_latest_stock_quote(
+    symbol: str,
+    feed: str | None = None,
+    pool: str | None = None,
+    profile: str | None = None,
+) -> StockQuote:
+    """Return the latest Alpaca trade and NBBO-style quote available to the account."""
+    from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeRequest
+
+    symbol = (symbol or "").strip().upper()
+    if not symbol:
+        return StockQuote("", 0.0, 0.0, 0.0)
+    client = stock_data_client(pool=pool, profile=profile)
+    feed_name = feed or env_str("ALPACA_DATA_FEED", "iex")
+    last = bid = ask = 0.0
+    timestamp = None
+    try:
+        response = client.get_stock_latest_trade(
+            StockLatestTradeRequest(symbol_or_symbols=[symbol], feed=feed_name)
+        )
+        trade = response.get(symbol) if isinstance(response, dict) else getattr(response, symbol, None)
+        last = float(getattr(trade, "price", 0) or 0)
+        timestamp = getattr(trade, "timestamp", None)
+    except Exception:
+        pass
+    try:
+        response = client.get_stock_latest_quote(
+            StockLatestQuoteRequest(symbol_or_symbols=[symbol], feed=feed_name)
+        )
+        quote = response.get(symbol) if isinstance(response, dict) else getattr(response, symbol, None)
+        bid = float(getattr(quote, "bid_price", 0) or 0)
+        ask = float(getattr(quote, "ask_price", 0) or 0)
+        timestamp = getattr(quote, "timestamp", None) or timestamp
+    except Exception:
+        pass
+    return StockQuote(symbol, last, bid, ask, timestamp)
 
 
 def get_account_snapshot(pool: str | None = None, profile: str | None = None) -> AccountSnapshot | None:

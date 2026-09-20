@@ -51,8 +51,7 @@ BOT_SPECS: dict[str, BotSpec] = {
         "app.bots.f_sell_bot",
         (),
     ),
-    "d_buy_bot": BotSpec("app.bots.d_buy_bot", ("--loop", "--interval", "30")),
-    "d_sell_bot": BotSpec("app.bots.d_sell_bot", ("--loop", "--interval", "30")),
+    "d_grid_bot": BotSpec("app.bots.d_grid_bot", ("--loop", "--interval", "3")),
     "q_sell_bot": BotSpec("app.bots.q_sell_bot", ("--loop", "--interval", "30")),
 }
 
@@ -176,7 +175,7 @@ def sync_from_controls() -> None:
     """网页服务启动时，根据数据库开关拉起应该运行的机器人。"""
     control_map = {row["bot_name"]: int(row.get("enabled") or 0) == 1 for row in bot_controls()}
     for bot_name in supervised_bot_names():
-        if control_map.get(bot_name, True):
+        if control_map.get(bot_name, False):
             start_bot(bot_name)
         else:
             stop_bot(bot_name)
@@ -187,7 +186,7 @@ def reconcile_processes() -> None:
     now = time.monotonic()
     control_map = {row["bot_name"]: int(row.get("enabled") or 0) == 1 for row in bot_controls()}
     for bot_name in supervised_bot_names():
-        enabled = control_map.get(bot_name, True)
+        enabled = control_map.get(bot_name, False)
         proc = _PROCESSES.get(bot_name)
         if not enabled:
             if _process_running(proc):

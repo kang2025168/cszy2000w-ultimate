@@ -134,7 +134,7 @@ def bot_controls() -> list[dict]:
 def is_bot_enabled(bot_name: str) -> bool:
     """判断某个机器人是否允许运行。"""
     row = fetch_one("SELECT enabled FROM bot_controls WHERE bot_name=%s", (bot_name,))
-    return bool(row is None or int(row.get("enabled") or 0) == 1)
+    return bool(row is not None and int(row.get("enabled") or 0) == 1)
 
 
 def set_bot_enabled(bot_name: str, enabled: bool) -> None:

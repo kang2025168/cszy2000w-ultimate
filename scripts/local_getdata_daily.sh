@@ -65,6 +65,12 @@ if [[ "${LOCAL_GETDATA_REFRESH_B_CANDIDATES:-1}" != "0" ]]; then
   echo "[$(ts)] ===== refresh Strategy B candidates done ====="
 fi
 
+if [[ "${LOCAL_GETDATA_REFRESH_D_CANDIDATES:-1}" != "0" ]]; then
+  echo "[$(ts)] ===== refresh Strategy D candidates ====="
+  "$ROOT/.venv/bin/python" -u "$ROOT/scripts/refresh_d_candidates.py"
+  echo "[$(ts)] ===== refresh Strategy D candidates done ====="
+fi
+
 if [[ "${LOCAL_GETDATA_CLEANUP_B_CANDIDATES:-1}" != "0" ]]; then
   echo "[$(ts)] ===== cleanup stale Strategy B candidates ====="
   "$ROOT/.venv/bin/python" -u "$ROOT/scripts/cleanup_b_stock_operations.py"

@@ -141,21 +141,21 @@ def strategy_C_sell(symbol: str) -> StrategyResult:
 
 
 def strategy_D_buy(symbol: str) -> StrategyResult:
-    """D 类买入占位：现在只做检查和日志，不真实下单。"""
+    """Advance the durable D grid cycle for one configured symbol."""
     symbol = symbol.upper()
-    notional = default_notional("D")
-    allow, reason = can_open_position("D", notional)
-    if not allow:
-        return StrategyResult(False, "D", symbol, "buy", reason)
-    print(f"[D TODO] {symbol} 通过资金/风控检查，后续接入日内买入逻辑 notional={notional:.2f}", flush=True)
-    return StrategyResult(True, "D", symbol, "buy", "placeholder_passed")
+    from ultimate_v1.d_grid import run_symbol
+
+    reason = run_symbol(symbol)
+    return StrategyResult(not reason.startswith(("risk_block", "state_requires_review")), "D", symbol, "buy", reason)
 
 
 def strategy_D_sell(symbol: str) -> StrategyResult:
-    """D 类卖出占位：普通卖出逻辑后续接入，强平由 flatten_d_positions 负责。"""
+    """Advance the same D grid cycle; buy and sell never run independently."""
     symbol = symbol.upper()
-    print(f"[D TODO] {symbol} 后续接入日内主动卖出逻辑；收盘强平已有独立模块", flush=True)
-    return StrategyResult(True, "D", symbol, "sell", "placeholder_no_order")
+    from ultimate_v1.d_grid import run_symbol
+
+    reason = run_symbol(symbol)
+    return StrategyResult(not reason.startswith("state_requires_review"), "D", symbol, "sell", reason)
 
 
 def force_flatten() -> int:
