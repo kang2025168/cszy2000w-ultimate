@@ -17,11 +17,19 @@ import traceback
 from dataclasses import dataclass
 
 from app.bots import runtime_core as tb
+from ultimate_v1.state_store import heartbeat
 
 
 DEFAULT_STRATEGIES = ("B", "F")
 LOG_EACH_SYMBOL = int(os.getenv("SPLIT_BOT_LOG_EACH_SYMBOL", "1"))
 VALID_PHASES = {"premarket_sell", "preopen_record", "regular", "afterhours_add", "closed"}
+
+
+def _report_heartbeat(status: str, message: str) -> None:
+    try:
+        heartbeat(os.getenv("BOT_PROCESS_NAME", "split_bot"), status, message)
+    except Exception as exc:
+        tb.log.warning(f"[HEARTBEAT] update failed: {exc}")
 
 
 @dataclass(frozen=True)
@@ -302,6 +310,7 @@ def main_loop(role: str) -> None:
         f"===== split {role} bot start ===== env={tb.TRADE_ENV} "
         f"strategies={','.join(config.strategies)}"
     )
+    _report_heartbeat("running", f"role={role} started strategies={','.join(config.strategies)}")
 
     conn = None
     round_no = 0
@@ -314,6 +323,7 @@ def main_loop(role: str) -> None:
             phase = tb.get_trade_phase()
             real_phase = phase
             if real_phase == "closed":
+                _report_heartbeat("running", f"role={role} market_closed round={round_no}")
                 tb.log.info(f"[{role.upper()} BOT] market closed, sleep 60s")
                 t.sleep(60)
                 continue
@@ -348,6 +358,7 @@ def main_loop(role: str) -> None:
 
             conn = tb.ensure_conn_alive(conn)
             control = tb.load_bot_control(conn)
+            _report_heartbeat("running", f"role={role} phase={phase} round={round_no}")
             tb.log.info(
                 f"[{role.upper()} BOT] loop round={round_no} phase={phase} "
                 f"emergency_stop={control.get('emergency_stop')} "
@@ -375,6 +386,7 @@ def main_loop(role: str) -> None:
                 t.sleep(config.sleep_between_rounds + random.uniform(0, config.round_jitter_max))
 
         except Exception as e:
+            _report_heartbeat("failed", f"role={role} error={str(e)[:180]}")
             tb.log.error(f"[{role.upper()} BOT] loop error: {e}")
             traceback.print_exc()
             backoff = random.randint(tb.ERROR_BACKOFF_MIN, tb.ERROR_BACKOFF_MAX)
@@ -386,6 +398,8 @@ def main_loop(role: str) -> None:
             except Exception:
                 pass
             conn = None
+
+    _report_heartbeat("stopped", f"role={role} stopped")
 
     try:
         if conn:
