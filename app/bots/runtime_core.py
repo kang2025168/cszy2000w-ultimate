@@ -81,7 +81,7 @@ DB = dict(
     host=os.getenv("DB_HOST", "localhost"),
     port=int(os.getenv("DB_PORT", "3306")),
     user=os.getenv("DB_USER", "root"),
-    password=os.getenv("DB_PASS", "mlp009988"),
+    password=os.getenv("DB_PASS", ""),
     database=os.getenv("DB_NAME", "cszy2000"),
     cursorclass=pymysql.cursors.DictCursor,
     charset="utf8mb4",
@@ -158,7 +158,13 @@ def setup_logger():
 
     fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     log_dir = os.getenv("LOG_DIR", "/tmp/logs")
-    Path(log_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        fallback_dir = "/tmp/logs"
+        Path(fallback_dir).mkdir(parents=True, exist_ok=True)
+        print(f"[LOG WARN] cannot use {log_dir}: {exc}; fallback={fallback_dir}", file=sys.stderr)
+        log_dir = fallback_dir
     log_name = os.path.join(log_dir, f"AAA_{BOT_PROCESS_NAME}_{TRADE_ENV}.log")
 
     file_handler = TimedRotatingFileHandler(

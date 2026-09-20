@@ -158,7 +158,22 @@ def update_sell_holding(
     print(f"{tag} symbol={symbol} strategy={group} realized_pnl={float(pnl or 0):.2f} status={status}", flush=True)
 
 
-def sync_open_holding_from_position(pos, strategy_group: str = "B") -> None:
+def _holding_group(row: dict, default: str = "UNKNOWN") -> str:
+    raw_type = str(row.get("stock_type") or "").strip().upper()
+    raw_group = str(row.get("strategy_group") or "").strip().upper()
+    if raw_type in {"A", "B", "C", "D", "F"}:
+        return raw_type
+    if raw_group in {"A", "B", "C", "D", "F"}:
+        return raw_group
+    return default
+
+
+def sync_open_holding_from_position(
+    pos,
+    strategy_group: str = "B",
+    *,
+    allowed_groups: set[str] | None = None,
+) -> None:
     """把 Alpaca 当前真实持仓同步到本地展示表。
 
     已有持仓保留原来的 strategy_group/stock_type；新持仓默认归到 B。
@@ -183,6 +198,9 @@ def sync_open_holding_from_position(pos, strategy_group: str = "B") -> None:
                 (symbol,),
             )
             open_rows = list(cur.fetchall() or [])
+            if allowed_groups is not None:
+                scope = {str(group).strip().upper() for group in allowed_groups}
+                open_rows = [row for row in open_rows if _holding_group(row) in scope]
             if len(open_rows) > 1:
                 local_total = sum(float(item.get("qty") or 0) for item in open_rows)
                 mismatch = abs(local_total - qty) > 0.0001
@@ -266,7 +284,14 @@ def sync_open_holding_from_position(pos, strategy_group: str = "B") -> None:
                 )
 
 
-def mark_missing_from_alpaca(open_symbols: set[str]) -> None:
+def mark_missing_from_alpaca(
+    open_symbols: set[str],
+    *,
+    managed_groups: set[str] | None = None,
+) -> None:
+    scope = None
+    if managed_groups is not None:
+        scope = {str(group).strip().upper() for group in managed_groups}
     with db_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -278,8 +303,10 @@ def mark_missing_from_alpaca(open_symbols: set[str]) -> None:
             )
             for row in cur.fetchall():
                 symbol = str(row["symbol"]).upper()
+                group = _holding_group(row)
+                if scope is not None and group not in scope:
+                    continue
                 if symbol not in open_symbols:
-                    group = str(row.get("stock_type") or row.get("strategy_group") or "").upper()
                     if group in {"B", "D"}:
                         cur.execute("DELETE FROM position_holdings WHERE id=%s", (row["id"],))
                         print(f"[POSITION SYNC] symbol={symbol} group={group} local_not_in_alpaca deleted", flush=True)

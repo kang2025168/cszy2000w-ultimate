@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from . import alpaca_gateway
+from .account_config import profile_for_pool
 from .config import settings
 from .db import db_conn
 from .position_holdings import mark_missing_from_alpaca, summary_counts, sync_open_holding_from_position
@@ -106,7 +107,14 @@ def _normalize_group(value: Any, default: str = "B") -> str:
     return group if group in VALID_GROUPS else default
 
 
-def _resolve_strategy_group(conn, ops_table: str, symbol: str) -> str:
+def _resolve_strategy_group(
+    conn,
+    ops_table: str,
+    symbol: str,
+    *,
+    allowed_groups: set[str] | None = None,
+    default_group: str = "B",
+) -> str:
     """同步到 stock_operations 时保留人工维护过的股票类型。
 
     优先级：
@@ -124,13 +132,18 @@ def _resolve_strategy_group(conn, ops_table: str, symbol: str) -> str:
             ORDER BY is_bought DESC,
                      FIELD(COALESCE(NULLIF(stock_type,''), strategy_group), 'A','C','B','F','D'),
                      stock_code
-            LIMIT 1
             """,
             (symbol,),
         )
-        row = cur.fetchone()
-        if row:
-            return _normalize_group(row.get("stock_type") or row.get("strategy_group"))
+        rows = list(cur.fetchall() or [])
+        scope = {str(group).strip().upper() for group in (allowed_groups or VALID_GROUPS)}
+        for row in rows:
+            group = _normalize_group(
+                row.get("stock_type") or row.get("strategy_group"),
+                default=default_group,
+            )
+            if group in scope:
+                return group
 
         cur.execute(
             """
@@ -141,15 +154,19 @@ def _resolve_strategy_group(conn, ops_table: str, symbol: str) -> str:
             ORDER BY FIELD(status, 'open', 'needs_review', 'closed'),
                      FIELD(COALESCE(NULLIF(stock_type,''), strategy_group), 'A','C','B','F','D'),
                      id DESC
-            LIMIT 1
             """,
             (symbol,),
         )
-        row = cur.fetchone()
-        if row:
-            return _normalize_group(row.get("stock_type") or row.get("strategy_group"))
+        rows = list(cur.fetchall() or [])
+        for row in rows:
+            group = _normalize_group(
+                row.get("stock_type") or row.get("strategy_group"),
+                default=default_group,
+            )
+            if group in scope:
+                return group
 
-    return "B"
+    return _normalize_group(default_group)
 
 
 def _stock_operation_qty_value(qty: float, column_type: str | None) -> float | int:
@@ -198,7 +215,12 @@ def _insert_ops_row(conn, table: str, columns: dict[str, str], values: dict[str,
         cur.execute(f"INSERT INTO `{table}` ({fields}) VALUES ({placeholders})", args)
 
 
-def _sync_stock_operations_from_positions(positions: list[Any]) -> dict[str, int]:
+def _sync_stock_operations_from_positions(
+    positions: list[Any],
+    *,
+    default_group: str = "B",
+    managed_groups: set[str] | None = None,
+) -> dict[str, int]:
     """把券商真实持仓同步到 stock_operations，供买卖机器人使用。"""
     s = settings()
     table = s.ops_table
@@ -213,6 +235,13 @@ def _sync_stock_operations_from_positions(positions: list[Any]) -> dict[str, int
         "skipped_symbol_conflict": 0,
     }
     alpaca_symbols: set[str] = set()
+    scope = {
+        str(group).strip().upper()
+        for group in (managed_groups or VALID_GROUPS)
+        if str(group).strip().upper() in VALID_GROUPS
+    }
+    if not scope:
+        raise ValueError("managed_groups must contain at least one valid strategy group")
 
     with db_conn(s) as conn:
         columns = _table_columns(conn, table)
@@ -243,9 +272,17 @@ def _sync_stock_operations_from_positions(positions: list[Any]) -> dict[str, int
                     """,
                     (symbol,),
                 )
-                split_rows = list(cur.fetchall() or [])
+                split_rows = [
+                    row
+                    for row in (cur.fetchall() or [])
+                    if _normalize_group(
+                        row.get("stock_type") or row.get("strategy_group"),
+                        default=default_group,
+                    ) in scope
+                ]
             if len(split_rows) > 1:
                 local_total = sum(_as_float(item.get("qty"), 0.0) for item in split_rows)
+                group_placeholders = ", ".join(["%s"] * len(scope))
                 with conn.cursor() as cur:
                     cur.execute(
                         f"""
@@ -256,9 +293,10 @@ def _sync_stock_operations_from_positions(positions: list[Any]) -> dict[str, int
                             updated_at=CURRENT_TIMESTAMP
                         WHERE stock_code=%s
                           AND COALESCE(is_bought,0)=1
-                          AND COALESCE(NULLIF(strategy_group,''), stock_type) IN ('A','B','C','D','F')
+                          AND UPPER(COALESCE(NULLIF(strategy_group,''), stock_type))
+                              IN ({group_placeholders})
                         """,
-                        (current, current, now_text, symbol),
+                        (current, current, now_text, symbol, *sorted(scope)),
                     )
                 stats["held"] += 1
                 stats["updated"] += int(len(split_rows))
@@ -269,7 +307,13 @@ def _sync_stock_operations_from_positions(positions: list[Any]) -> dict[str, int
                 )
                 continue
 
-            group = _resolve_strategy_group(conn, table, symbol)
+            group = _resolve_strategy_group(
+                conn,
+                table,
+                symbol,
+                allowed_groups=scope,
+                default_group=default_group,
+            )
             if group == "B":
                 stats["default_b"] += 1
 
@@ -358,6 +402,8 @@ def _sync_stock_operations_from_positions(positions: list[Any]) -> dict[str, int
 
         if pairs:
             where_args: list[Any] = []
+            group_placeholders = ", ".join(["%s"] * len(scope))
+            where_args.extend(sorted(scope))
             if alpaca_symbols:
                 placeholders = ", ".join(["%s"] * len(alpaca_symbols))
                 where_symbol = f"AND stock_code NOT IN ({placeholders})"
@@ -370,7 +416,8 @@ def _sync_stock_operations_from_positions(positions: list[Any]) -> dict[str, int
                     UPDATE `{table}`
                     SET {', '.join(pairs)}
                     WHERE is_bought=1
-                      AND stock_type IN ('A','B','C','D','F')
+                      AND UPPER(COALESCE(NULLIF(strategy_group,''), stock_type))
+                          IN ({group_placeholders})
                       {where_symbol}
                     """,
                     tuple(args + where_args),
@@ -387,16 +434,38 @@ def _sync_stock_operations_from_positions(positions: list[Any]) -> dict[str, int
     return stats
 
 
-def _sync_position_holdings_from_positions(positions: list[Any]) -> dict[str, int]:
+def _sync_position_holdings_from_positions(
+    positions: list[Any],
+    *,
+    default_group: str = "B",
+    managed_groups: set[str] | None = None,
+) -> dict[str, int]:
     """把券商真实持仓同步到 position_holdings，供网页展示。"""
     symbols = set()
+    s = settings()
     for pos in positions:
         symbol = _position_symbol(pos)
         if not symbol:
             continue
         symbols.add(symbol)
-        sync_open_holding_from_position(pos, "B")
-    mark_missing_from_alpaca(symbols)
+        group = default_group
+        try:
+            with db_conn(s) as conn:
+                group = _resolve_strategy_group(
+                    conn,
+                    s.ops_table,
+                    symbol,
+                    allowed_groups=managed_groups,
+                    default_group=default_group,
+                )
+        except Exception as exc:
+            print(f"[HOLDING SYNC] {symbol} group lookup failed, fallback={default_group}: {exc}", flush=True)
+        sync_open_holding_from_position(
+            pos,
+            group,
+            allowed_groups=managed_groups,
+        )
+    mark_missing_from_alpaca(symbols, managed_groups=managed_groups)
     counts = summary_counts()
     print(
         f"[HOLDING SYNC] open_count={counts.get('open', 0)} "
@@ -410,6 +479,14 @@ def _sync_position_holdings_from_positions(positions: list[Any]) -> dict[str, in
     }
 
 
+def _account_sync_plans() -> list[tuple[str, str, set[str]]]:
+    """Return profile, default group and groups owned by that broker account."""
+    return [
+        (profile_for_pool("A"), "A", {"A"}),
+        (profile_for_pool("B"), "B", {"B", "C", "D", "F"}),
+    ]
+
+
 def sync_position_holdings() -> bool:
     """同步持仓：Alpaca 有但本地没有就补，本地 open 但 Alpaca 没有就标记复核。"""
     global LAST_SYNC_ERROR
@@ -419,8 +496,13 @@ def sync_position_holdings() -> bool:
         return True
     ensure_schema()
     try:
-        positions = alpaca_gateway.list_positions()
-        _sync_position_holdings_from_positions(positions)
+        for profile, default_group, managed_groups in _account_sync_plans():
+            positions = alpaca_gateway.list_positions(profile=profile)
+            _sync_position_holdings_from_positions(
+                positions,
+                default_group=default_group,
+                managed_groups=managed_groups,
+            )
         return True
     except Exception as exc:
         LAST_SYNC_ERROR = str(exc)
@@ -437,9 +519,30 @@ def sync_all_positions() -> bool:
         return True
     ensure_schema()
     try:
-        positions = alpaca_gateway.list_positions()
-        holding_stats = _sync_position_holdings_from_positions(positions)
-        ops_stats = _sync_stock_operations_from_positions(positions)
+        holding_stats = {"open": 0, "closed": 0, "needs_review": 0}
+        ops_stats = {
+            "held": 0,
+            "created": 0,
+            "updated": 0,
+            "flat": 0,
+            "default_b": 0,
+            "skipped_fractional_int": 0,
+            "skipped_symbol_conflict": 0,
+        }
+        for profile, default_group, managed_groups in _account_sync_plans():
+            positions = alpaca_gateway.list_positions(profile=profile)
+            holding_stats = _sync_position_holdings_from_positions(
+                positions,
+                default_group=default_group,
+                managed_groups=managed_groups,
+            )
+            profile_ops = _sync_stock_operations_from_positions(
+                positions,
+                default_group=default_group,
+                managed_groups=managed_groups,
+            )
+            for key, value in profile_ops.items():
+                ops_stats[key] = int(ops_stats.get(key, 0)) + int(value or 0)
         print(
             f"[POSITION SYNC ALL] holdings={holding_stats} stock_operations={ops_stats}",
             flush=True,

@@ -242,7 +242,7 @@ services:
       TZ: America/Los_Angeles
       TRADE_ENV: ${ALPACA_MODE}
       MOBILE_CONTROL_PORT: 5050
-      MOBILE_CONTROL_TOKEN: ${MOBILE_CONTROL_TOKEN:-change-me-please}
+      MOBILE_CONTROL_TOKEN: ${MOBILE_CONTROL_TOKEN:-}
     ports:
       - "5050:5050"
     volumes:
@@ -283,6 +283,7 @@ services:
       LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
       ULTIMATE_WEB_PORT: ${ULTIMATE_WEB_PORT:-8060}
       RISK_USE_YFINANCE: ${RISK_USE_YFINANCE:-0}
+      ULTIMATE_EXTERNAL_BOTS: b_buy_bot,b_sell_bot,f_buy_bot,f_sell_bot
     ports:
       - "${ULTIMATE_WEB_PORT:-8060}:${ULTIMATE_WEB_PORT:-8060}"
     volumes:

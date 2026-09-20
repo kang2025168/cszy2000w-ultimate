@@ -31,7 +31,7 @@ DB = dict(
     host=os.getenv("DB_HOST", "localhost"),
     port=int(os.getenv("DB_PORT", "3307")),
     user=os.getenv("DB_USER", "tradebot"),
-    password=os.getenv("DB_PASS", "TradeBot#2026!"),
+    password=os.getenv("DB_PASS", ""),
     database=os.getenv("DB_NAME", "cszy2000"),
     charset="utf8mb4",
     autocommit=True,
@@ -370,7 +370,7 @@ if __name__ == "__main__":
 # DB_HOST=138.197.75.51 \
 # DB_PORT=3307 \
 # DB_USER=tradebot \
-# DB_PASS='TradeBot#2026!' \
+# DB_PASS='<YOUR_DB_PASSWORD>' \
 # DB_NAME=cszy2000 \
 # OPS_VOLUME_STOCK_TYPES=A,B,F \
 # OPS_VOLUME_PERIOD=7d \

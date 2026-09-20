@@ -62,7 +62,6 @@ docker compose --profile split-bots up -d --build buybot sellbot f_buybot f_sell
 ```bash
 docker compose up -d --build
 ```
-TradeBot#2026!
 3. 查看日志：
 
 ```bash
@@ -77,7 +76,7 @@ docker compose exec mysql mysql -u tradebot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT 
 本地运行 Yahoo 数据同步，只更新 `stock_operations`，不写 `stock_prices_pool`：
 
 ```bash
-DB_HOST=localhost DB_PORT=3307 DB_USER=tradebot DB_PASS='TradeBot#2026!' DB_NAME=cszy2000 \
+DB_HOST=localhost DB_PORT=3307 DB_USER=tradebot DB_PASS='<YOUR_DB_PASSWORD>' DB_NAME=cszy2000 \
 OPS_VOLUME_STOCK_TYPES=A,B,F OPS_VOLUME_PERIOD=7d OPS_VOLUME_INTERVAL=1d \
 OPS_VOLUME_START_LA=06:00 OPS_VOLUME_END_LA=17:00 OPS_VOLUME_SLEEP_SECONDS=300 \
 .venv/bin/python app/sync_ops_intraday_volume.py

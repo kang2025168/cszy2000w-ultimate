@@ -19,7 +19,14 @@ from urllib.parse import parse_qs, urlparse
 
 from . import alpaca_gateway
 from .account_config import load_account_config, public_account_config, save_account_config
-from .bot_supervisor import managed_bot_names, process_status, set_bot_runtime, sync_from_controls
+from .bot_supervisor import (
+    managed_bot_names,
+    process_status,
+    set_bot_runtime,
+    shutdown_supervisor,
+    start_watchdog,
+    sync_from_controls,
+)
 from .capital_manager import get_capital_allocation, get_strategy_used_capital, resolve_margin_usage_pct
 from .config import env_bool, env_float, env_int, env_str, settings
 from .db import db_conn, fetch_all
@@ -2652,6 +2659,13 @@ def _record_manual_buy(symbol: str, pool: str, qty: float, avg_price: float, cur
     return {**protection, "stop_loss_added": True, "recorded_stock_type": pool}
 
 
+def _pool_account_buying_power(capital: dict, pool: str) -> float:
+    """Return buying power for the broker account that owns this pool."""
+    profile = str((capital.get("pool_brokers") or {}).get(pool) or "").strip()
+    snapshot = (capital.get("broker_snapshots") or {}).get(profile) or {}
+    return max(0.0, _safe_float(snapshot.get("buying_power")))
+
+
 def _manual_stock_order_payload(payload: dict) -> dict:
     """手动股票下单预览/执行。买入/卖空按资金池额度，卖出按当前持仓比例。"""
     symbol = str(payload.get("symbol") or "").strip().upper()
@@ -2712,7 +2726,7 @@ def _manual_stock_order_payload(payload: dict) -> dict:
         if not cap.get("ok"):
             return {"ok": False, "error": cap.get("error") or "资金池不可用"}
         available = _safe_float((cap.get("available") or {}).get(pool))
-        buying_power = _safe_float(cap.get("buying_power"))
+        buying_power = _pool_account_buying_power(cap, pool)
         notional = max(0.0, min(available * fraction, buying_power))
         qty = _manual_stock_qty(notional / price, price)
         notional = qty * price
@@ -7852,9 +7866,14 @@ def run() -> None:
     startup()
     if env_str("ULTIMATE_SKIP_BOT_SYNC_ON_START", "0").strip().lower() not in {"1", "true", "yes"}:
         sync_from_controls()
+        start_watchdog()
     server = ThreadingHTTPServer((s.web_host, s.web_port), Handler)
     print(f"[WEB] http://127.0.0.1:{s.web_port}", flush=True)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        shutdown_supervisor()
 
 
 if __name__ == "__main__":

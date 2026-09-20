@@ -19,12 +19,12 @@ set -euo pipefail
 #   REMOTE_DB_HOST=138.197.75.51
 #   REMOTE_DB_PORT=3307
 #   REMOTE_DB_USER=tradebot
-#   REMOTE_DB_PASS='TradeBot#2026!'
+#   REMOTE_DB_PASS='<YOUR_REMOTE_DB_PASSWORD>'
 #   REMOTE_DB_NAME=cszy2000
 #   LOCAL_DB_HOST=127.0.0.1
 #   LOCAL_DB_PORT=3307
 #   LOCAL_DB_USER=tradebot
-#   LOCAL_DB_PASS='TradeBot#2026!'
+#   LOCAL_DB_PASS='<YOUR_LOCAL_DB_PASSWORD>'
 #   LOCAL_DB_NAME=cszy2000
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

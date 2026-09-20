@@ -42,7 +42,7 @@ DB = dict(
 )
 
 PORT = int(os.getenv("MOBILE_CONTROL_PORT", "5050"))
-TOKEN = os.getenv("MOBILE_CONTROL_TOKEN", "change-me-please")
+TOKEN = os.getenv("MOBILE_CONTROL_TOKEN", "").strip()
 TABLE = os.getenv("OPS_TABLE", "stock_operations")
 SPREADS_TABLE = os.getenv("C_SPREADS_TABLE", "option_spreads")
 LEGS_TABLE = os.getenv("C_LEGS_TABLE", "option_spread_legs")
@@ -1222,9 +1222,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    if not TOKEN or TOKEN == "change-me-please":
+        raise RuntimeError("MOBILE_CONTROL_TOKEN must be set to a non-default secret")
     print(f"[MOBILE] starting on 0.0.0.0:{PORT}", flush=True)
-    if TOKEN == "change-me-please":
-        print("[MOBILE] WARNING: MOBILE_CONTROL_TOKEN is using default value. Change it before exposing to internet.", flush=True)
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.serve_forever()
 
