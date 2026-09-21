@@ -509,6 +509,24 @@ def _get_strategy_used_capital_from_operations(strategy_group: str) -> float:
             return total
 
 
+def _get_d_options_used_capital(cur) -> float:
+    """按最大亏损统计 Q 页面手动期权组合占用的 D 资金。"""
+    try:
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(COALESCE(max_loss, 0)), 0) AS total
+            FROM option_spreads
+            WHERE status IN ('PLANNED','SUBMITTED','OPEN','CLOSE_PLANNED','CLOSE_SUBMITTED')
+              AND (signal_reason LIKE 'Q_MANUAL_OPTION%%'
+                   OR signal_reason LIKE 'D_MANUAL_OPTION%%')
+            """
+        )
+        return abs(float((cur.fetchone() or {}).get("total") or 0.0))
+    except Exception:
+        # 兼容尚未创建期权表或旧表缺少 signal_reason 的环境。
+        return 0.0
+
+
 def get_strategy_used_capital(strategy_group: str) -> float:
     """从真实持仓展示表 position_holdings 读取某个策略组当前占用资金。
 
@@ -518,7 +536,12 @@ def get_strategy_used_capital(strategy_group: str) -> float:
     s = settings()
     group = (strategy_group or "").upper()
     if not s.enable_position_holdings:
-        return _get_strategy_used_capital_from_operations(group)
+        total = _get_strategy_used_capital_from_operations(group)
+        if group != "D":
+            return total
+        with db_conn(s) as conn:
+            with conn.cursor() as cur:
+                return total + _get_d_options_used_capital(cur)
     with db_conn(s) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -550,6 +573,11 @@ def get_strategy_used_capital(strategy_group: str) -> float:
                     total += abs(qty * float(price or 0))
                     continue
                 total += abs(float(row.get("cost_basis") or 0))
+            if group == "D":
+                # Q 页面手动建立的期权价差归 D 资金池。期权持仓未必能稳定映射到
+                # position_holdings，因此按组合最大亏损计入占用，避免股票与期权
+                # 同时重复使用同一份 D 额度。
+                total += _get_d_options_used_capital(cur)
             return total
 
 

@@ -2530,6 +2530,24 @@ def submit_option_combo(payload: dict) -> dict:
         reason=f"Q manual selected combo qty={qty}",
     )
 
+    # Q 页面只允许手动开仓，并且只能使用 D 资金池。这里必须在真正提交
+    # Alpaca 订单前再次校验，不能只依赖前端显示。
+    from ultimate_v1.d_tactical import option_capital_payload
+
+    capital = option_capital_payload()
+    total_max_loss = float(pricing.max_loss_per_spread) * int(qty)
+    available = float(capital.get("effective_available") or 0.0)
+    if not capital.get("ok"):
+        raise RuntimeError(str(capital.get("error") or "D 资金读取失败"))
+    if total_max_loss <= 0:
+        raise RuntimeError("无法计算期权组合最大亏损")
+    if total_max_loss > available + 0.01:
+        max_qty = int(available // float(pricing.max_loss_per_spread)) if pricing.max_loss_per_spread > 0 else 0
+        raise RuntimeError(
+            f"D 资金不足：需要 ${total_max_loss:.2f}，可用 ${available:.2f}，最多可买 {max_qty} 组"
+        )
+    pricing.buying_power = available
+
     # Q 仓位必须先落库，后续 q_sell_bot 才能只管理 Q 期权组合。
     for leg in plan.legs:
         leg.qty = int(qty)
@@ -2570,6 +2588,9 @@ def submit_option_combo(payload: dict) -> dict:
         "qty": qty,
         "order_id": order_id,
         "status": order_status,
+        "max_loss": total_max_loss,
+        "d_available_before": available,
+        "d_available_after": max(0.0, available - total_max_loss),
     }
 
 

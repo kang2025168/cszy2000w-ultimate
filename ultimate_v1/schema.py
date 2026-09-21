@@ -350,7 +350,7 @@ def ensure_control_state_tables() -> None:
                 "d_buy_bot": 0,
                 "d_sell_bot": 0,
                 "d_grid_bot": 0,
-                "q_sell_bot": 0,
+                "q_sell_bot": 1,
             }
             for bot_name, enabled in default_controls.items():
                 cur.execute(

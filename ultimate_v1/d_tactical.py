@@ -7,6 +7,8 @@ import os
 from typing import Any
 
 from . import alpaca_gateway
+from .account_config import profile_for_pool
+from .capital_manager import get_capital_allocation
 from .db import db_conn, fetch_all
 
 
@@ -107,6 +109,30 @@ def d_tactical_payload() -> dict:
         "option_underlyings": option_underlyings(),
         "option_modes": OPTION_MODES,
         "intraday_candidates": intraday_candidates(),
+        "option_capital": option_capital_payload(),
+    }
+
+
+def option_capital_payload() -> dict:
+    """返回期权开仓可使用的 D 资金及券商期权购买力。"""
+    allocation = get_capital_allocation()
+    if allocation is None:
+        return {"ok": False, "error": "D 资金读取失败", "effective_available": 0.0}
+    target = float(allocation.target_for("D") or 0.0)
+    used = float(allocation.used.get("D", 0.0) or 0.0)
+    available = float(allocation.available.get("D", max(0.0, target - used)) or 0.0)
+    snap = alpaca_gateway.get_account_snapshot(profile=profile_for_pool("D"))
+    options_bp = float(getattr(snap, "options_buying_power", 0.0) or 0.0) if snap else 0.0
+    effective = min(available, options_bp) if options_bp > 0 else available
+    return {
+        "ok": True,
+        "pool": "D",
+        "target": target,
+        "used": used,
+        "available": available,
+        "options_buying_power": options_bp,
+        "effective_available": max(0.0, effective),
+        "broker_profile": profile_for_pool("D"),
     }
 
 
@@ -404,4 +430,5 @@ def option_preview(symbol: str, mode: str, width: float | None = None) -> dict:
         "price_source": price_source,
         "expiries": [d.isoformat() for d in _next_two_target_fridays()],
         "previews": previews,
+        "option_capital": option_capital_payload(),
     }

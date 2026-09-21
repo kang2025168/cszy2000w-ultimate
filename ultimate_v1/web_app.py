@@ -3633,6 +3633,10 @@ INDEX_HTML = r"""<!doctype html>
     .d-subpanel { border:1px solid var(--line); border-radius:8px; padding:18px; background:linear-gradient(180deg,#fff,#f9fbff); min-height:160px; box-shadow:0 8px 20px rgba(15,23,42,.035); }
     .d-subpanel[hidden] { display:none; }
     .d-subhead { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
+    .d-option-capital { display:flex; align-items:stretch; gap:8px; }
+    .d-option-capital > div { min-width:118px; padding:7px 10px; border:1px solid var(--line); border-radius:7px; background:#fff; display:flex; flex-direction:column; gap:2px; }
+    .d-option-capital span { color:var(--muted); font-size:11px; font-weight:750; }
+    .d-option-capital b { color:var(--ink); font-size:14px; }
     .d-subtitle { font-weight:950; font-size:18px; color:var(--ink); }
     .d-submeta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:12px; font-weight:800; }
     .d-code-pill { display:inline-flex; align-items:center; height:24px; padding:0 9px; border-radius:999px; background:#101828; color:#fff; font-size:12px; font-weight:950; }
@@ -3867,6 +3871,8 @@ INDEX_HTML = r"""<!doctype html>
       .market-pill { font-size:11px; }
       .d-panel { margin-top:12px; }
       .d-grid, .d-option-layout, .d-preview-grid, .d-help-grid { grid-template-columns:1fr; }
+      .d-option-capital { width:100%; overflow-x:auto; }
+      .d-subhead { align-items:flex-start; flex-wrap:wrap; }
       .d-subpanel { padding:12px; }
       .d-option-scroll { max-height:520px; }
       .strategy2-hero { flex-direction:column; }
@@ -4251,7 +4257,12 @@ INDEX_HTML = r"""<!doctype html>
             <div class="d-subhead">
               <div>
                 <div class="d-subtitle">期权交易</div>
-                <div class="d-submeta"><span class="d-code-pill">Q</span><span id="dOptionMeta">选择标的和类型</span></div>
+                <div class="d-submeta"><span class="d-code-pill">D</span><span id="dOptionMeta">选择标的和类型</span></div>
+              </div>
+              <div class="d-option-capital" id="dOptionCapital">
+                <div><span>D 资金可用</span><b id="dOptionAvailable">--</b></div>
+                <div><span>期权购买力</span><b id="dOptionBrokerBp">--</b></div>
+                <div><span>卖出监督</span><b class="positive">Q 机器人</b></div>
               </div>
             </div>
             <div class="d-option-layout">
@@ -4596,6 +4607,7 @@ INDEX_HTML = r"""<!doctype html>
     let dOptionWidth = 10;
     let dOptionQty = 1;
     let selectedDCombo = null;
+    let latestDOptionCapital = null;
     let dOptionScrollMode = 'preserve';
     let manualTradeTab = 'stock';
     let stockSelectionTab = 'review';
@@ -4926,7 +4938,7 @@ INDEX_HTML = r"""<!doctype html>
       const labels = {
         dashboard_bot:'行情与持仓同步', risk_bot:'风险控制', rebalance_bot:'资金调仓',
         ac_bot:'A/C 长期策略', b_buy_bot:'B 买入', b_sell_bot:'B 卖出',
-        d_grid_bot:'D 日内循环', f_buy_bot:'F 买入', f_sell_bot:'F 卖出'
+        d_grid_bot:'D 日内循环', q_sell_bot:'期权卖出监督', f_buy_bot:'F 买入', f_sell_bot:'F 卖出'
       };
       const hidden = new Set(['d_buy_bot', 'd_sell_bot']);
       const heartbeatMap = Object.fromEntries((bots || []).map(item => [item.bot_name, item]));
@@ -6654,6 +6666,7 @@ INDEX_HTML = r"""<!doctype html>
       const underlyings = payload.option_underlyings || [];
       const modes = payload.option_modes || [];
       const candidates = payload.intraday_candidates || [];
+      renderDOptionCapital(payload.option_capital || null);
       const hadOptionSymbol = !!dOptionSymbol;
       if (!dOptionSymbol && underlyings.length) dOptionSymbol = underlyings[0].symbol;
       document.getElementById('dIntradayCount').textContent = `${candidates.length} 条`;
@@ -6666,7 +6679,33 @@ INDEX_HTML = r"""<!doctype html>
       renderDSection();
       if (manualTradeTab === 'option' && dOptionSymbol) loadDOptionPreview({center: options.centerOptionPreview || !hadOptionSymbol});
     }
+    function renderDOptionCapital(capital) {
+      if (!capital) return;
+      latestDOptionCapital = capital;
+      const available = Number(capital.effective_available || 0);
+      const brokerBp = Number(capital.options_buying_power || 0);
+      const availableEl = document.getElementById('dOptionAvailable');
+      const brokerEl = document.getElementById('dOptionBrokerBp');
+      if (availableEl) availableEl.textContent = capital.ok ? money(available) : '--';
+      if (brokerEl) brokerEl.textContent = brokerBp > 0 ? money(brokerBp) : '未单独返回';
+      updateDOptionSelectionSummary();
+    }
+    function dOptionSelectionRisk() {
+      return selectedDCombo ? Number(selectedDCombo.row?.max_loss_per_spread || 0) * Number(dOptionQty || 1) : 0;
+    }
+    function updateDOptionSelectionSummary() {
+      const risk = dOptionSelectionRisk();
+      const available = Number(latestDOptionCapital?.effective_available || 0);
+      document.querySelectorAll('.d-confirm-btn').forEach(button => {
+        const blocked = !selectedDCombo || risk <= 0 || risk > available + 0.01;
+        button.disabled = blocked;
+        button.title = blocked && selectedDCombo
+          ? `D 资金不足：需要 ${money(risk)}，可用 ${money(available)}`
+          : `占用 D 资金 ${money(risk)}`;
+      });
+    }
     function renderDOptionPreview(payload) {
+      renderDOptionCapital(payload.option_capital || null);
       document.getElementById('dOptionMeta').textContent = `${payload.symbol} ${money(payload.price)} · ${payload.price_source || ''}`;
       const rows = payload.previews || [];
       document.getElementById('dOptionPreview').innerHTML = rows.map((p, idx) => {
@@ -6686,8 +6725,9 @@ INDEX_HTML = r"""<!doctype html>
         const priceLine = p.error
           ? `<div class="d-error">${p.error}</div>`
           : modeHelpHtml(payload.mode);
-        return `<div class="d-preview-card"><div class="d-preview-top"><div><div class="d-preview-title">${idx === 0 ? '下周五' : '下下周五'} ${p.expiry}</div><div class="small-muted">${p.mode} · width ${Number(payload.width || p.width || 0).toFixed(2)}</div></div><div class="d-preview-actions"><label class="d-qty-control">× <input type="number" min="1" max="99" step="1" value="${dOptionQty}" onchange="changeDOptionQty(this.value)" oninput="changeDOptionQty(this.value)"></label><button class="d-confirm-btn" onclick="confirmDOptionBuy()" ${selectedDCombo ? '' : 'disabled'}>确认买入</button></div></div>${priceLine}${legs}</div>`;
+        return `<div class="d-preview-card"><div class="d-preview-top"><div><div class="d-preview-title">${idx === 0 ? '下周五' : '下下周五'} ${p.expiry}</div><div class="small-muted">${p.mode} · width ${Number(payload.width || p.width || 0).toFixed(2)}</div></div><div class="d-preview-actions"><label class="d-qty-control">× <input type="number" min="1" max="99" step="1" value="${dOptionQty}" onchange="changeDOptionQty(this.value)" oninput="changeDOptionQty(this.value)"></label><button class="d-confirm-btn" onclick="confirmDOptionBuy()" disabled>确认买入</button></div></div>${priceLine}${legs}</div>`;
       }).join('') || `<div class="d-note">暂无预览</div>`;
+      updateDOptionSelectionSummary();
       if (dOptionScrollMode === 'center') {
         dOptionScrollMode = 'preserve';
         setTimeout(centerDOptionScrolls, 0);
@@ -6772,17 +6812,25 @@ INDEX_HTML = r"""<!doctype html>
       document.querySelectorAll('.d-qty-control input').forEach(input => {
         if (Number(input.value || 0) !== qty) input.value = qty;
       });
+      updateDOptionSelectionSummary();
     }
     async function confirmDOptionBuy() {
       if (!selectedDCombo) { alert('请先选择一组期权组合'); return; }
       const r = selectedDCombo.row;
       const qty = Math.max(1, Math.min(99, Math.floor(Number(dOptionQty || 1) || 1)));
       selectedDCombo.qty = qty;
-      const msg = `确认买入 ${qty} 组 ${selectedDCombo.symbol} ${selectedDCombo.mode} ${selectedDCombo.expiry}？\n限价 ${Number(r.alpaca_limit_price || 0).toFixed(2)}\n单组最大亏损 ${money(r.max_loss_per_spread)}\n总最大亏损 ${money(Number(r.max_loss_per_spread || 0) * qty)}`;
+      const totalRisk = Number(r.max_loss_per_spread || 0) * qty;
+      const available = Number(latestDOptionCapital?.effective_available || 0);
+      if (totalRisk > available + 0.01) {
+        alert(`D 资金不足\n需要 ${money(totalRisk)}\n可用 ${money(available)}`);
+        return;
+      }
+      const msg = `确认使用 D 资金买入 ${qty} 组 ${selectedDCombo.symbol} ${selectedDCombo.mode} ${selectedDCombo.expiry}？\n限价 ${Number(r.alpaca_limit_price || 0).toFixed(2)}\n单组最大亏损 ${money(r.max_loss_per_spread)}\n占用 D 资金 ${money(totalRisk)}\n买入后由 Q 机器人监督卖出`;
       if (!confirm(msg)) return;
       const result = await postJson('/api/d_option_buy', selectedDCombo);
       if (!result.ok) { alert(result.error || '期权买入失败'); return; }
-      alert(`期权买入已提交\n张数 ${result.qty || qty}\n订单 ${result.order_id || '--'}\n状态 ${result.status || '--'}`);
+      alert(`期权买入已提交\n张数 ${result.qty || qty}\n占用 D 资金 ${money(result.max_loss || totalRisk)}\nD 剩余 ${money(result.d_available_after)}\n订单 ${result.order_id || '--'}\n状态 ${result.status || '--'}\n后续由 Q 机器人监督卖出`);
+      await loadDTactical();
     }
     async function loadDOptionPreview(options={}) {
       const el = document.getElementById('dOptionPreview');
