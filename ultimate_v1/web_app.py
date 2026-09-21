@@ -2102,6 +2102,8 @@ def _bot_logs_payload(lines: int = 120, bot_name: str = "", summary_only: bool =
     all_bots = sorted(managed_bot_names())
     bots = [requested_bot] if requested_bot in set(all_bots) else all_bots
     process_map = {row["bot_name"]: row for row in process_status()}
+    control_map = {str(row.get("bot_name") or ""): bool(int(row.get("enabled") or 0)) for row in bot_controls()}
+    heartbeat_map = {str(row.get("bot_name") or ""): row for row in bot_heartbeats()}
     rows = []
     general_days = int(float(env_str("BOT_LOG_GENERAL_DAYS", "5") or "5"))
     important_days = int(float(env_str("BOT_LOG_IMPORTANT_DAYS", "5") or "5"))
@@ -2134,10 +2136,14 @@ def _bot_logs_payload(lines: int = 120, bot_name: str = "", summary_only: bool =
         if not summary_only and not log_lines:
             log_lines = _bot_log_fallback_lines(bot_name)
         proc = process_map.get(bot_name) or {}
+        heartbeat_row = heartbeat_map.get(bot_name) or {}
         rows.append(
             {
                 "bot_name": bot_name,
                 "running": bool(proc.get("running")),
+                "enabled": bool(control_map.get(bot_name, False)),
+                "heartbeat_status": str(heartbeat_row.get("status") or ""),
+                "last_seen_at": heartbeat_row.get("last_seen_at"),
                 "pid": proc.get("pid"),
                 "log_path": str(path) if path else "",
                 "lines": log_lines,
@@ -3559,12 +3565,24 @@ INDEX_HTML = r"""<!doctype html>
     .strategy2-page[data-active-config-tab="A"] [data-pool-map="D"] { display:none; }
     .config-bot-wrap { padding:0 12px 12px; }
     .config-bot-title { margin:2px 0 8px; color:var(--ink); font-size:13px; font-weight:950; }
-    .config-bot-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
-    .config-bot-card { display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:56px; padding:10px; border:1px solid #dbe6f2; border-radius:8px; background:#fbfdff; }
-    .config-bot-name { color:var(--ink); font-size:12px; font-weight:950; }
-    .config-bot-status { color:var(--muted); font-size:10px; font-weight:800; margin-top:3px; }
-    .config-bot-toggle { flex:0 0 auto; height:30px; min-width:58px; border-radius:7px; font-weight:900; }
-    .config-bot-toggle.on { border-color:#a6e3cf; background:#e7f6ef; color:#08734f; }
+    .config-bot-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+    .config-bot-card { min-width:0; padding:12px; border:1px solid #dbe6f2; border-radius:8px; background:#fff; display:grid; gap:11px; transition:border-color .15s ease, box-shadow .15s ease; }
+    .config-bot-card.enabled { border-color:#b7dfd1; box-shadow:inset 3px 0 0 #15936a; }
+    .config-bot-card-head, .config-bot-card-foot { display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:0; }
+    .config-bot-card-head strong { display:block; color:var(--ink); font-size:13px; font-weight:950; }
+    .config-bot-card-head div span { display:block; margin-top:2px; color:var(--muted); font-size:10px; font-weight:800; }
+    .config-bot-state { display:inline-flex; align-items:center; gap:5px; flex:0 0 auto; color:#667085; font-size:10px; font-weight:900; }
+    .config-bot-state::before { content:""; width:7px; height:7px; border-radius:50%; background:#98a2b3; }
+    .config-bot-state.enabled::before { background:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.12); }
+    .config-bot-state.running { color:#08734f; }
+    .config-bot-state.running::before { background:#15936a; box-shadow:0 0 0 3px rgba(21,147,106,.12); }
+    .config-bot-message { min-height:30px; color:#475467; font-size:11px; font-weight:800; line-height:1.35; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+    .config-bot-card-foot { padding-top:9px; border-top:1px solid #eef2f6; color:var(--muted); font-size:10px; font-weight:800; }
+    .config-bot-switch { position:relative; width:44px; height:24px; flex:0 0 44px; border:0; border-radius:999px; padding:2px; background:#d0d5dd; box-shadow:inset 0 0 0 1px rgba(15,23,42,.04); transition:background .15s ease; }
+    .config-bot-switch::after { content:""; display:block; width:20px; height:20px; border-radius:50%; background:#fff; box-shadow:0 2px 5px rgba(15,23,42,.22); transition:transform .15s ease; }
+    .config-bot-switch.on { background:#15936a; }
+    .config-bot-switch.on::after { transform:translateX(20px); }
+    .config-bot-switch:focus-visible { outline:3px solid rgba(37,99,235,.22); outline-offset:2px; }
     .d-grid-config-panel { border:1px solid #d8e4f0; border-radius:8px; background:#fff; overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,.035); }
     .d-grid-config-head { min-height:48px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:11px 12px; border-bottom:1px solid #e8eef6; background:#f8fbff; }
     .d-grid-config-title { color:var(--ink); font-size:15px; font-weight:950; }
@@ -4923,16 +4941,21 @@ INDEX_HTML = r"""<!doctype html>
         const running = process ? Boolean(process.running) : heartbeat?.status === 'running';
         const enabled = controlMap[name] !== false;
         const controllable = Object.prototype.hasOwnProperty.call(controlMap, name);
-        const message = heartbeat?.last_message || (running ? '进程运行中' : '暂无运行心跳');
-        return `<article class="config-bot-card">
+        const heartbeatMessage = String(heartbeat?.last_message || '');
+        const message = enabled && !running && /已关闭|stopped/i.test(heartbeatMessage)
+          ? '开关已开启，等待机器人启动或上报心跳'
+          : (heartbeatMessage || (running ? '进程运行中' : '暂无运行心跳'));
+        const stateLabel = running ? '运行中' : (enabled ? '已开启 · 等待心跳' : '已关闭');
+        const stateClass = running ? 'running' : (enabled ? 'enabled' : '');
+        return `<article class="config-bot-card ${enabled ? 'enabled' : ''}">
           <div class="config-bot-card-head">
             <div><strong>${esc(labels[name] || name)}</strong><span>${esc(name)}</span></div>
-            <span class="config-bot-state ${running ? 'running' : ''}">${running ? '运行中' : '未运行'}</span>
+            <span class="config-bot-state ${stateClass}">${stateLabel}</span>
           </div>
           <div class="config-bot-message" title="${esc(message)}">${esc(message)}</div>
           <div class="config-bot-card-foot">
             <span>${heartbeat?.last_seen_at ? `心跳 ${esc(heartbeat.last_seen_at)}` : '暂无心跳时间'}</span>
-            ${controllable ? `<button class="${enabled ? '' : 'primary'}" onclick="toggleBot('${name}', ${enabled ? 'false' : 'true'})">${enabled ? '停用' : '启用'}</button>` : '<span class="small-muted">跟随系统</span>'}
+            ${controllable ? `<button class="config-bot-switch ${enabled ? 'on' : ''}" role="switch" aria-checked="${enabled ? 'true' : 'false'}" aria-label="${esc(labels[name] || name)}机器人开关" title="${enabled ? '关闭' : '开启'} ${esc(labels[name] || name)}" onclick="toggleBot('${name}', ${enabled ? 'false' : 'true'})"></button>` : '<span class="small-muted">跟随系统</span>'}
           </div>
         </article>`;
       }).join('') || '<div class="schedule-empty">暂无机器人配置</div>';
@@ -5576,8 +5599,9 @@ INDEX_HTML = r"""<!doctype html>
         return n.startsWith('d_') || n.startsWith('q_') || n.startsWith('f_');
       };
       const navButton = row => {
-        const running = row.running ? 'running' : '';
-        const status = row.running ? '运行' : '停';
+        const active = row.enabled || row.running;
+        const running = active ? 'running' : '';
+        const status = row.running ? '运行' : (row.enabled ? '开启' : '关闭');
         const path = row.log_path || 'fallback';
         return `<button class="bot-log-nav-btn ${row.bot_name === selectedBotLog ? 'active' : ''}" onclick="selectBotLog('${esc(row.bot_name)}')">
           <span class="bot-log-nav-name">${esc(row.bot_name)}</span>
@@ -5589,7 +5613,7 @@ INDEX_HTML = r"""<!doctype html>
       const rows = [...(payload?.rows || [])].map(row => {
         const previous = previousRows.get(row.bot_name);
         if (previous?.logs_loaded && !row.logs_loaded) {
-          return {...row, ...previous, running: row.running, pid: row.pid, log_path: row.log_path || previous.log_path};
+          return {...row, ...previous, running: row.running, enabled:row.enabled, heartbeat_status:row.heartbeat_status, last_seen_at:row.last_seen_at, pid: row.pid, log_path: row.log_path || previous.log_path};
         }
         return row;
       }).sort((a, b) => {
@@ -5939,8 +5963,11 @@ INDEX_HTML = r"""<!doctype html>
         grid.innerHTML = '<div class="empty-state">暂无机器人日志</div>';
         return;
       }
-      const running = row.running ? 'running' : '';
-      const status = row.running ? `运行中${row.pid ? ' pid=' + row.pid : ''}` : '未运行';
+      const active = row.enabled || row.running;
+      const running = active ? 'running' : '';
+      const status = row.running
+        ? `运行中${row.pid ? ' pid=' + row.pid : ''}`
+        : (row.enabled ? '开关已开启 · 等待进程心跳' : '已关闭');
       const mode = selectedBotLogMode === 'important' ? 'important' : 'all';
       const scrollKey = botLogScrollKey();
       if (!row.logs_loaded) {
