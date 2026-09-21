@@ -27,6 +27,7 @@ MIN_VOLUME = int(float(os.getenv("D_CANDIDATE_MIN_VOLUME", "3000000")))
 MIN_DOLLAR_VOLUME = float(os.getenv("D_CANDIDATE_MIN_DOLLAR_VOLUME", "30000000"))
 MIN_AVG_RANGE = float(os.getenv("D_CANDIDATE_MIN_AVG_RANGE_PCT", "0.015"))
 MAX_AVG_RANGE = float(os.getenv("D_CANDIDATE_MAX_AVG_RANGE_PCT", "0.04"))
+LOOKBACK_CALENDAR_DAYS = max(35, int(os.getenv("D_CANDIDATE_LOOKBACK_CALENDAR_DAYS", "60")))
 
 def _f(value) -> float:
     try:
@@ -90,9 +91,10 @@ def main() -> None:
                 raise RuntimeError("stock_prices_pool has no daily data")
             cur.execute(
                 """SELECT UPPER(symbol) symbol, DATE(`date`) trade_date, `open`, high, low, `close`, volume
-                   FROM stock_prices_pool WHERE DATE(`date`) <= %s
+                   FROM stock_prices_pool
+                   WHERE DATE(`date`) BETWEEN DATE_SUB(%s, INTERVAL %s DAY) AND %s
                    ORDER BY symbol, `date`""",
-                (snapshot,),
+                (snapshot, LOOKBACK_CALENDAR_DAYS, snapshot),
             )
             rows = cur.fetchall() or []
         candidates = build_candidates(rows, snapshot)
