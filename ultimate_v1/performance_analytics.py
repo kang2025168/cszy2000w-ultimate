@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections import defaultdict
 from datetime import date, timedelta
 
@@ -35,6 +36,138 @@ def _period_start(period: str) -> date | None:
     if key == "all":
         return None
     return today - timedelta(days=90)
+
+
+def _b_closed_trades(start: date | None) -> list[dict]:
+    """Rebuild B round trips from filled broker/manual records using FIFO average cost."""
+    rows = _safe_fetch(
+        """
+        SELECT event_time,symbol,UPPER(side) AS side,
+               COALESCE(NULLIF(filled_qty,0),qty) AS qty,
+               COALESCE(NULLIF(filled_avg_price,0),price) AS price,
+               order_id
+        FROM manual_trade_records
+        WHERE UPPER(strategy_group)='B'
+          AND UPPER(status) LIKE '%FILL%'
+        ORDER BY event_time,id
+        """,
+        quiet=True,
+    )
+    positions: dict[str, dict] = defaultdict(lambda: {"qty": 0.0, "cost": 0.0})
+    trades = []
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        side = str(row.get("side") or "").upper()
+        qty, price = _number(row.get("qty")), _number(row.get("price"))
+        if not symbol or qty <= 0 or price <= 0:
+            continue
+        position = positions[symbol]
+        if side == "BUY":
+            position["cost"] += qty * price
+            position["qty"] += qty
+            continue
+        if side != "SELL" or position["qty"] <= 0:
+            continue
+        closed_qty = min(qty, position["qty"])
+        entry_price = position["cost"] / position["qty"] if position["qty"] else 0.0
+        pnl = (price - entry_price) * closed_qty
+        position["qty"] -= closed_qty
+        position["cost"] = max(0.0, position["cost"] - entry_price * closed_qty)
+        if start is not None and str(row.get("event_time") or "")[:10] < start.isoformat():
+            continue
+        trades.append({
+            "completed_at": row.get("event_time"), "strategy_group": "B", "symbol": symbol,
+            "direction": "BUY_THEN_SELL", "qty": closed_qty, "entry_price": entry_price,
+            "exit_price": price, "realized_pnl": pnl,
+            "return_pct": pnl / (entry_price * closed_qty) if entry_price > 0 else 0.0,
+            "cost_effect": "PROFIT" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT",
+            "exit_reason": "B 平仓成交",
+        })
+    return trades
+
+
+def _d_closed_trades(start: date | None) -> list[dict]:
+    where = "" if start is None else "AND created_at >= %s"
+    args = () if start is None else (start,)
+    rows = _safe_fetch(
+        f"""
+        SELECT created_at,symbol,cycle_no,qty,price,message
+        FROM d_grid_events
+        WHERE event_type='CYCLE_FILLED' {where}
+        ORDER BY created_at DESC,id DESC
+        """,
+        args,
+        quiet=True,
+    )
+    trades = []
+    for row in rows:
+        qty, exit_price = _number(row.get("qty")), _number(row.get("price"))
+        match = re.search(r"gross_pnl=(-?[0-9]+(?:\.[0-9]+)?)", str(row.get("message") or ""))
+        pnl = _number(match.group(1)) if match else 0.0
+        entry_price = exit_price - pnl / qty if qty > 0 else 0.0
+        trades.append({
+            "completed_at": row.get("created_at"), "strategy_group": "D",
+            "symbol": str(row.get("symbol") or ""), "direction": "GRID_CYCLE", "qty": qty,
+            "entry_price": entry_price, "exit_price": exit_price, "realized_pnl": pnl,
+            "return_pct": pnl / (entry_price * qty) if entry_price > 0 and qty > 0 else 0.0,
+            "cost_effect": "PROFIT" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT",
+            "exit_reason": f"D 循环 #{int(_number(row.get('cycle_no')))}",
+        })
+    return trades
+
+
+def _q_closed_trades(start: date | None) -> list[dict]:
+    where = "" if start is None else "AND updated_at >= %s"
+    args = () if start is None else (start,)
+    rows = _safe_fetch(
+        f"""
+        SELECT updated_at,underlying,mode,qty,entry_price,exit_price,profit,profit_pct,close_reason
+        FROM option_spreads
+        WHERE status='CLOSED' {where}
+        ORDER BY updated_at DESC,id DESC
+        """,
+        args,
+        quiet=True,
+    )
+    result = []
+    for row in rows:
+        qty = _number(row.get("qty"))
+        unit_profit = _number(row.get("profit"))
+        result.append({
+        "completed_at": row.get("updated_at"), "strategy_group": "Q",
+        "symbol": str(row.get("underlying") or ""), "direction": str(row.get("mode") or "OPTION"),
+        "qty": qty, "entry_price": _number(row.get("entry_price")),
+        "exit_price": _number(row.get("exit_price")), "realized_pnl": unit_profit * qty * 100,
+        "return_pct": _number(row.get("profit_pct")),
+        "cost_effect": "PROFIT" if unit_profit > 0 else "LOSS" if unit_profit < 0 else "FLAT",
+        "exit_reason": str(row.get("close_reason") or "Q 组合平仓"),
+        })
+    return result
+
+
+def _closed_trade_summary(rows: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = defaultdict(lambda: {
+        "cycles": 0, "wins": 0, "losses": 0, "realized_pnl": 0.0,
+        "lowered": 0, "raised": 0,
+    })
+    for row in rows:
+        item = grouped[str(row.get("strategy_group") or "--").upper()]
+        pnl = _number(row.get("realized_pnl"))
+        item["cycles"] += 1
+        item["realized_pnl"] += pnl
+        item["wins"] += int(pnl > 0)
+        item["losses"] += int(pnl < 0)
+        item["lowered"] += int(str(row.get("cost_effect")) == "LOWERED")
+        item["raised"] += int(str(row.get("cost_effect")) == "RAISED")
+    result = []
+    for group in ("A", "B", "C", "D", "Q"):
+        item = grouped[group]
+        cycles = item["cycles"]
+        result.append({
+            "strategy": group, **item, "realized_pnl": round(item["realized_pnl"], 2),
+            "win_rate": round(item["wins"] / cycles, 6) if cycles else 0.0,
+        })
+    return result
 
 
 def equity_metrics(rows: list[dict]) -> dict:
@@ -235,30 +368,10 @@ def performance_payload(period: str = "90d") -> dict:
         t_args,
         quiet=True,
     )
-    t_grouped: dict[str, dict] = defaultdict(lambda: {
-        "cycles": 0, "wins": 0, "losses": 0, "realized_pnl": 0.0,
-        "lowered": 0, "raised": 0,
-    })
-    for row in t_rows:
-        group = str(row.get("strategy_group") or "--").upper()
-        item = t_grouped[group]
-        pnl = _number(row.get("realized_pnl"))
-        item["cycles"] += 1
-        item["realized_pnl"] += pnl
-        item["wins"] += int(pnl > 0)
-        item["losses"] += int(pnl < 0)
-        item["lowered"] += int(str(row.get("cost_effect")) == "LOWERED")
-        item["raised"] += int(str(row.get("cost_effect")) == "RAISED")
-    t_summary = []
-    for group in sorted(t_grouped):
-        item = t_grouped[group]
-        cycles = item["cycles"]
-        t_summary.append({
-            "strategy": group,
-            **item,
-            "realized_pnl": round(item["realized_pnl"], 2),
-            "win_rate": round(item["wins"] / cycles, 6) if cycles else 0.0,
-        })
+    closed_trades = t_rows + _b_closed_trades(start) + _d_closed_trades(start) + _q_closed_trades(start)
+    closed_trades.sort(key=lambda row: str(row.get("completed_at") or ""), reverse=True)
+    closed_trades = closed_trades[:200]
+    t_summary = _closed_trade_summary(closed_trades)
     equity = equity_metrics(equity_rows)
     strategies = strategy_metrics(holdings)
     return {
@@ -268,7 +381,7 @@ def performance_payload(period: str = "90d") -> dict:
         "equity": equity,
         "strategies": strategies,
         "execution": execution,
-        "ac_t": {"summary": t_summary, "rows": t_rows},
+        "ac_t": {"summary": t_summary, "rows": closed_trades},
         "insights": _insights(equity, strategies, execution),
-        "methodology": "收益与回撤使用账户日终净值；策略盈亏使用 position_holdings；A/C 做T只在第二腿真实成交后记账，正收益表示成本做低，负收益表示成本做高。",
+        "methodology": "收益与回撤使用账户日终净值；A/C 按做T第二腿成交、B 按股票买卖闭环、D 按循环成交、Q 按期权组合平仓统计；失败或未成交订单不计盈亏。",
     }

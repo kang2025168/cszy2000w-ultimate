@@ -2661,6 +2661,47 @@ def _sync_q_submitted_spreads(conn) -> int:
     return synced
 
 
+def _sync_q_close_submitted_spreads(conn) -> int:
+    """Confirm Q close orders so analytics only counts genuinely filled spreads."""
+    rows = _load_q_spreads(conn, ("CLOSE_SUBMITTED",))
+    if not rows:
+        return 0
+    client = _get_trading_client()
+    synced = 0
+    for spread in rows:
+        spread_id = int(spread.get("id") or 0)
+        order_id = str(spread.get("close_order_id") or "").strip()
+        if not spread_id or not order_id:
+            continue
+        try:
+            order = client.get_order_by_id(order_id)
+            status = _order_status_text(order)
+            filled_avg = abs(float(getattr(order, "filled_avg_price", 0) or 0))
+            if status == "filled":
+                exit_value = filled_avg or _safe_float(spread.get("exit_price"))
+                metric = calc_spread_profit(spread, exit_value)
+                _update_spread_existing_fields(
+                    conn,
+                    spread_id,
+                    status="CLOSED",
+                    exit_price=exit_value,
+                    profit=float(metric.get("profit") or 0.0),
+                    profit_pct=float(metric.get("profit_pct") or 0.0),
+                )
+                synced += 1
+            elif status in {"canceled", "expired", "rejected"}:
+                _update_spread_existing_fields(
+                    conn,
+                    spread_id,
+                    status="OPEN",
+                    close_reason=f"close order {status}",
+                )
+                synced += 1
+        except Exception as exc:
+            print(f"[Q SELL BOT] sync close spread_id={spread_id} order_id={order_id} failed: {exc}", flush=True)
+    return synced
+
+
 def _quote_q_current_value(spread: dict, legs: list[dict]) -> float | None:
     """用当前期权 bid/ask 估算平仓价值，缺报价时回退到表里的 current_value。"""
     symbols = [str(leg.get("option_symbol") or "").strip() for leg in legs if leg.get("option_symbol")]
@@ -2703,6 +2744,9 @@ def q_sell_once() -> int:
         synced = _sync_q_submitted_spreads(conn)
         if synced:
             print(f"[Q SELL BOT] synced submitted spreads={synced}", flush=True)
+        close_synced = _sync_q_close_submitted_spreads(conn)
+        if close_synced:
+            print(f"[Q SELL BOT] synced close-submitted spreads={close_synced}", flush=True)
 
         spreads = _load_q_spreads(conn, ("OPEN",))
         if not spreads:

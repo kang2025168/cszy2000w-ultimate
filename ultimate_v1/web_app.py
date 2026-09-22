@@ -4634,7 +4634,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </div>
       <div class="stats-table-wrap"><table class="stats-table" id="strategyStatsTable"></table></div>
-      <div class="stats-card-head" style="margin-top:18px"><span class="stats-card-title">A/C 做T闭环明细</span><span class="stats-card-meta" id="tStatsMeta">只统计第二腿已成交</span></div>
+      <div class="stats-card-head" style="margin-top:18px"><span class="stats-card-title">全策略闭环分析</span><span class="stats-card-meta" id="tStatsMeta">只统计真实完成记录</span></div>
       <div class="stats-table-wrap"><table class="stats-table" id="tCycleStatsTable"></table></div>
       <div class="stats-table-wrap"><table class="stats-table" id="tCycleDetailTable"></table></div>
       <div class="stats-method" id="statsMethod"></div>
@@ -6930,13 +6930,15 @@ INDEX_HTML = r"""<!doctype html>
         <td>${row.payoff_ratio ? Number(row.payoff_ratio).toFixed(2) : '--'}</td><td class="${cls(row.expectancy)}">${row.closed_trades ? money(row.expectancy) : '--'}</td>
         <td class="${cls(row.capital_return)}">${row.cost_basis ? pct(row.capital_return) : '--'}</td></tr>`).join('')}</tbody>`;
       const t = payload.ac_t || {}, tSummary = t.summary || [], tRows = t.rows || [];
-      document.getElementById('tStatsMeta').textContent = `${tRows.length} 条成交闭环记录`;
-      document.getElementById('tCycleStatsTable').innerHTML = `<thead><tr>${['策略','闭环次数','盈利','亏损','胜率','做低成本','做高成本','累计收益'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${tSummary.length ? tSummary.map(row => `<tr><td><span class="stats-strategy">${esc(row.strategy)}</span></td><td>${row.cycles||0}</td><td>${row.wins||0}</td><td>${row.losses||0}</td><td>${pct(row.win_rate)}</td><td class="pos">${row.lowered||0}</td><td class="neg">${row.raised||0}</td><td class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</td></tr>`).join('') : '<tr><td colspan="8" class="small-muted">暂无已完成的 A/C 做T记录</td></tr>'}</tbody>`;
+      document.getElementById('tStatsMeta').textContent = `${tRows.length} 条真实闭环记录`;
+      document.getElementById('tCycleStatsTable').innerHTML = `<thead><tr>${['策略','闭环次数','盈利','亏损','胜率','做低成本','做高成本','累计收益'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${tSummary.map(row => `<tr><td><span class="stats-strategy">${esc(row.strategy)}</span></td><td>${row.cycles||0}</td><td>${row.wins||0}</td><td>${row.losses||0}</td><td>${row.cycles ? pct(row.win_rate) : '--'}</td><td class="pos">${row.strategy === 'A' || row.strategy === 'C' ? row.lowered||0 : '--'}</td><td class="neg">${row.strategy === 'A' || row.strategy === 'C' ? row.raised||0 : '--'}</td><td class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</td></tr>`).join('')}</tbody>`;
       document.getElementById('tCycleDetailTable').innerHTML = `<thead><tr>${['完成时间','策略','代码','方向','数量','第一腿','第二腿','收益','收益率','结果','原因'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${tRows.length ? tRows.map(row => {
+        const group = String(row.strategy_group||'').toUpperCase();
         const lowered = String(row.cost_effect) === 'LOWERED';
-        const direction = row.direction === 'BUY_THEN_SELL' ? '先买后卖' : '先卖后买回';
-        return `<tr><td>${esc(String(row.completed_at||'').slice(0,19))}</td><td>${esc(row.strategy_group)}</td><td><b>${esc(row.symbol)}</b></td><td>${direction}</td><td>${shareQty(row.qty)}</td><td>${money(row.entry_price)}</td><td>${money(row.exit_price)}</td><td class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</td><td class="${cls(row.return_pct)}">${pct(row.return_pct)}</td><td class="${lowered ? 'pos' : 'neg'}">${lowered ? '成本做低' : Number(row.realized_pnl||0) < 0 ? '成本做高' : '持平'}</td><td>${esc(row.exit_reason||'--')}</td></tr>`;
-      }).join('') : '<tr><td colspan="11" class="small-muted">机器人完成一轮做T后会自动记录在这里</td></tr>'}</tbody>`;
+        const direction = row.direction === 'BUY_THEN_SELL' ? '先买后卖' : row.direction === 'SELL_THEN_BUYBACK' ? '先卖后买回' : row.direction === 'GRID_CYCLE' ? '日内循环' : String(row.direction||'期权组合');
+        const result = group === 'A' || group === 'C' ? (lowered ? '成本做低' : Number(row.realized_pnl||0) < 0 ? '成本做高' : '持平') : (Number(row.realized_pnl||0) > 0 ? '盈利' : Number(row.realized_pnl||0) < 0 ? '亏损' : '持平');
+        return `<tr><td>${esc(String(row.completed_at||'').slice(0,19))}</td><td>${esc(group)}</td><td><b>${esc(row.symbol)}</b></td><td>${esc(direction)}</td><td>${shareQty(row.qty)}</td><td>${money(row.entry_price)}</td><td>${money(row.exit_price)}</td><td class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</td><td class="${cls(row.return_pct)}">${pct(row.return_pct)}</td><td class="${cls(row.realized_pnl)}">${result}</td><td>${esc(row.exit_reason||'--')}</td></tr>`;
+      }).join('') : '<tr><td colspan="11" class="small-muted">策略完成一轮真实闭环后会自动记录在这里</td></tr>'}</tbody>`;
       document.getElementById('statsMethod').textContent = `统计口径：${payload.methodology || '--'} · 取消 ${x.canceled_orders||0} 笔 · 失败 ${x.failed_orders||0} 笔。`;
       requestAnimationFrame(() => drawPerformanceChart(e.points || []));
     }

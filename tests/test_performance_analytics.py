@@ -1,42 +1,27 @@
+from __future__ import annotations
+
 import unittest
 
-from ultimate_v1.performance_analytics import equity_metrics, strategy_metrics
+from ultimate_v1.performance_analytics import _closed_trade_summary
 
 
 class PerformanceAnalyticsTests(unittest.TestCase):
-    def test_equity_metrics_calculates_peak_drawdown(self) -> None:
-        result = equity_metrics([
-            {"snapshot_date": "2026-01-01", "equity": 100.0},
-            {"snapshot_date": "2026-01-02", "equity": 110.0},
-            {"snapshot_date": "2026-01-03", "equity": 93.5},
-            {"snapshot_date": "2026-01-04", "equity": 105.0},
-        ])
-        self.assertEqual(0.05, result["total_return"])
-        self.assertEqual(-0.15, result["max_drawdown"])
-        self.assertEqual(4, result["sample_days"])
-
-    def test_equity_metrics_resets_after_large_account_change(self) -> None:
-        result = equity_metrics([
-            {"snapshot_date": "2026-01-01", "equity": 100.0},
-            {"snapshot_date": "2026-01-02", "equity": 200.0},
-            {"snapshot_date": "2026-01-03", "equity": 190.0},
-        ])
-        self.assertEqual(2, result["sample_days"])
-        self.assertEqual(1, result["account_resets"])
-        self.assertEqual(-0.05, result["total_return"])
-
-    def test_strategy_metrics_only_scores_closed_realized_rows(self) -> None:
+    def test_closed_trade_summary_keeps_all_strategy_rows(self):
         rows = [
-            {"strategy_group": "B", "status": "closed", "realized_pnl": 100},
-            {"strategy_group": "B", "status": "closed", "realized_pnl": -50},
-            {"strategy_group": "B", "status": "open", "cost_basis": 1000, "market_value": 1050, "unrealized_pnl": 50},
+            {"strategy_group": "A", "realized_pnl": 5, "cost_effect": "LOWERED"},
+            {"strategy_group": "B", "realized_pnl": -2, "cost_effect": "LOSS"},
+            {"strategy_group": "D", "realized_pnl": 3, "cost_effect": "PROFIT"},
+            {"strategy_group": "Q", "realized_pnl": 4, "cost_effect": "PROFIT"},
         ]
-        result = next(row for row in strategy_metrics(rows) if row["strategy"] == "B")
-        self.assertEqual(2, result["closed_trades"])
-        self.assertEqual(0.5, result["win_rate"])
-        self.assertEqual(2.0, result["payoff_ratio"])
-        self.assertEqual(25.0, result["expectancy"])
-        self.assertEqual(1, result["open_positions"])
+
+        result = {row["strategy"]: row for row in _closed_trade_summary(rows)}
+
+        self.assertEqual(["A", "B", "C", "D", "Q"], list(result))
+        self.assertEqual(1, result["A"]["lowered"])
+        self.assertEqual(1, result["B"]["losses"])
+        self.assertEqual(1, result["D"]["wins"])
+        self.assertEqual(4.0, result["Q"]["realized_pnl"])
+        self.assertEqual(0, result["C"]["cycles"])
 
 
 if __name__ == "__main__":
