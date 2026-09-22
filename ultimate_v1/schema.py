@@ -115,6 +115,22 @@ def _varchar_length(conn, table: str, column: str) -> int | None:
         return int(row["n"])
 
 
+def _column_data_type(conn, table: str, column: str) -> str:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DATA_TYPE
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+              AND COLUMN_NAME = %s
+            """,
+            (table, column),
+        )
+        row = cur.fetchone() or {}
+        return str(row.get("DATA_TYPE") or "").lower()
+
+
 def ensure_stock_operations_columns() -> None:
     """检查旧交易控制表，缺少 V1 需要的字段就自动添加。"""
     s = settings()
@@ -129,6 +145,18 @@ def ensure_stock_operations_columns() -> None:
             with conn.cursor() as cur:
                 cur.execute(f"ALTER TABLE `{s.ops_table}` MODIFY COLUMN stock_code VARCHAR(64) NOT NULL")
             print(f"[SCHEMA] upgraded {s.ops_table}.stock_code to VARCHAR(64)", flush=True)
+        for quantity_column in ("qty", "ac_t_core_qty", "ac_t_qty"):
+            data_type = _column_data_type(conn, s.ops_table, quantity_column)
+            if data_type and data_type != "decimal":
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"ALTER TABLE `{s.ops_table}` "
+                        f"MODIFY COLUMN `{quantity_column}` DECIMAL(18,6) DEFAULT 0"
+                    )
+                print(
+                    f"[SCHEMA] upgraded {s.ops_table}.{quantity_column} to DECIMAL(18,6)",
+                    flush=True,
+                )
         with conn.cursor() as cur:
             cur.execute(
                 f"""
