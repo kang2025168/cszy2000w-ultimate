@@ -3843,6 +3843,7 @@ INDEX_HTML = r"""<!doctype html>
     .d-error { color:var(--red); font-size:12px; line-height:1.45; }
     .d-note { color:var(--muted); font-size:12px; line-height:1.5; }
     .d-confirm-btn { height:32px; border:0; border-radius:7px; background:#e0f2fe; color:#075985; font-weight:850; }
+    .d-confirm-btn.insufficient { background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; }
     .d-confirm-btn:disabled { opacity:.45; cursor:not-allowed; }
     .d-mode-help { border:1px solid #dbeafe; border-radius:8px; background:#f8fbff; padding:0; color:#344054; overflow:hidden; }
     .d-mode-help summary { list-style:none; cursor:pointer; padding:12px; }
@@ -6995,11 +6996,19 @@ INDEX_HTML = r"""<!doctype html>
       const risk = dOptionSelectionRisk();
       const available = Number(latestDOptionCapital?.effective_available || 0);
       document.querySelectorAll('.d-confirm-btn').forEach(button => {
-        const blocked = !selectedDCombo || risk <= 0 || risk > available + 0.01;
+        const missingSelection = !selectedDCombo || risk <= 0;
+        const insufficient = !missingSelection && risk > available + 0.01;
+        const shortage = Math.max(0, risk - available);
+        const defaultLabel = '确认买入';
+        button.classList.toggle('insufficient', insufficient);
+        button.textContent = insufficient ? `资金不足 · 差 ${money(shortage)}` : defaultLabel;
+        const blocked = missingSelection;
         button.disabled = blocked;
-        button.title = blocked && selectedDCombo
-          ? `D 资金不足：需要 ${money(risk)}，可用 ${money(available)}`
-          : `占用 D 资金 ${money(risk)}`;
+        button.title = missingSelection
+          ? '请先选择一组期权组合'
+          : insufficient
+            ? `D 资金不足：需要 ${money(risk)}，可用 ${money(available)}，还差 ${money(shortage)}`
+            : `占用 D 资金 ${money(risk)}`;
       });
     }
     function renderDOptionPreview(payload) {
@@ -7120,7 +7129,7 @@ INDEX_HTML = r"""<!doctype html>
       const totalRisk = Number(r.max_loss_per_spread || 0) * qty;
       const available = Number(latestDOptionCapital?.effective_available || 0);
       if (totalRisk > available + 0.01) {
-        alert(`D 资金不足\n需要 ${money(totalRisk)}\n可用 ${money(available)}`);
+        alert(`D 资金不足\n需要 ${money(totalRisk)}\n可用 ${money(available)}\n还差 ${money(totalRisk - available)}\n请减少张数或选择最大亏损更低的组合。`);
         return;
       }
       const msg = `确认使用 D 资金买入 ${qty} 组 ${selectedDCombo.symbol} ${selectedDCombo.mode} ${selectedDCombo.expiry}？\n限价 ${Number(r.alpaca_limit_price || 0).toFixed(2)}\n单组最大亏损 ${money(r.max_loss_per_spread)}\n占用 D 资金 ${money(totalRisk)}\n买入后由 Q 机器人监督卖出`;
