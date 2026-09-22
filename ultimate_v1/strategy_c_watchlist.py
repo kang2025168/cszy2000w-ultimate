@@ -26,10 +26,12 @@ STRATEGY_A_WATCHLIST: tuple[StrategyCWatchItem, ...] = (
 
 
 STRATEGY_C_WATCHLIST: tuple[StrategyCWatchItem, ...] = (
-    # 30% ETF foundation. C builds these first before individual stocks.
-    StrategyCWatchItem("QQQ", 0.120, "nasdaq_100", 1, 1),
-    StrategyCWatchItem("VOO", 0.120, "sp500", 1, 2),
+    # 30% diversified foundation. C builds these first before individual stocks.
+    StrategyCWatchItem("QQQ", 0.100, "nasdaq_100", 1, 1),
+    StrategyCWatchItem("VOO", 0.090, "sp500", 1, 2),
     StrategyCWatchItem("XLV", 0.060, "healthcare_etf", 1, 3),
+    StrategyCWatchItem("IAU", 0.030, "gold_etf", 1, 4),
+    StrategyCWatchItem("IBIT", 0.020, "bitcoin_etf", 1, 5),
     # 35.7% high-quality core leaders.
     StrategyCWatchItem("BRK.B", 0.056, "financial", 2, 10),
     StrategyCWatchItem("MSFT", 0.049, "ai_platform", 2, 11),
@@ -62,8 +64,8 @@ STRATEGY_C_WATCHLIST: tuple[StrategyCWatchItem, ...] = (
 
 def validate_strategy_c_watchlist() -> None:
     symbols = [item.symbol for item in STRATEGY_C_WATCHLIST]
-    if len(symbols) != 28:
-        raise ValueError(f"Strategy C watchlist must contain 28 symbols, got {len(symbols)}")
+    if len(symbols) != 30:
+        raise ValueError(f"Strategy C watchlist must contain 30 symbols, got {len(symbols)}")
     if len(set(symbols)) != len(symbols):
         raise ValueError("Strategy C watchlist contains duplicate symbols")
     total_weight = sum(item.weight for item in STRATEGY_C_WATCHLIST)

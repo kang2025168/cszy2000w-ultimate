@@ -14,8 +14,8 @@ class StrategyCWatchlistTests(unittest.TestCase):
         validate_strategy_c_watchlist()
 
         symbols = [item.symbol for item in STRATEGY_C_WATCHLIST]
-        self.assertEqual(28, len(symbols))
-        self.assertEqual(28, len(set(symbols)))
+        self.assertEqual(30, len(symbols))
+        self.assertEqual(30, len(set(symbols)))
         self.assertAlmostEqual(1.0, sum(item.weight for item in STRATEGY_C_WATCHLIST))
         self.assertEqual(["QQQ", "VOO", "XLV"], [item.symbol for item in STRATEGY_A_WATCHLIST])
         self.assertAlmostEqual(1.0, sum(item.weight for item in STRATEGY_A_WATCHLIST))
@@ -23,9 +23,11 @@ class StrategyCWatchlistTests(unittest.TestCase):
     def test_expected_core_symbols_are_present(self):
         weights = {item.symbol: item.weight for item in STRATEGY_C_WATCHLIST}
 
-        self.assertEqual(0.12, weights["QQQ"])
-        self.assertEqual(0.12, weights["VOO"])
+        self.assertEqual(0.10, weights["QQQ"])
+        self.assertEqual(0.09, weights["VOO"])
         self.assertEqual(0.06, weights["XLV"])
+        self.assertEqual(0.03, weights["IAU"])
+        self.assertEqual(0.02, weights["IBIT"])
         self.assertEqual(0.049, weights["MSFT"])
         self.assertEqual(0.056, weights["BRK.B"])
         self.assertEqual(0.014, weights["SPCX"])

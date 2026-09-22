@@ -560,6 +560,31 @@ def ensure_control_state_tables() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ac_t_cycle_results (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  strategy_group VARCHAR(8) NOT NULL,
+                  symbol VARCHAR(32) NOT NULL,
+                  direction VARCHAR(32) NOT NULL,
+                  entry_side VARCHAR(8) NOT NULL,
+                  exit_side VARCHAR(8) NOT NULL,
+                  qty DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  entry_price DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  exit_price DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  realized_pnl DECIMAL(18,6) NOT NULL DEFAULT 0,
+                  return_pct DECIMAL(12,8) NOT NULL DEFAULT 0,
+                  cost_effect VARCHAR(16) NOT NULL,
+                  exit_reason VARCHAR(64),
+                  exit_order_id VARCHAR(128),
+                  started_at DATETIME NULL,
+                  completed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE KEY uq_ac_t_exit_order (exit_order_id),
+                  INDEX idx_ac_t_completed (completed_at),
+                  INDEX idx_ac_t_group_symbol (strategy_group, symbol, completed_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
 
 
 def ensure_schema() -> None:

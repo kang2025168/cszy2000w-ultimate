@@ -221,6 +221,44 @@ def performance_payload(period: str = "90d") -> dict:
     canceled = sum(1 for row in order_rows if "CANCEL" in str(row.get("status") or "").upper())
     execution = {"orders": len(order_rows), "filled_orders": filled, "failed_orders": failed, "canceled_orders": canceled}
     execution["fill_rate"] = round(filled / len(order_rows), 6) if order_rows else 0.0
+    t_where = "" if start is None else "WHERE completed_at >= %s"
+    t_args = () if start is None else (start,)
+    t_rows = _safe_fetch(
+        f"""
+        SELECT strategy_group,symbol,direction,qty,entry_price,exit_price,
+               realized_pnl,return_pct,cost_effect,exit_reason,completed_at
+        FROM ac_t_cycle_results
+        {t_where}
+        ORDER BY completed_at DESC, id DESC
+        LIMIT 200
+        """,
+        t_args,
+        quiet=True,
+    )
+    t_grouped: dict[str, dict] = defaultdict(lambda: {
+        "cycles": 0, "wins": 0, "losses": 0, "realized_pnl": 0.0,
+        "lowered": 0, "raised": 0,
+    })
+    for row in t_rows:
+        group = str(row.get("strategy_group") or "--").upper()
+        item = t_grouped[group]
+        pnl = _number(row.get("realized_pnl"))
+        item["cycles"] += 1
+        item["realized_pnl"] += pnl
+        item["wins"] += int(pnl > 0)
+        item["losses"] += int(pnl < 0)
+        item["lowered"] += int(str(row.get("cost_effect")) == "LOWERED")
+        item["raised"] += int(str(row.get("cost_effect")) == "RAISED")
+    t_summary = []
+    for group in sorted(t_grouped):
+        item = t_grouped[group]
+        cycles = item["cycles"]
+        t_summary.append({
+            "strategy": group,
+            **item,
+            "realized_pnl": round(item["realized_pnl"], 2),
+            "win_rate": round(item["wins"] / cycles, 6) if cycles else 0.0,
+        })
     equity = equity_metrics(equity_rows)
     strategies = strategy_metrics(holdings)
     return {
@@ -230,6 +268,7 @@ def performance_payload(period: str = "90d") -> dict:
         "equity": equity,
         "strategies": strategies,
         "execution": execution,
+        "ac_t": {"summary": t_summary, "rows": t_rows},
         "insights": _insights(equity, strategies, execution),
-        "methodology": "收益与回撤使用账户日终净值；策略盈亏使用 position_holdings 明确记录；失败或未成交订单不计为亏损。",
+        "methodology": "收益与回撤使用账户日终净值；策略盈亏使用 position_holdings；A/C 做T只在第二腿真实成交后记账，正收益表示成本做低，负收益表示成本做高。",
     }

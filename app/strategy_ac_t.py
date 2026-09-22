@@ -84,6 +84,9 @@ FILL_WAIT_SEC = env_float("AC_T_FILL_WAIT_SEC", 4.0)
 DRY_RUN = env_bool("AC_T_DRY_RUN", False)
 FORCE_CLOSE_UP_T = env_bool("AC_T_FORCE_CLOSE_UP_T", True)
 MIN_LEG_HOLD_MINUTES = env_float("AC_T_MIN_LEG_HOLD_MINUTES", 30.0)
+# A 使用独立养老金账户。默认整个 A 账户每天只允许启动一轮做 T；
+# 已经启动的第二腿仍可执行，确保临时仓位能够闭环恢复。
+A_T_MAX_CYCLES_PER_DAY = max(0, int(env_float("A_T_MAX_CYCLES_PER_DAY", 1)))
 
 ACTIVE_ORDER_STATUSES = {
     "new",
@@ -526,6 +529,48 @@ def _same_day(value) -> bool:
     return str(value) == str(_today_la())
 
 
+def _a_t_cycle_usage(conn) -> tuple[int, int]:
+    """返回 A 账户今日已启动轮数和当前未闭环轮数。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+              SUM(CASE
+                    WHEN ac_t_last_up_date=%s OR ac_t_last_down_date=%s THEN 1
+                    ELSE 0
+                  END) AS today_cycles,
+              SUM(CASE
+                    WHEN UPPER(COALESCE(ac_t_state, 'IDLE')) IN (
+                      'UP_T_HOLDING',
+                      'UP_T_WAIT_SELL_AT_COST',
+                      'DOWN_T_WAIT_BUYBACK',
+                      'DOWN_T_WAIT_BUYBACK_AT_SELL_PRICE',
+                      'GAP_UP_WAIT_BUYBACK',
+                      'GAP_DOWN_HOLDING'
+                    ) THEN 1
+                    ELSE 0
+                  END) AS active_cycles
+            FROM `{TABLE}`
+            WHERE COALESCE(ac_t_enabled, 0)=1
+              AND UPPER(COALESCE(NULLIF(ac_t_type, ''), ''))='A'
+            """,
+            (_today_la(), _today_la()),
+        )
+        result = cur.fetchone() or {}
+    return _safe_int(result.get("today_cycles")), _safe_int(result.get("active_cycles"))
+
+
+def _a_can_start_t_cycle(conn) -> tuple[bool, str]:
+    if A_T_MAX_CYCLES_PER_DAY <= 0:
+        return False, "a_t_disabled"
+    today_cycles, active_cycles = _a_t_cycle_usage(conn)
+    if active_cycles > 0:
+        return False, "a_t_cycle_in_progress"
+    if today_cycles >= A_T_MAX_CYCLES_PER_DAY:
+        return False, f"a_t_daily_limit:{today_cycles}/{A_T_MAX_CYCLES_PER_DAY}"
+    return True, f"a_t_available:{today_cycles}/{A_T_MAX_CYCLES_PER_DAY}"
+
+
 def _entry_age_minutes(row: dict) -> float | None:
     entry_time = row.get("ac_t_entry_time")
     if not entry_time:
@@ -585,6 +630,46 @@ def _sell_t_qty(conn, client, row: dict, qty: int, current_price: float, intent:
     return fill
 
 
+def _record_t_result(
+    conn,
+    row: dict,
+    fill: FillResult,
+    *,
+    direction: str,
+    entry_side: str,
+    exit_side: str,
+    entry_price: float,
+    exit_price: float,
+    reason: str,
+) -> None:
+    """Persist each realized second-leg fill so T quality can be audited."""
+    qty = max(0, _safe_int(fill.filled_qty))
+    if qty <= 0 or entry_price <= 0 or exit_price <= 0:
+        return
+    if direction == "BUY_THEN_SELL":
+        pnl = (exit_price - entry_price) * qty
+    else:
+        pnl = (entry_price - exit_price) * qty
+    basis = entry_price * qty
+    return_pct = pnl / basis if basis > 0 else 0.0
+    effect = "LOWERED" if pnl > 0 else "RAISED" if pnl < 0 else "FLAT"
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT IGNORE INTO ac_t_cycle_results (
+              strategy_group,symbol,direction,entry_side,exit_side,qty,
+              entry_price,exit_price,realized_pnl,return_pct,cost_effect,
+              exit_reason,exit_order_id,started_at,completed_at
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+            """,
+            (
+                _ac_type(row), row.get("stock_code"), direction, entry_side, exit_side,
+                qty, entry_price, exit_price, round(pnl, 6), round(return_pct, 8), effect,
+                reason[:64], fill.order_id or None, row.get("ac_t_entry_time"),
+            ),
+        )
+
+
 def handle_idle(conn, client, row: dict, current_price: float, params: dict) -> str:
     """空闲状态：先处理开盘缺口分流，再按普通 AC 做T逻辑触发。"""
     symbol = row["stock_code"]
@@ -593,6 +678,11 @@ def handle_idle(conn, client, row: dict, current_price: float, params: dict) -> 
     core_qty = _core_qty(conn, row, real_qty)
     if core_qty <= 0:
         return "skip:no_core_qty"
+
+    if ac_type == "A":
+        can_start, reason = _a_can_start_t_cycle(conn)
+        if not can_start:
+            return f"skip:{reason}"
 
     mode = _open_mode(conn, row, current_price, params)
     if _is_observation_window() and not DRY_RUN:
@@ -701,6 +791,13 @@ def _finish_up_sell(conn, client, row: dict, current_price: float, reason: str, 
     fill = _sell_t_qty(conn, client, row, t_qty, current_price, _intent(reason, row))
     if fill.filled_qty <= 0:
         return f"no_fill:up_sell status={fill.status} err={fill.error}"
+    _record_t_result(
+        conn, row, fill,
+        direction="BUY_THEN_SELL", entry_side="BUY", exit_side="SELL",
+        entry_price=_safe_float(row.get("ac_t_buy_price")),
+        exit_price=fill.filled_avg_price,
+        reason=reason,
+    )
     remaining = max(t_qty - fill.filled_qty, 0)
     core_qty = _safe_int(row.get("ac_t_core_qty"), _safe_int(row.get("qty")))
     if remaining > 0:
@@ -779,6 +876,13 @@ def _finish_down_buy(conn, client, row: dict, current_price: float, reason: str,
     fill = _buy_t_qty(conn, client, row, t_qty, current_price, _intent(reason, row))
     if fill.filled_qty <= 0:
         return f"no_fill:down_buy status={fill.status} err={fill.error}"
+    _record_t_result(
+        conn, row, fill,
+        direction="SELL_THEN_BUYBACK", entry_side="SELL", exit_side="BUY",
+        entry_price=_safe_float(row.get("ac_t_sell_price")),
+        exit_price=fill.filled_avg_price,
+        reason=reason,
+    )
     remaining = max(t_qty - fill.filled_qty, 0)
     core_qty = _safe_int(row.get("ac_t_core_qty"), _safe_int(row.get("qty")))
     if remaining > 0:

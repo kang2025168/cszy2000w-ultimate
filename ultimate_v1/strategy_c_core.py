@@ -275,14 +275,21 @@ def _has_open_buy(client, symbol: str) -> bool:
         return True
 
 
-def _submit_and_wait(client, plan: CoreBuyPlan, limit_price: float) -> tuple[str, str, float, float, str]:
+def _stock_qty_for_notional(notional: float, price: float) -> float:
+    """All automated stock buys use 0.1-share lots; never create dust below 0.1."""
+    if notional <= 0 or price <= 0:
+        return 0.0
+    return math.floor((float(notional) / float(price)) * 10) / 10.0
+
+
+def _submit_and_wait(client, plan: CoreBuyPlan, limit_price: float, qty: float) -> tuple[str, str, float, float, str]:
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest
 
     client_order_id = f"c-core-{_today().strftime('%y%m%d')}-{plan.symbol.replace('.', '')}-{uuid.uuid4().hex[:8]}"[:48]
     request = LimitOrderRequest(
         symbol=plan.symbol,
-        notional=round(plan.notional, 2),
+        qty=round(qty, 1),
         side=OrderSide.BUY,
         limit_price=alpaca_gateway.stock_limit_price(limit_price),
         time_in_force=TimeInForce.DAY,
@@ -508,8 +515,14 @@ def _run_strategy_c_core_buy_locked(*, dry_run: bool | None = None, ignore_marke
             _record_attempt(plan, status="skipped", reason="open_buy_exists", limit_price=price)
             result["orders"].append({"symbol": plan.symbol, "status": "skipped", "reason": "open_buy_exists"})
             continue
+        order_qty = _stock_qty_for_notional(plan.notional, price)
+        if order_qty < 0.1:
+            reason = "calculated_qty_below_0.1"
+            _record_attempt(plan, status="skipped", reason=reason, limit_price=price)
+            result["orders"].append({"symbol": plan.symbol, "status": "skipped", "reason": reason})
+            continue
         try:
-            order_id, status, filled_qty, filled_avg, error = _submit_and_wait(client, plan, price)
+            order_id, status, filled_qty, filled_avg, error = _submit_and_wait(client, plan, price, order_qty)
             final_status = "filled" if filled_qty > 0 and filled_avg > 0 else status
             _record_attempt(
                 plan,
@@ -536,7 +549,9 @@ def _run_strategy_c_core_buy_locked(*, dry_run: bool | None = None, ignore_marke
                     "symbol": plan.symbol,
                     "status": final_status,
                     "order_id": order_id,
-                    "notional": plan.notional,
+                    "qty": order_qty,
+                    "target_notional": plan.notional,
+                    "notional": round(order_qty * price, 2),
                     "filled_qty": filled_qty,
                     "filled_avg_price": filled_avg,
                     "error": local_record_error or error,

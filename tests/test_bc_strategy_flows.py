@@ -364,6 +364,32 @@ class BCStrategyFlowTests(unittest.TestCase):
         ac.load_ac_t_rows(conn, symbol="mockc", group="C")
         self.assertEqual(("C", "MOCKC"), conn.executed[-1][1])
 
+    def test_a_t_daily_limit_blocks_new_cycle_but_not_c(self):
+        import app.strategy_ac_t as ac
+
+        original = ac.A_T_MAX_CYCLES_PER_DAY
+        try:
+            ac.A_T_MAX_CYCLES_PER_DAY = 1
+            allowed, reason = ac._a_can_start_t_cycle(
+                FakeConn(fetchone_result={"today_cycles": 1, "active_cycles": 0})
+            )
+            self.assertFalse(allowed)
+            self.assertEqual("a_t_daily_limit:1/1", reason)
+
+            allowed, reason = ac._a_can_start_t_cycle(
+                FakeConn(fetchone_result={"today_cycles": 0, "active_cycles": 1})
+            )
+            self.assertFalse(allowed)
+            self.assertEqual("a_t_cycle_in_progress", reason)
+
+            allowed, reason = ac._a_can_start_t_cycle(
+                FakeConn(fetchone_result={"today_cycles": 0, "active_cycles": 0})
+            )
+            self.assertTrue(allowed)
+            self.assertEqual("a_t_available:0/1", reason)
+        finally:
+            ac.A_T_MAX_CYCLES_PER_DAY = original
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import unittest
 
-from ultimate_v1.strategy_c_core import build_c_core_buy_plan
+from ultimate_v1.strategy_c_core import _stock_qty_for_notional, build_c_core_buy_plan
 
 
 class StrategyCCorePlanTests(unittest.TestCase):
+    def test_stock_qty_uses_tenth_share_lots_and_rejects_dust(self):
+        self.assertEqual(0.1, _stock_qty_for_notional(70, 700))
+        self.assertEqual(0.0, _stock_qty_for_notional(60, 700))
+        self.assertEqual(1.2, _stock_qty_for_notional(125, 100))
+
     def test_empty_portfolio_builds_etf_foundation_first(self):
         plans = build_c_core_buy_plan(
             target_capital=1500,
@@ -19,7 +24,7 @@ class StrategyCCorePlanTests(unittest.TestCase):
         )
 
         self.assertEqual(["QQQ", "VOO", "XLV"], [plan.symbol for plan in plans])
-        self.assertEqual([60.0, 60.0, 30.0], [plan.notional for plan in plans])
+        self.assertEqual([60.0, 54.0, 36.0], [plan.notional for plan in plans])
 
     def test_core_leaders_follow_completed_etf_foundation(self):
         plans = build_c_core_buy_plan(
@@ -27,7 +32,7 @@ class StrategyCCorePlanTests(unittest.TestCase):
             available_capital=1000,
             buying_power=1000,
             cash=1000,
-            current_values={"QQQ": 120, "VOO": 120, "XLV": 60},
+            current_values={"QQQ": 100, "VOO": 90, "XLV": 60, "IAU": 30, "IBIT": 20},
             daily_budget_pct=0.10,
             daily_budget_max=250,
             min_order=25,

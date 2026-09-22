@@ -364,7 +364,7 @@ STRATEGY_2_DEFAULT_CONFIG = {
             "name": "A 养老金长期定投",
             "broker": "Alpaca 养老金账户",
             "capital": "A 资金池",
-            "mission": "负责养老金账户长期定投，按月把 A 可用资金按比例买入，不参与 B 动量和 D 日内交易。",
+            "mission": "负责养老金账户长期定投，并以严格频率限制围绕核心仓做 T；不参与 B 动量和 D 日内交易。",
             "select_rules": [
                 {"key": "a_stock_type", "label": "长期核心标记", "value": "stock_type=A", "unit": "", "enabled": True},
                 {"key": "a_market_filter", "label": "市场环境过滤", "value": "向上/横盘优先", "unit": "", "enabled": True},
@@ -373,7 +373,8 @@ STRATEGY_2_DEFAULT_CONFIG = {
             "buy_rules": [
                 {"key": "a_buy_style", "label": "买入方式", "value": "每月15号按比例买入", "unit": "", "enabled": True},
                 {"key": "a_position_role", "label": "仓位角色", "value": "长期核心仓", "unit": "", "enabled": True},
-                {"key": "a_no_intraday", "label": "禁止日内投机", "value": "是", "unit": "", "enabled": True},
+                {"key": "a_t_frequency", "label": "做T频率", "value": "A全账户每日最多1轮", "unit": "", "enabled": True},
+                {"key": "a_t_serial", "label": "循环约束", "value": "上一轮闭环后才可开启下一轮", "unit": "", "enabled": True},
             ],
             "sell_rules": [
                 {"key": "a_sell_trigger", "label": "卖出触发", "value": "再平衡/风险关闭", "unit": "", "enabled": True},
@@ -412,8 +413,8 @@ STRATEGY_2_DEFAULT_CONFIG = {
             "capital": "长期资金",
             "mission": "B/C/D 在原保证金账户内按 4:4:2 分配。C 有可用现金时按目标权重自动补仓，随后只用完整股做日内 T，碎股始终留在长期核心仓。",
             "select_rules": [
-                {"key": "c_universe", "label": "长期预选池", "value": "28 只（25只股票+QQQ/VOO/XLV）", "unit": "", "enabled": True},
-                {"key": "c_foundation", "label": "指数底仓", "value": "QQQ 12% / VOO 12% / XLV 6%", "unit": "", "enabled": True},
+                {"key": "c_universe", "label": "长期预选池", "value": "30 只（25只股票+5只ETF）", "unit": "", "enabled": True},
+                {"key": "c_foundation", "label": "多元底仓", "value": "QQQ 10% / VOO 9% / XLV 6% / IAU 3% / IBIT 2%", "unit": "", "enabled": True},
                 {"key": "c_fill_order", "label": "建仓顺序", "value": "指数底仓 → 核心龙头 → 成长卫星", "unit": "", "enabled": True},
                 {"key": "c_stock_type", "label": "持仓归属", "value": "stock_type=C / capital_pool=C", "unit": "", "enabled": True},
                 {"key": "c_up_trigger", "label": "上涨做T触发", "value": 1, "unit": "%", "enabled": True},
@@ -4633,6 +4634,9 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </div>
       <div class="stats-table-wrap"><table class="stats-table" id="strategyStatsTable"></table></div>
+      <div class="stats-card-head" style="margin-top:18px"><span class="stats-card-title">A/C 做T闭环明细</span><span class="stats-card-meta" id="tStatsMeta">只统计第二腿已成交</span></div>
+      <div class="stats-table-wrap"><table class="stats-table" id="tCycleStatsTable"></table></div>
+      <div class="stats-table-wrap"><table class="stats-table" id="tCycleDetailTable"></table></div>
       <div class="stats-method" id="statsMethod"></div>
     </section>
     <section class="panel life-focus-panel" id="lifeFocusPanel">
@@ -4779,6 +4783,11 @@ INDEX_HTML = r"""<!doctype html>
       return `${sign}$${Math.abs(n).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
     };
     const pct = v => `${(Number(v || 0) * 100).toFixed(2)}%`;
+    const shareQty = v => {
+      const n = Number(v || 0);
+      if (!Number.isFinite(n)) return '--';
+      return n.toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:1});
+    };
     const cls = v => Number(v || 0) < 0 ? 'neg' : Number(v || 0) > 0 ? 'pos' : '';
     const esc = v => String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
     const colors = {A:'#2563eb', B:'#d97706', C:'#15936a', D:'#7c3aed', X:'#0f766e', Z:'#475569', CASH:'#d0d5dd'};
@@ -6920,6 +6929,14 @@ INDEX_HTML = r"""<!doctype html>
         <td class="pos">${row.avg_win ? money(row.avg_win) : '--'}</td><td class="neg">${row.avg_loss ? money(row.avg_loss) : '--'}</td>
         <td>${row.payoff_ratio ? Number(row.payoff_ratio).toFixed(2) : '--'}</td><td class="${cls(row.expectancy)}">${row.closed_trades ? money(row.expectancy) : '--'}</td>
         <td class="${cls(row.capital_return)}">${row.cost_basis ? pct(row.capital_return) : '--'}</td></tr>`).join('')}</tbody>`;
+      const t = payload.ac_t || {}, tSummary = t.summary || [], tRows = t.rows || [];
+      document.getElementById('tStatsMeta').textContent = `${tRows.length} 条成交闭环记录`;
+      document.getElementById('tCycleStatsTable').innerHTML = `<thead><tr>${['策略','闭环次数','盈利','亏损','胜率','做低成本','做高成本','累计收益'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${tSummary.length ? tSummary.map(row => `<tr><td><span class="stats-strategy">${esc(row.strategy)}</span></td><td>${row.cycles||0}</td><td>${row.wins||0}</td><td>${row.losses||0}</td><td>${pct(row.win_rate)}</td><td class="pos">${row.lowered||0}</td><td class="neg">${row.raised||0}</td><td class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</td></tr>`).join('') : '<tr><td colspan="8" class="small-muted">暂无已完成的 A/C 做T记录</td></tr>'}</tbody>`;
+      document.getElementById('tCycleDetailTable').innerHTML = `<thead><tr>${['完成时间','策略','代码','方向','数量','第一腿','第二腿','收益','收益率','结果','原因'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${tRows.length ? tRows.map(row => {
+        const lowered = String(row.cost_effect) === 'LOWERED';
+        const direction = row.direction === 'BUY_THEN_SELL' ? '先买后卖' : '先卖后买回';
+        return `<tr><td>${esc(String(row.completed_at||'').slice(0,19))}</td><td>${esc(row.strategy_group)}</td><td><b>${esc(row.symbol)}</b></td><td>${direction}</td><td>${shareQty(row.qty)}</td><td>${money(row.entry_price)}</td><td>${money(row.exit_price)}</td><td class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</td><td class="${cls(row.return_pct)}">${pct(row.return_pct)}</td><td class="${lowered ? 'pos' : 'neg'}">${lowered ? '成本做低' : Number(row.realized_pnl||0) < 0 ? '成本做高' : '持平'}</td><td>${esc(row.exit_reason||'--')}</td></tr>`;
+      }).join('') : '<tr><td colspan="11" class="small-muted">机器人完成一轮做T后会自动记录在这里</td></tr>'}</tbody>`;
       document.getElementById('statsMethod').textContent = `统计口径：${payload.methodology || '--'} · 取消 ${x.canceled_orders||0} 笔 · 失败 ${x.failed_orders||0} 笔。`;
       requestAnimationFrame(() => drawPerformanceChart(e.points || []));
     }
@@ -7186,7 +7203,7 @@ INDEX_HTML = r"""<!doctype html>
             : cAction || (candidate && r.operation_id
             ? `<button class="pool-delete-btn" onclick="deleteStockPoolCandidate(${Number(r.operation_id)})">删</button>`
             : '');
-          return `<tr class="${dSelected ? 'd-execution-row' : ''}"><td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td><td>${r.strategy_group}</td><td>${statusHtml}</td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${maybeMoney(r.trigger_price)}</td><td>${candidate ? '--' : Number(r.qty||0).toFixed(4)}</td><td>${maybeMoney(r.initial_entry_price || r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${candidate ? '--' : money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${candidate ? '--' : pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${candidate ? '--' : money(r.realized_pnl)}</td><td>${candidate ? '--' : (r.holding_days || 0)}</td><td>${r.last_update_time || ''}</td><td>${action}</td></tr>`;
+          return `<tr class="${dSelected ? 'd-execution-row' : ''}"><td><button class="symbol-fill-btn" onclick="fillManualSymbol('${r.symbol}')">${r.symbol}</button></td><td>${r.strategy_group}</td><td>${statusHtml}</td><td class="${cls(day)}">${pct(day)}</td><td>${maybeMoney(r.current_price)}</td><td>${maybeMoney(r.trigger_price)}</td><td>${candidate ? '--' : shareQty(r.qty)}</td><td>${maybeMoney(r.initial_entry_price || r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.avg_entry_price)}</td><td>${candidate ? '--' : money(r.market_value)}</td><td class="${cls(r.unrealized_pnl)}">${candidate ? '--' : money(r.unrealized_pnl)}</td><td class="${cls(r.unrealized_pnl_pct)}">${candidate ? '--' : pct(r.unrealized_pnl_pct)}</td><td class="${cls(r.realized_pnl)}">${candidate ? '--' : money(r.realized_pnl)}</td><td>${candidate ? '--' : (r.holding_days || 0)}</td><td>${r.last_update_time || ''}</td><td>${action}</td></tr>`;
         }).join('') +
         blanks + `</tbody>`;
     }
