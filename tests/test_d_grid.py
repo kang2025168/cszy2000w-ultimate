@@ -62,6 +62,10 @@ class DGridTests(unittest.TestCase):
     def test_buy_timeout_has_execution_floor(self, _runtime_mock) -> None:
         self.assertEqual(300, _buy_timeout_seconds())
 
+    @patch("ultimate_v1.d_grid._runtime_text", return_value="600")
+    def test_buy_timeout_reprices_after_ten_minutes(self, _runtime_mock) -> None:
+        self.assertEqual(600, _buy_timeout_seconds())
+
     @patch("ultimate_v1.d_grid._runtime_text", return_value="5")
     def test_reprice_cooldown_has_churn_floor(self, _runtime_mock) -> None:
         self.assertEqual(15, _buy_retry_cooldown_seconds())

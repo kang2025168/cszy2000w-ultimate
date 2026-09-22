@@ -235,7 +235,7 @@ def save_config(payload: dict) -> dict:
     for key, value in times.items():
         set_app_setting(key, value)
     set_app_setting("D_GRID_COOLDOWN_SEC", str(max(1, int(float(payload.get("cooldown_seconds") or 5)))))
-    set_app_setting("D_GRID_BUY_TIMEOUT_SEC", str(max(300, int(float(payload.get("buy_timeout_seconds") or 900)))))
+    set_app_setting("D_GRID_BUY_TIMEOUT_SEC", str(max(300, int(float(payload.get("buy_timeout_seconds") or 600)))))
     entry_pct = min(0.05, max(0.0001, float(payload.get("entry_pct") or 0.0025)))
     profit_pct = min(0.20, max(0.0001, float(payload.get("profit_pct") or 0.01)))
     set_app_setting("D_GRID_ENTRY_PCT", str(entry_pct))
@@ -496,7 +496,7 @@ def _finish_cycle(cur, config: dict, cycle: dict, sell_price: float) -> str:
 
 def _buy_timeout_seconds() -> int:
     """Keep pullback orders resting long enough to have a realistic fill chance."""
-    return max(300, int(float(_runtime_text("D_GRID_BUY_TIMEOUT_SEC", "D_GRID_BUY_TIMEOUT_SEC", "900"))))
+    return max(300, int(float(_runtime_text("D_GRID_BUY_TIMEOUT_SEC", "D_GRID_BUY_TIMEOUT_SEC", "600"))))
 
 
 def _buy_retry_cooldown_seconds() -> int:
