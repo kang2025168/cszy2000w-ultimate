@@ -131,8 +131,9 @@ def update_sell_holding(
                 """
                 SELECT id, avg_entry_price, realized_pnl
                 FROM position_holdings
-                WHERE symbol=%s AND strategy_group=%s AND status='open'
-                ORDER BY id DESC LIMIT 1
+                WHERE symbol=%s AND strategy_group=%s
+                  AND status IN ('open', 'needs_review')
+                ORDER BY FIELD(status, 'open', 'needs_review'), id DESC LIMIT 1
                 """,
                 (symbol, group),
             )
@@ -311,12 +312,18 @@ def mark_missing_from_alpaca(
                         cur.execute("DELETE FROM position_holdings WHERE id=%s", (row["id"],))
                         print(f"[POSITION SYNC] symbol={symbol} group={group} local_not_in_alpaca deleted", flush=True)
                         continue
-                    if group in {"A", "C"} and row.get("status") != "needs_review":
+                    if group in {"A", "C"}:
                         cur.execute(
-                            "UPDATE position_holdings SET status='needs_review', last_update_time=NOW(), notes=CONCAT(COALESCE(notes,''), ' local_open_but_not_in_alpaca') WHERE id=%s",
+                            """
+                            UPDATE position_holdings
+                            SET status='closed', qty=0, market_value=0,
+                                exit_time=COALESCE(exit_time, NOW()), last_update_time=NOW(),
+                                notes=CONCAT(COALESCE(notes,''), ' broker_position_closed')
+                            WHERE id=%s
+                            """,
                             (row["id"],),
                         )
-                        print(f"[POSITION SYNC] symbol={symbol} group={group} local_open_but_not_in_alpaca kept=needs_review", flush=True)
+                        print(f"[POSITION SYNC] symbol={symbol} group={group} local_not_in_alpaca closed", flush=True)
 
 
 def summary_counts() -> dict:

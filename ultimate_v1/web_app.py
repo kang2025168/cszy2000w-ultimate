@@ -2514,7 +2514,15 @@ def _manual_stock_qty(raw_qty: float, price: float, full_qty: float | None = Non
     return float(int(raw))
 
 
-def _manual_order_fill(client, symbol: str, order_id: str, fallback_qty: float, fallback_price: float) -> tuple[float, float, str]:
+def _manual_order_fill(
+    client,
+    symbol: str,
+    order_id: str,
+    fallback_qty: float,
+    fallback_price: float,
+    *,
+    allow_position_fallback: bool = True,
+) -> tuple[float, float, str]:
     status = ""
     filled_qty = 0.0
     filled_avg = 0.0
@@ -2531,14 +2539,15 @@ def _manual_order_fill(client, symbol: str, order_id: str, fallback_qty: float, 
                 return 0.0, 0.0, status
         except Exception:
             pass
-        try:
-            pos = client.get_open_position(symbol)
-            pos_qty = _safe_float(getattr(pos, "qty", 0))
-            pos_avg = _safe_float(getattr(pos, "avg_entry_price", 0))
-            if pos_qty > 0 and pos_avg > 0:
-                return min(pos_qty, float(fallback_qty or pos_qty)), pos_avg, status or "position_synced"
-        except Exception:
-            pass
+        if allow_position_fallback:
+            try:
+                pos = client.get_open_position(symbol)
+                pos_qty = _safe_float(getattr(pos, "qty", 0))
+                pos_avg = _safe_float(getattr(pos, "avg_entry_price", 0))
+                if pos_qty > 0 and pos_avg > 0:
+                    return min(pos_qty, float(fallback_qty or pos_qty)), pos_avg, status or "position_synced"
+            except Exception:
+                pass
         time.sleep(0.5)
     if filled_qty > 0 and filled_avg <= 0:
         filled_avg = float(fallback_price or 0.0)
@@ -2741,6 +2750,93 @@ def _record_manual_buy(symbol: str, pool: str, qty: float, avg_price: float, cur
     return {**protection, "stop_loss_added": True, "recorded_stock_type": pool}
 
 
+def _record_manual_sell(symbol: str, pool: str, qty: float, avg_price: float, order_id: str) -> None:
+    """Apply a filled manual sell to the selected strategy lot."""
+    symbol = str(symbol or "").strip().upper()
+    pool = str(pool or "").strip().upper()
+    sold_qty = max(0.0, float(qty or 0))
+    if not symbol or pool not in {"A", "B", "C", "D"} or sold_qty <= 0:
+        return
+
+    local_qty = 0.0
+    try:
+        rows = fetch_all(
+            """
+            SELECT qty
+            FROM position_holdings
+            WHERE symbol=%s AND strategy_group=%s
+              AND status IN ('open', 'needs_review')
+            ORDER BY FIELD(status, 'open', 'needs_review'), id DESC
+            LIMIT 1
+            """,
+            (symbol, pool),
+        )
+        if rows:
+            local_qty = _safe_float(rows[0].get("qty"))
+    except Exception as exc:
+        print(f"[WEB MANUAL SELL] {symbol} local qty lookup failed: {exc}", flush=True)
+    remaining_qty = max(0.0, local_qty - sold_qty)
+
+    try:
+        from .position_holdings import update_sell_holding
+
+        update_sell_holding(
+            symbol,
+            pool,
+            sold_qty,
+            avg_price,
+            remaining_qty=remaining_qty,
+            last_order_id=str(order_id or ""),
+        )
+    except Exception as exc:
+        print(f"[WEB MANUAL SELL] {symbol} holding update failed: {exc}", flush=True)
+
+    try:
+        from app.strategy_b import OPS_TABLE, _intent_short
+    except Exception:
+        OPS_TABLE = "stock_operations"
+
+        def _intent_short(value: str) -> str:
+            return value[:80]
+    try:
+        with db_conn() as conn:
+            columns = _manual_table_columns(conn, OPS_TABLE)
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id FROM `{OPS_TABLE}`
+                    WHERE stock_code=%s AND stock_type=%s
+                    ORDER BY {"id DESC" if "id" in columns else "stock_code"}
+                    LIMIT 1
+                    """,
+                    (symbol, pool),
+                )
+                row = cur.fetchone()
+            if row:
+                flat = remaining_qty <= 0.000001
+                _manual_update_ops_row(
+                    conn,
+                    OPS_TABLE,
+                    columns,
+                    row.get("id"),
+                    symbol,
+                    pool,
+                    {
+                        "qty": remaining_qty,
+                        "base_qty": remaining_qty,
+                        "is_bought": 0 if flat else 1,
+                        "can_sell": 0 if flat else 1,
+                        "can_buy": 1 if flat else 0,
+                        "last_order_side": "sell",
+                        "last_order_intent": _intent_short(f"{pool}:MANUAL_SELL filled={sold_qty:g}"),
+                        "last_order_id": str(order_id or ""),
+                        "last_order_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    },
+                )
+    except Exception as exc:
+        print(f"[WEB MANUAL SELL] {symbol} stock_operations update failed: {exc}", flush=True)
+
+
 def _pool_account_buying_power(capital: dict, pool: str) -> float:
     """Return buying power for the broker account that owns this pool."""
     profile = str((capital.get("pool_brokers") or {}).get(pool) or "").strip()
@@ -2896,6 +2992,28 @@ def _manual_stock_order_payload(payload: dict) -> dict:
         else:
             preview["stop_loss_added"] = False
             preview["stop_loss_note"] = "订单尚未成交，未写入本地止损"
+        _record_manual_trade(preview)
+    elif side == "sell":
+        filled_qty, filled_avg, fill_status = _manual_order_fill(
+            client,
+            symbol,
+            order_id,
+            qty,
+            price,
+            allow_position_fallback=False,
+        )
+        preview.update(
+            {
+                "filled_qty": filled_qty,
+                "filled_avg_price": filled_avg,
+                "status": fill_status or status,
+            }
+        )
+        if filled_qty > 0:
+            _record_manual_sell(symbol, pool, filled_qty, filled_avg or price, order_id)
+            preview["message"] = f"卖出已成交，已同步扣减 {pool} 类型持仓"
+        else:
+            preview["message"] = "卖单已提交，尚未成交；成交后由仓位同步机器人更新"
         _record_manual_trade(preview)
     return preview
 
@@ -6222,7 +6340,12 @@ INDEX_HTML = r"""<!doctype html>
         box.value = '--';
         return;
       }
-      const row = (latestHoldings || []).find(r => String(r.symbol || '').toUpperCase() === symbol);
+      const pool = document.getElementById('manualBuyPool')?.value || 'C';
+      const row = (latestHoldings || []).find(r =>
+        String(r.symbol || '').toUpperCase() === symbol &&
+        String(r.strategy_group || r.stock_type || '').toUpperCase() === pool &&
+        String(r.status || '').toLowerCase() === 'open'
+      );
       const qty = Number(row?.total_shares ?? row?.qty ?? 0);
       box.value = qty > 0 ? `${qty.toFixed(4)} 股` : '0.0000 股';
     }
@@ -6262,7 +6385,12 @@ INDEX_HTML = r"""<!doctype html>
     }
     function currentManualHeldQty() {
       const symbol = (document.getElementById('manualBuySymbol')?.value || '').trim().toUpperCase();
-      const row = (latestHoldings || []).find(r => String(r.symbol || '').toUpperCase() === symbol);
+      const pool = document.getElementById('manualBuyPool')?.value || 'C';
+      const row = (latestHoldings || []).find(r =>
+        String(r.symbol || '').toUpperCase() === symbol &&
+        String(r.strategy_group || r.stock_type || '').toUpperCase() === pool &&
+        String(r.status || '').toLowerCase() === 'open'
+      );
       return Number(row?.total_shares ?? row?.qty ?? 0);
     }
     function setManualPreview(side, qty, notional, constraint) {
