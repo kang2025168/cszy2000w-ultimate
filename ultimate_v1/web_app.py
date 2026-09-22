@@ -34,6 +34,7 @@ from .d_tactical import d_tactical_payload, option_preview, submit_option_combo
 from .d_grid import config_payload as d_grid_config_payload, save_config as save_d_grid_config
 from .exposure_manager import latest_exposure_state, latest_rebalance_actions, refresh_exposure_plan
 from .monthly_investment import load_monthly_invest_config, run_monthly_investment, save_monthly_invest_config
+from .performance_analytics import performance_payload
 from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import CAPITAL_MODE_LABELS, get_risk_state
 from .schema import ensure_schema
@@ -2989,6 +2990,11 @@ INDEX_HTML = r"""<!doctype html>
     body.stock-focus .left-stack { display:block; }
     body.stock-focus .right-stack, body.stock-focus .capital-hero, body.stock-focus .holdings-panel, body.stock-focus .phase-popover, body.stock-focus .log-focus-panel, body.stock-focus .life-focus-panel { display:none !important; }
     body.stock-focus .stock-focus-panel { display:block; min-height:calc(100vh - 116px); margin-top:12px; }
+    body.stats-focus main { max-width:none; gap:12px; }
+    body.stats-focus .dash { display:block; }
+    body.stats-focus .left-stack { display:block; }
+    body.stats-focus .right-stack, body.stats-focus .capital-hero, body.stats-focus .holdings-panel, body.stats-focus .phase-popover, body.stats-focus .log-focus-panel, body.stats-focus .life-focus-panel, body.stats-focus .stock-focus-panel { display:none !important; }
+    body.stats-focus .stats-focus-panel { display:block; min-height:calc(100vh - 116px); margin-top:12px; }
     .capital-hero { flex:0 0 auto; }
     .hero-top { display:grid; grid-template-columns:minmax(340px,1fr) minmax(300px,.78fr); gap:12px; align-items:start; padding:14px; border:1px solid #c5d5e6; border-radius:8px; background:linear-gradient(145deg,#eef5fb 0%,#f8fbff 45%,#edf4fa 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.86), 0 10px 26px rgba(15,23,42,.06); }
     .hero-top:before { content:""; grid-column:1 / -1; height:3px; border-radius:999px; background:linear-gradient(90deg,#15936a,#2563eb,#d97706); opacity:.72; margin:-2px 0 0; }
@@ -3180,6 +3186,40 @@ INDEX_HTML = r"""<!doctype html>
     .trade-records th, .trade-records td { white-space:nowrap; }
     .life-focus-panel { display:none; }
     .stock-focus-panel { display:none; }
+    .stats-focus-panel { display:none; }
+    .stats-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:14px; }
+    .stats-heading { display:grid; gap:5px; }
+    .stats-heading h2 { font-size:20px; }
+    .stats-periods { display:flex; gap:6px; padding:5px; border:1px solid #d8e4f0; border-radius:8px; background:#eef3f8; }
+    .stats-period { height:32px; min-width:66px; border:0; background:transparent; color:#667085; font-weight:900; }
+    .stats-period.active { color:#fff; background:#101828; box-shadow:0 5px 12px rgba(15,23,42,.16); }
+    .stats-kpis { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; margin-bottom:12px; }
+    .stats-kpi { min-height:88px; display:grid; align-content:space-between; gap:7px; padding:13px; border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); }
+    .stats-kpi-label { color:#667085; font-size:11px; font-weight:900; }
+    .stats-kpi-value { color:#101828; font-size:23px; font-weight:950; font-variant-numeric:tabular-nums; }
+    .stats-kpi-value.positive { color:#087f5b; }
+    .stats-kpi-value.negative { color:#b42318; }
+    .stats-kpi-note { color:#98a2b3; font-size:10px; font-weight:750; }
+    .stats-main-grid { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(320px,.55fr); gap:12px; margin-bottom:12px; }
+    .stats-card { border:1px solid #d8e4f0; border-radius:8px; background:#fff; overflow:hidden; }
+    .stats-card-head { min-height:46px; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 13px; border-bottom:1px solid #e8eef6; background:#f8fbff; }
+    .stats-card-title { font-size:14px; font-weight:950; }
+    .stats-card-meta { color:#667085; font-size:11px; font-weight:800; }
+    .stats-chart-wrap { height:250px; padding:14px; }
+    #performanceChart { width:100%; height:100%; display:block; }
+    .stats-insights { display:grid; gap:8px; padding:12px; }
+    .stats-insight { padding:10px 11px; border-left:3px solid #d0d5dd; border-radius:6px; background:#f8fafc; }
+    .stats-insight.ok { border-color:#15936a; background:#f0fdf8; }
+    .stats-insight.warn { border-color:#d97706; background:#fffbeb; }
+    .stats-insight.danger { border-color:#c62828; background:#fff5f4; }
+    .stats-insight b { display:block; margin-bottom:3px; font-size:12px; }
+    .stats-insight span { color:#667085; font-size:11px; line-height:1.45; }
+    .stats-table-wrap { overflow:auto; border:1px solid #d8e4f0; border-radius:8px; background:#fff; }
+    .stats-table { width:100%; min-width:1100px; }
+    .stats-table th { background:#edf3fa; color:#475467; font-size:11px; }
+    .stats-table td { font-size:12px; }
+    .stats-strategy { display:inline-flex; align-items:center; justify-content:center; min-width:30px; height:26px; border-radius:6px; background:#101828; color:#fff; font-weight:950; }
+    .stats-method { margin-top:10px; color:#667085; font-size:11px; line-height:1.5; }
     .stock-selection-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; margin-bottom:14px; }
     .stock-selection-title { display:grid; gap:5px; }
     .stock-selection-title h2 { font-size:20px; }
@@ -3728,6 +3768,7 @@ INDEX_HTML = r"""<!doctype html>
       .title-actions #stockFocusBtn,
       .title-actions #logFocusBtn,
       .title-actions #configFocusBtn,
+      .title-actions #statsFocusBtn,
       .title-actions #lifeFocusBtn,
       .title-actions .phase-chip,
       .title-actions .refresh-btn { display:none !important; }
@@ -3901,6 +3942,9 @@ INDEX_HTML = r"""<!doctype html>
       .account-config-actions { justify-content:flex-start; }
       .account-config-grid, .pool-map-grid, .monthly-config { grid-template-columns:1fr; }
       .rule-row { grid-template-columns:22px minmax(88px,.8fr) minmax(0,1fr) 40px; }
+      .stats-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .stats-main-grid { grid-template-columns:1fr; }
+      .stats-head { flex-direction:column; }
     }
   </style>
 </head>
@@ -3919,6 +3963,7 @@ INDEX_HTML = r"""<!doctype html>
           <button class="trade-focus-btn" id="stockFocusBtn" onclick="toggleStockFocus()">选股</button>
           <button class="trade-focus-btn" id="logFocusBtn" onclick="toggleLogFocus()">日志</button>
           <button class="trade-focus-btn" id="configFocusBtn" onclick="toggleConfigFocus()">配置</button>
+          <button class="trade-focus-btn" id="statsFocusBtn" onclick="toggleStatsFocus()">统计</button>
           <button class="trade-focus-btn" id="lifeFocusBtn" onclick="toggleLifeFocus()">生活</button>
           <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
           <button class="refresh-btn" onclick="loadAll()">刷新</button>
@@ -4444,6 +4489,33 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
       </div>
+    </section>
+    <section class="panel stats-focus-panel" id="statsFocusPanel">
+      <div class="stats-head">
+        <div class="stats-heading">
+          <h2>系统统计与分析</h2>
+          <div class="small-muted">用净值、回撤、策略期望值和执行质量判断系统是否真正进步</div>
+        </div>
+        <div class="stats-periods">
+          <button class="stats-period" data-stats-period="30d" onclick="loadPerformance('30d')">30天</button>
+          <button class="stats-period active" data-stats-period="90d" onclick="loadPerformance('90d')">90天</button>
+          <button class="stats-period" data-stats-period="year" onclick="loadPerformance('year')">今年</button>
+          <button class="stats-period" data-stats-period="all" onclick="loadPerformance('all')">全部</button>
+        </div>
+      </div>
+      <div class="stats-kpis" id="statsKpis"><div class="stats-kpi"><span class="stats-kpi-label">正在计算</span><b class="stats-kpi-value">--</b></div></div>
+      <div class="stats-main-grid">
+        <div class="stats-card">
+          <div class="stats-card-head"><span class="stats-card-title">账户净值与回撤</span><span class="stats-card-meta" id="statsChartMeta">--</span></div>
+          <div class="stats-chart-wrap"><canvas id="performanceChart"></canvas></div>
+        </div>
+        <div class="stats-card">
+          <div class="stats-card-head"><span class="stats-card-title">系统诊断</span><span class="stats-card-meta">按证据说话</span></div>
+          <div class="stats-insights" id="statsInsights"><div class="stats-insight warn"><b>正在分析</b><span>读取交易与净值数据...</span></div></div>
+        </div>
+      </div>
+      <div class="stats-table-wrap"><table class="stats-table" id="strategyStatsTable"></table></div>
+      <div class="stats-method" id="statsMethod"></div>
     </section>
     <section class="panel life-focus-panel" id="lifeFocusPanel">
       <div class="life-head">
@@ -5012,13 +5084,15 @@ INDEX_HTML = r"""<!doctype html>
       const logs = mode === 'logs';
       const life = mode === 'life';
       const stock = mode === 'stock';
+      const stats = mode === 'stats';
       document.body.classList.toggle('trade-focus', trade);
       document.body.classList.toggle('config-focus', config);
       document.body.classList.toggle('holdings-focus', holdings);
       document.body.classList.toggle('log-focus', logs);
       document.body.classList.toggle('life-focus', life);
       document.body.classList.toggle('stock-focus', stock);
-      document.getElementById('overviewFocusBtn')?.classList.toggle('active', !trade && !config && !holdings && !logs && !life && !stock);
+      document.body.classList.toggle('stats-focus', stats);
+      document.getElementById('overviewFocusBtn')?.classList.toggle('active', !trade && !config && !holdings && !logs && !life && !stock && !stats);
       document.getElementById('stockTradeFocusBtn')?.classList.toggle('active', trade && manualTradeTab !== 'option');
       document.getElementById('optionTradeFocusBtn')?.classList.toggle('active', trade && manualTradeTab === 'option');
       document.getElementById('configFocusBtn')?.classList.toggle('active', config);
@@ -5026,6 +5100,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('logFocusBtn')?.classList.toggle('active', logs);
       document.getElementById('lifeFocusBtn')?.classList.toggle('active', life);
       document.getElementById('stockFocusBtn')?.classList.toggle('active', stock);
+      document.getElementById('statsFocusBtn')?.classList.toggle('active', stats);
     }
     function showOverview() {
       setFocusMode('overview');
@@ -5076,6 +5151,15 @@ INDEX_HTML = r"""<!doctype html>
       }
       document.getElementById('phasePopover')?.classList.remove('show');
       setLogView(logView || 'bots');
+    }
+    function toggleStatsFocus() {
+      setFocusMode('stats');
+      if (manualQuoteInterval) {
+        clearInterval(manualQuoteInterval);
+        manualQuoteInterval = null;
+      }
+      document.getElementById('phasePopover')?.classList.remove('show');
+      loadPerformance(window.performancePeriod || '90d');
     }
     function toggleLifeFocus() {
       setFocusMode('life');
@@ -6654,6 +6738,69 @@ INDEX_HTML = r"""<!doctype html>
     async function loadTradeRecords() {
       renderTradeRecords(await api('/api/trade_records'));
     }
+    function drawPerformanceChart(points) {
+      const canvas = document.getElementById('performanceChart');
+      if (!canvas) return;
+      const box = canvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(box.width * ratio));
+      canvas.height = Math.max(1, Math.floor(box.height * ratio));
+      const ctx = canvas.getContext('2d');
+      ctx.scale(ratio, ratio);
+      const width = box.width, height = box.height, pad = 24;
+      ctx.clearRect(0, 0, width, height);
+      const rows = points || [];
+      if (rows.length < 2) {
+        ctx.fillStyle = '#98a2b3'; ctx.font = '12px system-ui'; ctx.textAlign = 'center';
+        ctx.fillText('日终净值样本不足，机器人运行后会持续积累', width / 2, height / 2);
+        return;
+      }
+      const values = rows.map(row => Number(row.equity || 0));
+      const min = Math.min(...values), max = Math.max(...values), range = Math.max(max - min, max * .005, 1);
+      const x = i => pad + i * (width - pad * 2) / (rows.length - 1);
+      const y = value => height - pad - (value - min) * (height - pad * 2) / range;
+      ctx.strokeStyle = '#e5eaf1'; ctx.lineWidth = 1;
+      for (let i=0; i<4; i++) { const gy=pad+i*(height-pad*2)/3; ctx.beginPath(); ctx.moveTo(pad,gy); ctx.lineTo(width-pad,gy); ctx.stroke(); }
+      const gradient = ctx.createLinearGradient(0, pad, 0, height-pad);
+      gradient.addColorStop(0, 'rgba(21,147,106,.20)'); gradient.addColorStop(1, 'rgba(21,147,106,0)');
+      ctx.beginPath(); rows.forEach((row,i) => i ? ctx.lineTo(x(i),y(row.equity)) : ctx.moveTo(x(i),y(row.equity)));
+      ctx.lineTo(x(rows.length-1),height-pad); ctx.lineTo(x(0),height-pad); ctx.closePath(); ctx.fillStyle=gradient; ctx.fill();
+      ctx.beginPath(); rows.forEach((row,i) => i ? ctx.lineTo(x(i),y(row.equity)) : ctx.moveTo(x(i),y(row.equity)));
+      ctx.strokeStyle='#15936a'; ctx.lineWidth=2.4; ctx.stroke();
+      ctx.fillStyle='#667085'; ctx.font='10px system-ui'; ctx.textAlign='left'; ctx.fillText(money(max), pad, 12);
+      ctx.textAlign='right'; ctx.fillText(money(min), width-pad, height-5);
+    }
+    function renderPerformance(payload) {
+      if (!payload?.ok) return;
+      const e = payload.equity || {}, x = payload.execution || {};
+      const kpis = [
+        ['期末总资产', money(e.end_equity), `${e.sample_days || 0} 个日终样本`, ''],
+        ['区间收益', pct(e.total_return), `净变化 ${money(e.net_change)}`, Number(e.total_return||0) >= 0 ? 'positive' : 'negative'],
+        ['最大回撤', pct(e.max_drawdown), '越接近 0 越稳', Number(e.max_drawdown||0) < -.1 ? 'negative' : ''],
+        ['年化波动', pct(e.annualized_volatility), '基于日终净值估算', ''],
+        ['订单成交率', pct(x.fill_rate), `${x.filled_orders||0} 成交 / ${x.orders||0} 记录`, Number(x.failed_orders||0) ? 'negative' : '']
+      ];
+      document.getElementById('statsKpis').innerHTML = kpis.map(row => `<div class="stats-kpi"><span class="stats-kpi-label">${row[0]}</span><b class="stats-kpi-value ${row[3]}">${row[1]}</b><span class="stats-kpi-note">${row[2]}</span></div>`).join('');
+      document.getElementById('statsChartMeta').textContent = `${payload.start_date || '最早记录'} 至今 · 最大回撤 ${pct(e.max_drawdown)}`;
+      document.getElementById('statsInsights').innerHTML = (payload.insights || []).map(row => `<div class="stats-insight ${esc(row.tone)}"><b>${esc(row.title)}</b><span>${esc(row.detail)}</span></div>`).join('');
+      const rows = (payload.strategies || []).filter(row => row.strategy !== 'MANUAL' || row.open_positions || row.closed_trades || row.realized_pnl);
+      const headers = ['策略','持仓市值','持仓成本','浮动盈亏','已实现盈亏','开放持仓','平仓样本','胜率','平均盈利','平均亏损','盈亏比','每笔期望','资金收益'];
+      document.getElementById('strategyStatsTable').innerHTML = `<thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>
+        <td><span class="stats-strategy">${esc(row.strategy)}</span></td><td>${money(row.market_value)}</td><td>${money(row.cost_basis)}</td>
+        <td class="${cls(row.unrealized_pnl)}">${money(row.unrealized_pnl)}</td><td class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</td>
+        <td>${row.open_positions||0}</td><td>${row.closed_trades||0}</td><td>${row.closed_trades ? pct(row.win_rate) : '--'}</td>
+        <td class="pos">${row.avg_win ? money(row.avg_win) : '--'}</td><td class="neg">${row.avg_loss ? money(row.avg_loss) : '--'}</td>
+        <td>${row.payoff_ratio ? Number(row.payoff_ratio).toFixed(2) : '--'}</td><td class="${cls(row.expectancy)}">${row.closed_trades ? money(row.expectancy) : '--'}</td>
+        <td class="${cls(row.capital_return)}">${row.cost_basis ? pct(row.capital_return) : '--'}</td></tr>`).join('')}</tbody>`;
+      document.getElementById('statsMethod').textContent = `统计口径：${payload.methodology || '--'} · 取消 ${x.canceled_orders||0} 笔 · 失败 ${x.failed_orders||0} 笔。`;
+      requestAnimationFrame(() => drawPerformanceChart(e.points || []));
+    }
+    async function loadPerformance(period='90d') {
+      window.performancePeriod = period;
+      document.querySelectorAll('[data-stats-period]').forEach(button => button.classList.toggle('active', button.dataset.statsPeriod === period));
+      try { renderPerformance(await api(`/api/performance?period=${period}`)); }
+      catch (error) { document.getElementById('statsInsights').innerHTML = `<div class="stats-insight danger"><b>统计读取失败</b><span>${esc(error.message || error)}</span></div>`; }
+    }
     async function loadCurve(period=currentPeriod) {
       currentPeriod = period;
       document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.period === period));
@@ -7783,6 +7930,7 @@ INDEX_HTML = r"""<!doctype html>
         await Promise.all([loadStrategy2Config(), loadSchedules(), loadStrategyBConfig(), loadAccountConfig(), loadDGridConfig()]);
       }
       if (document.body.classList.contains('stock-focus')) await loadStockSelection();
+      if (document.body.classList.contains('stats-focus')) await loadPerformance(window.performancePeriod || '90d');
       if (document.body.classList.contains('log-focus')) {
         if (logView === 'trades') await loadTradeRecords();
         else await loadBotLogs();
@@ -8086,6 +8234,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_curve_payload(period))
             elif path == "/api/trade_records":
                 self._send_json(_trade_records_payload())
+            elif path == "/api/performance":
+                period = parse_qs(parsed.query).get("period", ["90d"])[0]
+                self._send_json(performance_payload(period))
             elif path == "/api/stock_selection":
                 self._send_json(_stock_selection_payload())
             elif path == "/api/bot_logs":
