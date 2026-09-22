@@ -16,11 +16,12 @@ def _number(value, default: float = 0.0) -> float:
         return default
 
 
-def _safe_fetch(sql: str, args: tuple = ()) -> list[dict]:
+def _safe_fetch(sql: str, args: tuple = (), *, quiet: bool = False) -> list[dict]:
     try:
         return fetch_all(sql, args)
     except Exception as exc:
-        print(f"[PERFORMANCE] query unavailable: {exc}", flush=True)
+        if not quiet:
+            print(f"[PERFORMANCE] query unavailable: {exc}", flush=True)
         return []
 
 
@@ -212,6 +213,7 @@ def performance_payload(period: str = "90d") -> dict:
         {orders_time_filter}
         """,
         order_args,
+        quiet=True,
     )
     order_rows.extend(robot_orders)
     filled = sum(1 for row in order_rows if _number(row.get("qty")) > 0 and "FILL" in str(row.get("status") or "").upper())
