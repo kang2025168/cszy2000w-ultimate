@@ -6,6 +6,7 @@ from .capital_manager import log_capital_startup
 from .config import settings
 from .risk_controller import log_risk_state
 from .schema import ensure_schema
+from .strategy_c_watchlist import sync_strategy_c_watchlist
 from .sync_positions import sync_position_holdings
 
 
@@ -13,6 +14,13 @@ def startup() -> None:
     """执行一次完整启动流程。"""
     s = settings()
     ensure_schema()
+    watchlist_stats = sync_strategy_c_watchlist(prune_legacy=True)
+    print(
+        "[C WATCHLIST] "
+        f"inserted={watchlist_stats['inserted']} updated={watchlist_stats['updated']} "
+        f"protected={len(watchlist_stats['protected_active'])}",
+        flush=True,
+    )
     log_capital_startup()
     log_risk_state()
     print(f"[POSITION] enabled={1 if s.enable_position_holdings else 0}", flush=True)

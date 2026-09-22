@@ -247,7 +247,19 @@ def sync_open_holding_from_position(
                 # 旧数据常见情况是 strategy_group=UNKNOWN，但 stock_type 已经被改成 A/B/C/D。
                 raw_group = (row.get("strategy_group") or "").upper()
                 raw_type = (row.get("stock_type") or "").upper()
-                if raw_type in {"A", "B", "C", "D", "F"}:
+                resolved_group = (strategy_group or "B").upper()
+                was_default_b = (
+                    raw_group == "B"
+                    and raw_type == "B"
+                    and str(row.get("notes") or "") == "auto-created from Alpaca sync default=B"
+                )
+                if was_default_b and resolved_group in {"A", "C", "D", "F"}:
+                    # A broker fill may be visible before the strategy worker has
+                    # finished its local bookkeeping. Only the explicit default-B
+                    # marker is eligible for this automatic correction.
+                    keep_group = resolved_group
+                    keep_type = resolved_group
+                elif raw_type in {"A", "B", "C", "D", "F"}:
                     keep_group = raw_type
                     keep_type = raw_type
                 elif raw_group in {"A", "B", "C", "D", "F"}:

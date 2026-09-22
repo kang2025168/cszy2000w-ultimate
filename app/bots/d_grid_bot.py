@@ -19,7 +19,14 @@ def run_once() -> list[dict]:
         return []
     results = run_all()
     failed = sum(1 for row in results if not row["ok"])
-    heartbeat(BOT_NAME, "running" if not failed else "warning", f"symbols={len(results)} failed={failed}")
+    detail = "; ".join(
+        f"{row['symbol']}={str(row['message'])[:120]}" for row in results
+    ) or "no_enabled_symbol"
+    heartbeat(
+        BOT_NAME,
+        "running" if not failed else "warning",
+        f"symbols={len(results)} failed={failed} {detail}"[:512],
+    )
     for row in results:
         print(f"[D GRID] {row['symbol']} ok={row['ok']} {row['message']}", flush=True)
     return results

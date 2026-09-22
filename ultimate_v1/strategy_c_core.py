@@ -350,6 +350,23 @@ def _record_fill(plan: CoreBuyPlan, filled_qty: float, filled_avg: float, order_
                 (plan.symbol,),
             )
             holding = cur.fetchone() or {}
+            adopted_default_holding = False
+            if not holding:
+                cur.execute(
+                    """
+                    SELECT id,qty,avg_entry_price
+                    FROM position_holdings
+                    WHERE UPPER(symbol)=%s
+                      AND strategy_group='B'
+                      AND status='open'
+                      AND notes='auto-created from Alpaca sync default=B'
+                      AND last_order_id IS NULL
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (plan.symbol,),
+                )
+                holding = cur.fetchone() or {}
+                adopted_default_holding = bool(holding)
             cur.execute(
                 f"""
                 SELECT id,qty,cost_price
@@ -360,13 +377,39 @@ def _record_fill(plan: CoreBuyPlan, filled_qty: float, filled_avg: float, order_
                 (plan.symbol,),
             )
             operation = cur.fetchone() or {}
-            previous_qty = _safe_float(holding.get("qty"), _safe_float(operation.get("qty")))
-            previous_avg = _safe_float(holding.get("avg_entry_price"), _safe_float(operation.get("cost_price")))
-            total_qty = previous_qty + filled_qty
-            blended_avg = (
-                (previous_qty * previous_avg + filled_qty * filled_avg) / total_qty
-                if total_qty > 0 else filled_avg
-            )
+            if not operation:
+                cur.execute(
+                    f"""
+                    INSERT INTO `{table}` (
+                        stock_code,stock_type,weight,is_bought,can_buy,can_sell,qty,
+                        strategy_group,capital_pool,margin_used,
+                        ac_t_enabled,ac_t_type,ac_t_state,
+                        last_order_intent,created_at,updated_at
+                    ) VALUES (
+                        %s,'C',%s,0,1,0,0,
+                        'C','C',0,
+                        0,'C','IDLE',
+                        %s,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+                    )
+                    """,
+                    (plan.symbol, plan.weight, f"C:CORE_AUTO_RECOVERY tier={plan.tier}"[:80]),
+                )
+                operation = {"id": int(cur.lastrowid or 0), "qty": 0, "cost_price": 0}
+
+            if adopted_default_holding:
+                # The broker sync can observe a fill before this worker records it.
+                # That row already contains the broker's post-fill total, so adding
+                # filled_qty again would double count the newest fill.
+                total_qty = _safe_float(holding.get("qty"), filled_qty)
+                blended_avg = _safe_float(holding.get("avg_entry_price"), filled_avg)
+            else:
+                previous_qty = _safe_float(holding.get("qty"), _safe_float(operation.get("qty")))
+                previous_avg = _safe_float(holding.get("avg_entry_price"), _safe_float(operation.get("cost_price")))
+                total_qty = previous_qty + filled_qty
+                blended_avg = (
+                    (previous_qty * previous_avg + filled_qty * filled_avg) / total_qty
+                    if total_qty > 0 else filled_avg
+                )
             cur.execute(
                 f"""
                 UPDATE `{table}`
@@ -387,7 +430,7 @@ def _record_fill(plan: CoreBuyPlan, filled_qty: float, filled_avg: float, order_
                 ),
             )
             if cur.rowcount != 1:
-                raise RuntimeError(f"missing C operation row for {plan.symbol}")
+                raise RuntimeError(f"failed to update C operation row for {plan.symbol}")
             if holding:
                 cur.execute(
                     """
@@ -397,7 +440,8 @@ def _record_fill(plan: CoreBuyPlan, filled_qty: float, filled_avg: float, order_
                         unrealized_pnl=%s,
                         unrealized_pnl_pct=CASE WHEN %s>0 THEN (%s-%s)/%s ELSE 0 END,
                         stock_type='C',strategy_group='C',capital_pool='C',margin_used=0,
-                        last_order_id=%s,last_order_side='buy',last_update_time=NOW()
+                        last_order_id=%s,last_order_side='buy',last_update_time=NOW(),
+                        notes=%s
                     WHERE id=%s
                     """,
                     (
@@ -405,7 +449,10 @@ def _record_fill(plan: CoreBuyPlan, filled_qty: float, filled_avg: float, order_
                         total_qty * blended_avg, total_qty * filled_avg,
                         total_qty * (filled_avg - blended_avg),
                         blended_avg, filled_avg, blended_avg, blended_avg,
-                        order_id, holding["id"],
+                        order_id,
+                        "reclassified from default B after C core fill" if adopted_default_holding
+                        else "updated by C automatic core builder",
+                        holding["id"],
                     ),
                 )
             else:
