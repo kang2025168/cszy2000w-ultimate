@@ -1,7 +1,9 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from ultimate_v1.alpaca_gateway import StockQuote
-from ultimate_v1.d_grid import _parse_time_value, _valid_quote, build_grid_plan, sell_limit_from_fill
+from ultimate_v1.d_grid import _cycle_budget, _parse_time_value, _valid_quote, build_grid_plan, sell_limit_from_fill
 
 
 class DGridTests(unittest.TestCase):
@@ -47,3 +49,17 @@ class DGridTests(unittest.TestCase):
         self.assertEqual(12, _parse_time_value("12:30").hour)
         with self.assertRaises(ValueError):
             _parse_time_value("25:90")
+
+    @patch("ultimate_v1.d_grid._runtime_text", return_value="10000")
+    @patch("ultimate_v1.d_grid._runtime_bool", return_value=True)
+    @patch("ultimate_v1.d_grid.get_capital_allocation")
+    def test_cycle_budget_uses_all_available_below_cap(self, allocation_mock, _bool_mock, _text_mock) -> None:
+        allocation_mock.return_value = SimpleNamespace(available={"D": 6_000.0})
+        self.assertEqual(6_000.0, _cycle_budget({"lot_notional": 250.0}))
+
+    @patch("ultimate_v1.d_grid._runtime_text", return_value="10000")
+    @patch("ultimate_v1.d_grid._runtime_bool", return_value=True)
+    @patch("ultimate_v1.d_grid.get_capital_allocation")
+    def test_cycle_budget_is_capped_at_ten_thousand(self, allocation_mock, _bool_mock, _text_mock) -> None:
+        allocation_mock.return_value = SimpleNamespace(available={"D": 12_000.0})
+        self.assertEqual(10_000.0, _cycle_budget({"lot_notional": 250.0}))

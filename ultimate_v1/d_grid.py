@@ -15,6 +15,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
 from .alpaca_gateway import StockQuote, get_latest_stock_quote, stock_limit_price, trading_client
+from .capital_manager import get_capital_allocation
 from .config import env_bool, env_float, env_int, env_str, settings
 from .db import db_conn, fetch_all
 from .schema import ensure_schema
@@ -39,6 +40,19 @@ def _runtime_bool(key: str, env_name: str, default: bool) -> bool:
 
 def _runtime_text(key: str, env_name: str, default: str) -> str:
     return get_app_setting(key, "").strip() or env_str(env_name, default)
+
+
+def _cycle_budget(config: dict) -> float:
+    """每轮使用 D 当前可用资金，但不超过单轮上限。"""
+    fallback = max(0.0, float(config.get("lot_notional") or 0.0))
+    if not _runtime_bool("D_GRID_USE_AVAILABLE_CAPITAL", "D_GRID_USE_AVAILABLE_CAPITAL", True):
+        return fallback
+    allocation = get_capital_allocation()
+    if allocation is None:
+        return 0.0
+    available = max(0.0, float(allocation.available.get("D", 0.0) or 0.0))
+    cap = max(0.0, float(_runtime_text("D_GRID_MAX_CYCLE_NOTIONAL_USD", "D_GRID_MAX_CYCLE_NOTIONAL_USD", "10000")))
+    return min(available, cap) if cap > 0 else available
 
 
 @dataclass(frozen=True)
@@ -161,6 +175,8 @@ def config_payload() -> dict:
         "buy_timeout_seconds": int(float(_runtime_text("D_GRID_BUY_TIMEOUT_SEC", "D_GRID_BUY_TIMEOUT_SEC", "45"))),
         "entry_pct": float(_runtime_text("D_GRID_ENTRY_PCT", "D_GRID_ENTRY_PCT", "0.0025")),
         "profit_pct": float(_runtime_text("D_GRID_PROFIT_PCT", "D_GRID_PROFIT_PCT", "0.01")),
+        "use_available_capital": _runtime_bool("D_GRID_USE_AVAILABLE_CAPITAL", "D_GRID_USE_AVAILABLE_CAPITAL", True),
+        "max_cycle_notional": float(_runtime_text("D_GRID_MAX_CYCLE_NOTIONAL_USD", "D_GRID_MAX_CYCLE_NOTIONAL_USD", "10000")),
         "auto_select_enabled": _runtime_bool("D_AUTO_SELECT_ENABLED", "D_AUTO_SELECT_ENABLED", True),
         "auto_select_interval_seconds": int(float(_runtime_text("D_AUTO_SELECT_INTERVAL_SEC", "D_AUTO_SELECT_INTERVAL_SEC", "3600"))),
         "auto_selected_symbol": _runtime_text("D_AUTO_SELECTED_SYMBOL", "D_AUTO_SELECTED_SYMBOL", ""),
@@ -362,9 +378,12 @@ def _start_cycle(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: boo
     valid, reason, anchor = _valid_quote(quote, float(config["max_spread"]))
     if not valid:
         return reason
+    cycle_budget = _cycle_budget(config)
+    if cycle_budget <= 0:
+        return "no_d_available_capital"
     plan = build_grid_plan(
         anchor,
-        float(config["lot_notional"]),
+        cycle_budget,
         float(config["entry_offset"]),
         float(config["profit_offset"]),
         entry_pct=float(_runtime_text("D_GRID_ENTRY_PCT", "D_GRID_ENTRY_PCT", "0.0025")),
@@ -401,8 +420,9 @@ def _start_cycle(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: boo
         cooldown_until=None,
         last_error=None,
     )
-    _event(cur, symbol, cycle_no, "BUY_SUBMITTED", "BUY_WORKING", order_id=order_id, qty=plan.qty, price=plan.buy_limit, message="dry_run" if dry_run else "live")
-    return f"buy_working qty={plan.qty} limit={plan.buy_limit:.2f}"
+    event_message = f"{'dry_run' if dry_run else 'live'} budget={cycle_budget:.2f} notional={plan.notional:.2f}"
+    _event(cur, symbol, cycle_no, "BUY_SUBMITTED", "BUY_WORKING", order_id=order_id, qty=plan.qty, price=plan.buy_limit, message=event_message)
+    return f"buy_working qty={plan.qty} limit={plan.buy_limit:.2f} budget={cycle_budget:.2f} notional={plan.notional:.2f}"
 
 
 def _submit_sell(cur, config: dict, cycle: dict, qty: float, fill_price: float, dry_run: bool, client, *, closing: bool = False, quote: StockQuote | None = None) -> str:

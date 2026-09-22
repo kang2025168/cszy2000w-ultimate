@@ -498,8 +498,12 @@ def _strategy_2_config_payload() -> dict:
         runtime_values = {
             "c_auto_core_buy": "已开启" if env_bool("C_CORE_AUTO_BUY_ENABLED", False) else "已关闭",
             "c_daily_budget": (
-                f"C目标资金 {env_float('C_CORE_DAILY_BUDGET_PCT', 0.10):.0%}，"
-                f"最多 ${env_float('C_CORE_DAILY_BUDGET_MAX_USD', 250.0):,.0f}"
+                f"C可用资金 {env_float('C_CORE_DAILY_BUDGET_PCT', 1.0):.0%}，"
+                + (
+                    f"最多 ${env_float('C_CORE_DAILY_BUDGET_MAX_USD', 0.0):,.0f}"
+                    if env_float('C_CORE_DAILY_BUDGET_MAX_USD', 0.0) > 0
+                    else "不设每日金额上限"
+                )
             ),
             "c_order_count": env_int("C_CORE_MAX_ORDERS_PER_RUN", 3),
         }
