@@ -28,6 +28,7 @@ MIN_DOLLAR_VOLUME = float(os.getenv("D_CANDIDATE_MIN_DOLLAR_VOLUME", "30000000")
 MIN_AVG_RANGE = float(os.getenv("D_CANDIDATE_MIN_AVG_RANGE_PCT", "0.015"))
 MAX_AVG_RANGE = float(os.getenv("D_CANDIDATE_MAX_AVG_RANGE_PCT", "0.04"))
 LOOKBACK_CALENDAR_DAYS = max(35, int(os.getenv("D_CANDIDATE_LOOKBACK_CALENDAR_DAYS", "60")))
+RETAIN_TRADING_DAYS = max(1, int(os.getenv("D_CANDIDATE_RETAIN_TRADING_DAYS", "2")))
 
 def _f(value) -> float:
     try:
@@ -90,6 +91,16 @@ def main() -> None:
             if not snapshot:
                 raise RuntimeError("stock_prices_pool has no daily data")
             cur.execute(
+                """SELECT DISTINCT DATE(`date`) AS d
+                   FROM stock_prices_pool
+                   WHERE DATE(`date`) <= %s
+                   ORDER BY d DESC
+                   LIMIT %s""",
+                (snapshot, RETAIN_TRADING_DAYS),
+            )
+            retained_dates = [row["d"] for row in (cur.fetchall() or []) if row.get("d")]
+            cutoff_date = min(retained_dates) if retained_dates else snapshot
+            cur.execute(
                 """SELECT UPPER(symbol) symbol, DATE(`date`) trade_date, `open`, high, low, `close`, volume
                    FROM stock_prices_pool
                    WHERE DATE(`date`) BETWEEN DATE_SUB(%s, INTERVAL %s DAY) AND %s
@@ -98,13 +109,16 @@ def main() -> None:
             )
             rows = cur.fetchall() or []
         candidates = build_candidates(rows, snapshot)
-        print(f"[D POOL] date={snapshot} selected={len(candidates)}", flush=True)
+        print(
+            f"[D POOL] date={snapshot} selected={len(candidates)} "
+            f"retain_trading_days={RETAIN_TRADING_DAYS} cutoff={cutoff_date}",
+            flush=True,
+        )
         for row in candidates[:30]:
             print(f"  {row['symbol']} score={row['score']:.1f} gain={row['gain']:.2%} volume={row['volume']:,}", flush=True)
         if args.dry_run:
             return
         with conn.cursor() as cur:
-            cur.execute("UPDATE d_candidate_pool SET enabled=0")
             for row in candidates:
                 cur.execute(
                     """INSERT INTO d_candidate_pool
@@ -118,6 +132,13 @@ def main() -> None:
                     (row["symbol"], row["signal_date"], row["close"], row["gain"], row["volume"],
                      row["dollar_volume"], row["avg_range"], row["score"]),
                 )
+            cur.execute(
+                "UPDATE d_candidate_pool SET enabled=CASE WHEN signal_date >= %s THEN 1 ELSE 0 END",
+                (cutoff_date,),
+            )
+            cur.execute("SELECT COUNT(*) AS n FROM d_candidate_pool WHERE enabled=1")
+            active_count = int((cur.fetchone() or {}).get("n") or 0)
+        print(f"[D POOL] active_recent_candidates={active_count}", flush=True)
     finally:
         conn.close()
 

@@ -7477,7 +7477,14 @@ INDEX_HTML = r"""<!doctype html>
         if (meta) meta.textContent = '读取失败';
         return;
       }
-      if (meta) meta.textContent = `${payload.dry_run ? '模拟模式' : '实盘模式'} · 候选 ${Number(payload.candidate_count || 0)} 只 · 当前 ${payload.auto_selected_symbol || '待选择'}`;
+      if (meta) {
+        const dateRange = payload.candidate_min_date && payload.candidate_max_date
+          ? (payload.candidate_min_date === payload.candidate_max_date
+              ? payload.candidate_max_date
+              : `${payload.candidate_min_date} 至 ${payload.candidate_max_date}`)
+          : '待刷新';
+        meta.textContent = `${payload.dry_run ? '模拟模式' : '实盘模式'} · 最近 ${Number(payload.candidate_retain_trading_days || 2)} 个交易日 · 候选 ${Number(payload.candidate_count || 0)} 只 · ${dateRange} · 当前 ${payload.auto_selected_symbol || '待选择'}`;
+      }
       runtime.innerHTML = `
         <div class="d-grid-field"><label>策略开关</label><select id="dGridEnabled"><option value="0" ${!payload.enabled ? 'selected' : ''}>关闭新循环</option><option value="1" ${payload.enabled ? 'selected' : ''}>允许新循环</option></select></div>
         <div class="d-grid-field"><label>执行模式</label><select id="dGridDryRun"><option value="1" ${payload.dry_run ? 'selected' : ''}>模拟，不提交订单</option><option value="0" ${!payload.dry_run ? 'selected' : ''}>实盘，提交 Alpaca</option></select></div>

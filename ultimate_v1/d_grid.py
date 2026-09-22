@@ -163,6 +163,13 @@ def configure_symbol(
 def config_payload() -> dict:
     ensure_schema()
     controls = fetch_all("SELECT enabled FROM bot_controls WHERE bot_name='d_grid_bot' LIMIT 1")
+    candidate_summary = (
+        fetch_all(
+            """SELECT COUNT(*) AS n, MIN(signal_date) AS min_date, MAX(signal_date) AS max_date
+               FROM d_candidate_pool WHERE enabled=1"""
+        )
+        or [{}]
+    )[0]
     return {
         "ok": True,
         "enabled": _runtime_bool("D_GRID_ENABLED", "D_GRID_ENABLED", False),
@@ -180,7 +187,10 @@ def config_payload() -> dict:
         "auto_select_enabled": _runtime_bool("D_AUTO_SELECT_ENABLED", "D_AUTO_SELECT_ENABLED", True),
         "auto_select_interval_seconds": int(float(_runtime_text("D_AUTO_SELECT_INTERVAL_SEC", "D_AUTO_SELECT_INTERVAL_SEC", "3600"))),
         "auto_selected_symbol": _runtime_text("D_AUTO_SELECTED_SYMBOL", "D_AUTO_SELECTED_SYMBOL", ""),
-        "candidate_count": int((fetch_all("SELECT COUNT(*) AS n FROM d_candidate_pool WHERE enabled=1") or [{}])[0].get("n") or 0),
+        "candidate_count": int(candidate_summary.get("n") or 0),
+        "candidate_min_date": str(candidate_summary.get("min_date") or ""),
+        "candidate_max_date": str(candidate_summary.get("max_date") or ""),
+        "candidate_retain_trading_days": max(1, int(env_float("D_CANDIDATE_RETAIN_TRADING_DAYS", 2))),
         "symbols": status_rows(),
         "state_flow": ["IDLE", "BUY_WORKING", "SELL_WORKING", "COOLDOWN"],
     }
@@ -280,7 +290,7 @@ def _valid_quote(quote: StockQuote, _max_spread: float) -> tuple[bool, str, floa
 
 
 def _auto_select_candidate() -> dict | None:
-    """Select one idle D symbol at most once per hour from yesterday's pool."""
+    """Select one idle D symbol at most once per hour from the retained pool."""
     if not _runtime_bool("D_AUTO_SELECT_ENABLED", "D_AUTO_SELECT_ENABLED", True):
         return None
     interval = max(300, int(float(_runtime_text("D_AUTO_SELECT_INTERVAL_SEC", "D_AUTO_SELECT_INTERVAL_SEC", "3600"))))
@@ -293,8 +303,8 @@ def _auto_select_candidate() -> dict | None:
         return {"kept": active[0]["symbol"], "reason": "active_cycle_locked"}
     rows = fetch_all(
         """SELECT * FROM d_candidate_pool
-           WHERE enabled=1 AND signal_date=(SELECT MAX(signal_date) FROM d_candidate_pool WHERE enabled=1)
-           ORDER BY base_score DESC, signal_dollar_volume DESC LIMIT 60"""
+           WHERE enabled=1
+           ORDER BY signal_date DESC, base_score DESC, signal_dollar_volume DESC LIMIT 120"""
     )
     scored = []
     for row in rows:
