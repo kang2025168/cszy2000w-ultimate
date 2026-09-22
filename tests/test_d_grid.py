@@ -3,7 +3,15 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ultimate_v1.alpaca_gateway import StockQuote
-from ultimate_v1.d_grid import _cycle_budget, _parse_time_value, _valid_quote, build_grid_plan, sell_limit_from_fill
+from ultimate_v1.d_grid import (
+    _buy_retry_cooldown_seconds,
+    _buy_timeout_seconds,
+    _cycle_budget,
+    _parse_time_value,
+    _valid_quote,
+    build_grid_plan,
+    sell_limit_from_fill,
+)
 
 
 class DGridTests(unittest.TestCase):
@@ -49,6 +57,14 @@ class DGridTests(unittest.TestCase):
         self.assertEqual(12, _parse_time_value("12:30").hour)
         with self.assertRaises(ValueError):
             _parse_time_value("25:90")
+
+    @patch("ultimate_v1.d_grid._runtime_text", return_value="45")
+    def test_buy_timeout_has_execution_floor(self, _runtime_mock) -> None:
+        self.assertEqual(300, _buy_timeout_seconds())
+
+    @patch("ultimate_v1.d_grid._runtime_text", return_value="5")
+    def test_reprice_cooldown_has_churn_floor(self, _runtime_mock) -> None:
+        self.assertEqual(15, _buy_retry_cooldown_seconds())
 
     @patch("ultimate_v1.d_grid._runtime_text", return_value="10000")
     @patch("ultimate_v1.d_grid._runtime_bool", return_value=True)

@@ -179,7 +179,7 @@ def config_payload() -> dict:
         "last_entry_time": _runtime_text("D_GRID_LAST_ENTRY_TIME_LA", "D_GRID_LAST_ENTRY_TIME_LA", "12:30"),
         "flatten_time": _runtime_text("D_GRID_FLATTEN_TIME_LA", "D_GRID_FLATTEN_TIME_LA", settings().market_close_flatten_time),
         "cooldown_seconds": int(float(_runtime_text("D_GRID_COOLDOWN_SEC", "D_GRID_COOLDOWN_SEC", "5"))),
-        "buy_timeout_seconds": int(float(_runtime_text("D_GRID_BUY_TIMEOUT_SEC", "D_GRID_BUY_TIMEOUT_SEC", "45"))),
+        "buy_timeout_seconds": _buy_timeout_seconds(),
         "entry_pct": float(_runtime_text("D_GRID_ENTRY_PCT", "D_GRID_ENTRY_PCT", "0.0025")),
         "profit_pct": float(_runtime_text("D_GRID_PROFIT_PCT", "D_GRID_PROFIT_PCT", "0.01")),
         "use_available_capital": _runtime_bool("D_GRID_USE_AVAILABLE_CAPITAL", "D_GRID_USE_AVAILABLE_CAPITAL", True),
@@ -235,7 +235,7 @@ def save_config(payload: dict) -> dict:
     for key, value in times.items():
         set_app_setting(key, value)
     set_app_setting("D_GRID_COOLDOWN_SEC", str(max(1, int(float(payload.get("cooldown_seconds") or 5)))))
-    set_app_setting("D_GRID_BUY_TIMEOUT_SEC", str(max(5, int(float(payload.get("buy_timeout_seconds") or 45)))))
+    set_app_setting("D_GRID_BUY_TIMEOUT_SEC", str(max(300, int(float(payload.get("buy_timeout_seconds") or 900)))))
     entry_pct = min(0.05, max(0.0001, float(payload.get("entry_pct") or 0.0025)))
     profit_pct = min(0.20, max(0.0001, float(payload.get("profit_pct") or 0.01)))
     set_app_setting("D_GRID_ENTRY_PCT", str(entry_pct))
@@ -494,6 +494,15 @@ def _finish_cycle(cur, config: dict, cycle: dict, sell_price: float) -> str:
     return f"cycle_filled gross_pnl={pnl:.2f}"
 
 
+def _buy_timeout_seconds() -> int:
+    """Keep pullback orders resting long enough to have a realistic fill chance."""
+    return max(300, int(float(_runtime_text("D_GRID_BUY_TIMEOUT_SEC", "D_GRID_BUY_TIMEOUT_SEC", "900"))))
+
+
+def _buy_retry_cooldown_seconds() -> int:
+    return max(15, int(float(_runtime_text("D_GRID_REPRICE_COOLDOWN_SEC", "D_GRID_REPRICE_COOLDOWN_SEC", "60"))))
+
+
 def _advance_buy(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: bool, client) -> str:
     if dry_run:
         if quote.ask <= 0 or quote.ask > float(cycle["buy_limit"]):
@@ -506,11 +515,19 @@ def _advance_buy(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: boo
     if status in TERMINAL_ORDER_STATES:
         if filled_qty > 0:
             return _submit_sell(cur, config, cycle, filled_qty, fill_price or float(cycle["buy_limit"]), False, client)
-        _set_cycle(cur, config["symbol"], state="IDLE", buy_order_id=None, last_error=f"buy_{status}")
-        _event(cur, config["symbol"], int(cycle["cycle_no"]), "BUY_TERMINAL", "IDLE", message=status)
-        return f"buy_{status}"
+        cooldown = _now_la().replace(tzinfo=None) + timedelta(seconds=_buy_retry_cooldown_seconds())
+        _set_cycle(
+            cur,
+            config["symbol"],
+            state="COOLDOWN",
+            buy_order_id=None,
+            cooldown_until=cooldown,
+            last_error=f"buy_{status}",
+        )
+        _event(cur, config["symbol"], int(cycle["cycle_no"]), "BUY_TERMINAL", "COOLDOWN", message=status)
+        return f"buy_{status}_cooldown"
     age = (_now_la().replace(tzinfo=None) - cycle["state_changed_at"]).total_seconds()
-    if age >= int(float(_runtime_text("D_GRID_BUY_TIMEOUT_SEC", "D_GRID_BUY_TIMEOUT_SEC", "45"))):
+    if age >= _buy_timeout_seconds():
         client.cancel_order_by_id(str(cycle["buy_order_id"]))
         return "buy_cancel_requested"
     return f"waiting_buy status={status or 'unknown'} filled={filled_qty:g}"
