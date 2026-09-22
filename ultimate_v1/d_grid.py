@@ -289,6 +289,22 @@ def _valid_quote(quote: StockQuote, _max_spread: float) -> tuple[bool, str, floa
     return True, "ok", anchor
 
 
+def _latest_execution_quote(symbol: str) -> StockQuote:
+    """Prefer Alpaca, but keep D operable when its latest endpoint is empty."""
+    quote = get_latest_stock_quote(symbol, pool="D")
+    valid, _, _ = _valid_quote(quote, 0.0)
+    if valid:
+        return quote
+    yahoo = get_yahoo_stock_quote(symbol)
+    return StockQuote(
+        symbol=symbol,
+        last=float(yahoo.last or 0),
+        bid=float(yahoo.bid or 0),
+        ask=float(yahoo.ask or 0),
+        timestamp=yahoo.as_of or None,
+    )
+
+
 def _auto_select_candidate() -> dict | None:
     """Select one idle D symbol at most once per hour from the retained pool."""
     if not _runtime_bool("D_AUTO_SELECT_ENABLED", "D_AUTO_SELECT_ENABLED", True):
@@ -558,7 +574,7 @@ def run_symbol(symbol: str, *, now: datetime | None = None) -> str:
                         return "grid_disabled"
                     if not in_entry_window:
                         return "outside_entry_window"
-                    quote = get_latest_stock_quote(symbol, pool="D")
+                    quote = _latest_execution_quote(symbol)
                     return _start_cycle(cur, config, cycle, quote, dry_run, client)
                 if state == "BUY_WORKING":
                     if now.time() >= last_entry:

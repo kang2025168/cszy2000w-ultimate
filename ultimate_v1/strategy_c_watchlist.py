@@ -194,8 +194,38 @@ def sync_strategy_c_watchlist(*, dry_run: bool = False, prune_legacy: bool = Tru
                     continue
 
                 note = f"C:WATCHLIST {item.sector} weight={item.weight:.2%}"[:80]
+                cur.execute(
+                    """
+                    SELECT qty,avg_entry_price,current_price
+                    FROM position_holdings
+                    WHERE UPPER(symbol)=%s
+                      AND status='open'
+                      AND (
+                        UPPER(COALESCE(NULLIF(strategy_group,''),stock_type))='C'
+                        OR (
+                          UPPER(COALESCE(NULLIF(strategy_group,''),stock_type))='B'
+                          AND notes='auto-created from Alpaca sync default=B'
+                        )
+                      )
+                    ORDER BY CASE
+                               WHEN UPPER(COALESCE(NULLIF(strategy_group,''),stock_type))='C' THEN 0
+                               ELSE 1
+                             END,
+                             id DESC
+                    LIMIT 1
+                    """,
+                    (item.symbol,),
+                )
+                broker_holding = cur.fetchone() or {}
+                holding_qty = abs(float(broker_holding.get("qty") or 0))
+                holding_cost = float(broker_holding.get("avg_entry_price") or 0)
+                holding_price = float(broker_holding.get("current_price") or holding_cost or 0)
                 if existing:
-                    held = bool(int(existing.get("is_bought") or 0)) or abs(float(existing.get("qty") or 0)) > 0
+                    held = (
+                        holding_qty > 0
+                        or bool(int(existing.get("is_bought") or 0))
+                        or abs(float(existing.get("qty") or 0)) > 0
+                    )
                     cur.execute(
                         f"""
                         UPDATE `{table}`
@@ -204,11 +234,16 @@ def sync_strategy_c_watchlist(*, dry_run: bool = False, prune_legacy: bool = Tru
                             capital_pool='C',
                             weight=%s,
                             margin_used=0,
+                            is_bought=CASE WHEN %s>0 THEN 1 ELSE is_bought END,
+                            qty=CASE WHEN %s>0 THEN %s ELSE qty END,
+                            cost_price=CASE WHEN %s>0 THEN %s ELSE cost_price END,
+                            current_price=CASE WHEN %s>0 THEN %s ELSE current_price END,
+                            close_price=CASE WHEN %s>0 THEN %s ELSE close_price END,
                             ac_t_enabled=CASE
-                                WHEN COALESCE(is_bought,0)=1 OR ABS(COALESCE(qty,0))>0 THEN 1 ELSE 0 END,
+                                WHEN %s>0 OR COALESCE(is_bought,0)=1 OR ABS(COALESCE(qty,0))>0 THEN 1 ELSE 0 END,
                             ac_t_type='C',
-                            can_buy=CASE WHEN COALESCE(is_bought,0)=0 THEN 1 ELSE can_buy END,
-                            can_sell=CASE WHEN COALESCE(is_bought,0)=0 THEN 0 ELSE can_sell END,
+                            can_buy=1,
+                            can_sell=CASE WHEN %s>0 OR COALESCE(is_bought,0)=1 THEN 1 ELSE 0 END,
                             last_order_intent=CASE
                                 WHEN COALESCE(is_bought,0)=0
                                  AND (last_order_id IS NULL OR last_order_id='')
@@ -218,7 +253,15 @@ def sync_strategy_c_watchlist(*, dry_run: bool = False, prune_legacy: bool = Tru
                             updated_at=CURRENT_TIMESTAMP
                         WHERE id=%s
                         """,
-                        (item.weight, note, existing["id"]),
+                        (
+                            item.weight,
+                            holding_qty, holding_qty, holding_qty,
+                            holding_qty, holding_cost,
+                            holding_qty, holding_price,
+                            holding_qty, holding_price,
+                            holding_qty, holding_qty,
+                            note, existing["id"],
+                        ),
                     )
                     stats["updated"] += 1
                     if held:
@@ -235,13 +278,20 @@ def sync_strategy_c_watchlist(*, dry_run: bool = False, prune_legacy: bool = Tru
                         last_order_intent, created_at, updated_at
                     ) VALUES (
                         %s, 'C', %s,
-                        0, 1, 0, 0,
+                        %s, 1, %s, %s,
                         'C', 'C', 0,
-                        0, 'C', 'IDLE',
+                        %s, 'C', 'IDLE',
                         %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                     )
                     """,
-                    (item.symbol, item.weight, note),
+                    (
+                        item.symbol, item.weight,
+                        1 if holding_qty > 0 else 0,
+                        1 if holding_qty > 0 else 0,
+                        holding_qty,
+                        1 if holding_qty > 0 else 0,
+                        note,
+                    ),
                 )
                 stats["inserted"] += 1
 
