@@ -305,15 +305,14 @@ def _latest_execution_quote(symbol: str) -> StockQuote:
     )
 
 
-def _auto_select_candidate() -> dict | None:
+def _auto_select_candidate(*, force: bool = False, exclude: set[str] | None = None) -> dict | None:
     """Select one idle D symbol at most once per hour from the retained pool."""
     if not _runtime_bool("D_AUTO_SELECT_ENABLED", "D_AUTO_SELECT_ENABLED", True):
         return None
     interval = max(300, int(float(_runtime_text("D_AUTO_SELECT_INTERVAL_SEC", "D_AUTO_SELECT_INTERVAL_SEC", "3600"))))
     last_check = float(_runtime_text("D_AUTO_SELECT_LAST_EPOCH", "D_AUTO_SELECT_LAST_EPOCH", "0") or 0)
-    if time_module.time() - last_check < interval:
+    if not force and time_module.time() - last_check < interval:
         return None
-    set_app_setting("D_AUTO_SELECT_LAST_EPOCH", str(int(time_module.time())))
     active = fetch_all("SELECT symbol, state FROM d_grid_cycles WHERE state IN ('BUY_WORKING','SELL_WORKING','CLOSING','BUY_SUBMITTING','SELL_SUBMITTING') LIMIT 1")
     if active:
         return {"kept": active[0]["symbol"], "reason": "active_cycle_locked"}
@@ -325,23 +324,24 @@ def _auto_select_candidate() -> dict | None:
     scored = []
     for row in rows:
         symbol = str(row.get("symbol") or "").upper()
-        if symbol in D_AUTO_EXCLUDED_SYMBOLS or symbol.endswith("W"):
+        if symbol in (exclude or set()) or symbol in D_AUTO_EXCLUDED_SYMBOLS or symbol.endswith("W"):
             continue
         avg_range = float(row.get("avg_range_pct") or 0)
         if not 0.015 <= avg_range <= 0.04:
             continue
         try:
-            quote = get_yahoo_stock_quote(symbol)
+            from .d_entry_filter import read_observation
+            observation = read_observation(symbol)
         except Exception:
             continue
-        last, prev, high = float(quote.last or 0), float(quote.prev_close or 0), float(quote.day_high or 0)
+        last, prev, high = (float(observation.get(k) or 0) for k in ('price','previous_close','day_high'))
         if last < 5 or prev <= 0:
             continue
         gain = (last - prev) / prev
         drawdown = (high - last) / high if high > 0 else 0.0
-        if not (0.01 <= gain <= 0.08) or drawdown > 0.03:
+        if not (0.03 < gain <= 0.08) or drawdown > 0.03:
             continue
-        day_volume = int(quote.day_volume or 0)
+        day_volume = int(observation.get("day_volume") or 0)
         if day_volume < 3_000_000 or last * day_volume < 30_000_000:
             continue
         live_score = float(row.get("base_score") or 0) + gain * 300.0 - drawdown * 200.0
@@ -349,7 +349,13 @@ def _auto_select_candidate() -> dict | None:
     if not scored:
         return {"reason": "no_eligible_candidate"}
     scored.sort(reverse=True)
-    score, symbol, price, gain, drawdown = scored[0]
+    from .d_entry_filter import check_entry
+    chosen = next((candidate for candidate in scored
+                   if check_entry(candidate[1], candidate[2])['ok']), None)
+    if chosen is None:
+        return {"reason": "no_candidate_passed_entry_filter"}
+    set_app_setting("D_AUTO_SELECT_LAST_EPOCH", str(int(time_module.time())))
+    score, symbol, price, gain, drawdown = chosen
     step = max(0.03, price * 0.001)
     notional = env_float("D_GRID_DEFAULT_NOTIONAL_USD", 250.0)
     with db_conn() as conn:
@@ -407,9 +413,11 @@ def _set_cycle(cur, symbol: str, **values) -> None:
 
 def _start_cycle(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: bool, client) -> str:
     symbol = config["symbol"]
-    valid, reason, anchor = _valid_quote(quote, float(config["max_spread"]))
-    if not valid:
-        return reason
+    from .d_entry_filter import check_entry
+    entry = check_entry(symbol, refresh=True)
+    if not entry['ok']:
+        return f"entry_filter:{entry['reason']}"
+    anchor = entry["price"]
     cycle_budget = _cycle_budget(config)
     if cycle_budget <= 0:
         return "no_d_available_capital"
@@ -640,7 +648,7 @@ def _run_symbol_locked(symbol: str, *, now: datetime | None = None) -> str:
                         return "grid_disabled"
                     if not in_entry_window:
                         return "outside_entry_window"
-                    quote = _latest_execution_quote(symbol)
+                    quote = StockQuote(symbol, 0, 0, 0)  # Entry refreshes a timestamped D snapshot.
                     return _start_cycle(cur, config, cycle, quote, dry_run, client)
                 if state == "BUY_WORKING":
                     if now.time() >= last_entry:
@@ -706,6 +714,8 @@ def _run_symbol_locked(symbol: str, *, now: datetime | None = None) -> str:
 
 def run_all() -> list[dict]:
     ensure_schema()
+    from .d_entry_filter import sample_tick
+    sample_tick()
     selection = _auto_select_candidate()
     rows = fetch_all("SELECT s.symbol FROM d_grid_symbols s LEFT JOIN d_grid_cycles c ON c.symbol=s.symbol WHERE s.enabled=1 OR c.state IN ('BUY_WORKING','SELL_WORKING','CLOSING','BUY_SUBMITTING','SELL_SUBMITTING') ORDER BY s.sort_order, s.symbol")
     results = [{"symbol": "AUTO", "ok": True, "message": str(selection)}] if selection else []
@@ -716,6 +726,12 @@ def run_all() -> list[dict]:
             results.append({"symbol": symbol, "ok": True, "message": message})
         except Exception as exc:
             results.append({"symbol": symbol, "ok": False, "message": str(exc)})
+    rejected = {r['symbol'] for r in results if str(r.get('message', '')).startswith('entry_filter:') and r.get('message') != 'entry_filter:collecting_prices'}
+    if rejected:
+        # Do not wait for the hourly rotation after a failed pre-buy check.
+        replacement = _auto_select_candidate(force=True, exclude=rejected)
+        if replacement:
+            results.append({'symbol':'AUTO', 'ok':True, 'message':str(replacement)})
     return results
 
 
