@@ -80,14 +80,11 @@ def _merge(default: dict, saved: dict) -> dict:
 
 
 def load_account_config() -> dict:
-    try:
-        raw = get_app_setting(CONFIG_KEY, "")
-    except Exception:
-        raw = ""
+    raw = get_app_setting(CONFIG_KEY, "")
     try:
         saved = json.loads(raw) if raw else {}
-    except Exception:
-        saved = {}
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError("Invalid saved Alpaca account configuration") from exc
     return _merge(DEFAULT_CONFIG, saved)
 
 
@@ -122,20 +119,24 @@ def _profile_with_env(config: dict, profile_key: str) -> dict:
         prefixed_key_names = [f"{prefix}_APCA_API_KEY_ID", f"{prefix}_ALPACA_KEY", f"{prefix}_ALPACA_API_KEY"]
         prefixed_secret_names = [f"{prefix}_APCA_API_SECRET_KEY", f"{prefix}_ALPACA_SECRET", f"{prefix}_ALPACA_API_SECRET"]
         prefixed_base_names = [f"{prefix}_ALPACA_BASE_URL"]
-    key_id = str(profile.get("key_id") or "").strip() or _env_first(
-        *prefixed_key_names,
-        f"{mode_prefix}_APCA_API_KEY_ID",
-        f"{mode_prefix}_ALPACA_KEY",
-        "APCA_API_KEY_ID",
-        "ALPACA_KEY",
-    )
-    secret = str(profile.get("secret_key") or "").strip() or _env_first(
-        *prefixed_secret_names,
-        f"{mode_prefix}_APCA_API_SECRET_KEY",
-        f"{mode_prefix}_ALPACA_SECRET",
-        "APCA_API_SECRET_KEY",
-        "ALPACA_SECRET",
-    )
+    if mode not in {"paper", "live"}:
+        raise RuntimeError(f"Invalid account mode for {profile_key}")
+    # A dedicated profile must never inherit another account's credentials.
+    saved_key = str(profile.get("key_id") or "").strip()
+    saved_secret = str(profile.get("secret_key") or "").strip()
+    if saved_key or saved_secret:
+        key_id, secret = saved_key, saved_secret
+    elif prefix:
+        key_id = _env_first(*prefixed_key_names)
+        secret = _env_first(*prefixed_secret_names)
+    else:
+        key_id = _env_first(f"{mode_prefix}_APCA_API_KEY_ID", f"{mode_prefix}_ALPACA_KEY")
+        secret = _env_first(f"{mode_prefix}_APCA_API_SECRET_KEY", f"{mode_prefix}_ALPACA_SECRET")
+        if not key_id and not secret:
+            key_id = _env_first("APCA_API_KEY_ID", "ALPACA_KEY")
+            secret = _env_first("APCA_API_SECRET_KEY", "ALPACA_SECRET")
+    if bool(key_id) != bool(secret):
+        raise RuntimeError(f"Incomplete credentials for account profile {profile_key}")
     base_url = str(profile.get("base_url") or "").strip() or _env_first(*prefixed_base_names, "ALPACA_BASE_URL")
     profile.update({"mode": mode, "key_id": key_id, "secret_key": secret, "base_url": base_url})
     return profile
@@ -152,7 +153,16 @@ def profile_for_pool(pool: str | None = None, config: dict | None = None) -> str
 def credentials_for_profile(profile_key: str | None = None, pool: str | None = None) -> tuple[str, str, bool]:
     config = load_account_config()
     selected = profile_key or profile_for_pool(pool, config)
+    if selected not in VISIBLE_PROFILES:
+        raise RuntimeError(f"Unknown account profile: {selected}")
     profile = _profile_with_env(config, selected)
+    if not profile.get("key_id") or not profile.get("secret_key"):
+        raise RuntimeError(f"Missing dedicated credentials for account profile {selected}")
+    other = "trading" if selected == "retirement" else "retirement"
+    other_profile = _profile_with_env(config, other)
+    if (other_profile.get("key_id") == profile["key_id"]
+            and other_profile.get("mode") == profile.get("mode")):
+        raise RuntimeError("Retirement and trading profiles must use separate accounts")
     paper = str(profile.get("mode") or "paper").lower() != "live"
     return str(profile.get("key_id") or ""), str(profile.get("secret_key") or ""), paper
 

@@ -197,8 +197,8 @@ def _update_ops_row(conn, table: str, columns: dict[str, str], row: dict[str, An
         args.append(row["id"])
     else:
         # 有些老表没有 id，stock_code 是主键。
-        where_sql = "stock_code=%s"
-        args.append(row["stock_code"])
+        where_sql = "stock_code=%s AND stock_type=%s"
+        args.extend((row["stock_code"], row.get("stock_type") or values.get("stock_type")))
     with conn.cursor() as cur:
         cur.execute(f"UPDATE `{table}` SET {', '.join(pairs)} WHERE {where_sql}", tuple(args))
 
@@ -487,6 +487,22 @@ def _account_sync_plans() -> list[tuple[str, str, set[str]]]:
     ]
 
 
+def _sync_profile_snapshot(profile, default_group, managed_groups, *, include_ops=False):
+    from .manual_ledger import reconcile_manual_orders
+    from .order_journal import execution_lock
+    from .db import fetch_one
+    reconcile_manual_orders(profile)
+    with execution_lock(profile):
+        pending = fetch_one("SELECT COUNT(*) AS n FROM execution_orders WHERE profile=%s AND client_order_id LIKE 'cszy-manual-%%' AND (response_json IS NULL OR reserved_notional>0 OR state NOT IN ('filled','canceled','cancelled','expired','rejected','replaced'))", (profile,))
+        if int((pending or {}).get("n") or 0):
+            print(f"[POSITION SYNC] {profile}: pending manual order; preserve strategy lots until reconciled", flush=True)
+            return None
+        positions = alpaca_gateway.list_positions(profile=profile)
+        holdings = _sync_position_holdings_from_positions(positions, default_group=default_group, managed_groups=managed_groups)
+        operations = _sync_stock_operations_from_positions(positions, default_group=default_group, managed_groups=managed_groups) if include_ops else {}
+        return holdings, operations
+
+
 def sync_position_holdings() -> bool:
     """同步持仓：Alpaca 有但本地没有就补，本地 open 但 Alpaca 没有就标记复核。"""
     global LAST_SYNC_ERROR
@@ -497,12 +513,7 @@ def sync_position_holdings() -> bool:
     ensure_schema()
     try:
         for profile, default_group, managed_groups in _account_sync_plans():
-            positions = alpaca_gateway.list_positions(profile=profile)
-            _sync_position_holdings_from_positions(
-                positions,
-                default_group=default_group,
-                managed_groups=managed_groups,
-            )
+            _sync_profile_snapshot(profile, default_group, managed_groups)
         return True
     except Exception as exc:
         LAST_SYNC_ERROR = str(exc)
@@ -530,17 +541,10 @@ def sync_all_positions() -> bool:
             "skipped_symbol_conflict": 0,
         }
         for profile, default_group, managed_groups in _account_sync_plans():
-            positions = alpaca_gateway.list_positions(profile=profile)
-            holding_stats = _sync_position_holdings_from_positions(
-                positions,
-                default_group=default_group,
-                managed_groups=managed_groups,
-            )
-            profile_ops = _sync_stock_operations_from_positions(
-                positions,
-                default_group=default_group,
-                managed_groups=managed_groups,
-            )
+            result = _sync_profile_snapshot(profile, default_group, managed_groups, include_ops=True)
+            if result is None:
+                continue
+            holding_stats, profile_ops = result
             for key, value in profile_ops.items():
                 ops_stats[key] = int(ops_stats.get(key, 0)) + int(value or 0)
         print(

@@ -615,9 +615,58 @@ def ensure_control_state_tables() -> None:
             )
 
 
+def ensure_strategy_lot_identity(conn) -> None:
+    """Permit the same symbol in isolated strategy lots without deleting data."""
+    table = settings().ops_table
+    with conn.cursor() as cur:
+        cur.execute("SELECT INDEX_NAME,GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS cols FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND NON_UNIQUE=0 GROUP BY INDEX_NAME", (table,))
+        indexes = list(cur.fetchall())
+        if not any(row["cols"] in {"stock_code,stock_type", "stock_type,stock_code"} for row in indexes):
+            cur.execute(f"ALTER TABLE `{table}` ADD UNIQUE KEY uq_strategy_lot (stock_code,stock_type)")
+        for row in indexes:
+            if row["cols"] == "stock_code":
+                name = row["INDEX_NAME"]
+                clause = "DROP PRIMARY KEY" if name == "PRIMARY" else f"DROP INDEX `{name}`"
+                cur.execute(f"ALTER TABLE `{table}` {clause}")
+
+
+SCHEMA_VERSION = 3
+_SCHEMA_READY = False
+from threading import Lock
+_SCHEMA_LOCK = Lock()
+
+
 def ensure_schema() -> None:
-    """启动时统一执行所有 V1 表结构检查。"""
-    ensure_stock_operations_columns()
-    if settings().enable_position_holdings:
-        ensure_position_holdings_table()
-    ensure_control_state_tables()
+    """Apply versioned migrations once, serialized across all worker processes."""
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
+    with _SCHEMA_LOCK:
+        if _SCHEMA_READY:
+            return
+        with db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT GET_LOCK('cszy:schema_migration', 60) AS acquired")
+                if int((cur.fetchone() or {}).get("acquired") or 0) != 1:
+                    raise RuntimeError("Schema migration lock unavailable")
+                try:
+                    cur.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INT PRIMARY KEY, applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+                    cur.execute("SELECT version FROM schema_migrations WHERE version=%s", (SCHEMA_VERSION,))
+                    if not cur.fetchone():
+                        ensure_stock_operations_columns()
+                        ensure_position_holdings_table()
+                        ensure_control_state_tables()
+                        from .order_journal import ensure_table
+                        ensure_table(conn)
+                        ensure_strategy_lot_identity(conn)
+                        if not _column_exists(conn, "d_grid_cycles", "pending_client_order_id"):
+                            cur.execute("ALTER TABLE d_grid_cycles ADD COLUMN pending_client_order_id VARCHAR(64) NULL")
+                        cur.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (SCHEMA_VERSION,))
+                        conn.commit()
+                finally:
+                    cur.execute("SELECT RELEASE_LOCK('cszy:schema_migration')")
+        _SCHEMA_READY = True
+
+
+if __name__ == "__main__":
+    ensure_schema()

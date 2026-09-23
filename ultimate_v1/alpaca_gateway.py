@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from .account_config import credentials_for_profile
+from .account_config import credentials_for_profile, profile_for_pool
 from .config import env_str, settings
 from .yahoo_market_data import get_yahoo_latest_stock_price
 
@@ -61,19 +61,18 @@ def _bool_attr(obj, name: str, default: bool = False) -> bool:
 def trading_client(pool: str | None = None, profile: str | None = None):
     from alpaca.trading.client import TradingClient
 
-    key, secret, paper = credentials_for_profile(profile, pool)
-    if not key or not secret:
-        raise RuntimeError("缺少 Alpaca API 密钥")
-    return TradingClient(key, secret, paper=paper)
+    from .broker_transport import cached_client
+    selected = profile or profile_for_pool(pool)
+    return cached_client("trading", selected, credentials_for_profile(selected),
+        lambda key, secret, paper: TradingClient(key, secret, paper=paper))
 
 
 def stock_data_client(pool: str | None = None, profile: str | None = None):
     from alpaca.data.historical import StockHistoricalDataClient
-
-    key, secret, _paper = credentials_for_profile(profile, pool)
-    if not key or not secret:
-        raise RuntimeError("缺少 Alpaca API 密钥")
-    return StockHistoricalDataClient(key, secret)
+    from .broker_transport import cached_client
+    selected = profile or profile_for_pool(pool)
+    return cached_client("data", selected, credentials_for_profile(selected),
+        lambda key, secret, paper: StockHistoricalDataClient(key, secret))
 
 
 def get_daily_closes(symbol: str, days: int = 60, feed: str | None = None) -> list[float]:

@@ -23,7 +23,7 @@ from .state_store import get_app_setting, set_app_setting
 from .trading_gate import can_open_position
 from .yahoo_market_data import get_yahoo_stock_quote
 
-ACTIVE_STATES = {"BUY_WORKING", "SELL_WORKING", "CLOSING"}
+ACTIVE_STATES = {"BUY_WORKING", "SELL_WORKING", "CLOSING", "BUY_SUBMITTING", "SELL_SUBMITTING"}
 TERMINAL_ORDER_STATES = {"filled", "canceled", "cancelled", "expired", "rejected"}
 D_AUTO_EXCLUDED_SYMBOLS = {
     "TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UPRO", "UVXY", "VXX",
@@ -314,7 +314,7 @@ def _auto_select_candidate() -> dict | None:
     if time_module.time() - last_check < interval:
         return None
     set_app_setting("D_AUTO_SELECT_LAST_EPOCH", str(int(time_module.time())))
-    active = fetch_all("SELECT symbol, state FROM d_grid_cycles WHERE state IN ('BUY_WORKING','SELL_WORKING','CLOSING') LIMIT 1")
+    active = fetch_all("SELECT symbol, state FROM d_grid_cycles WHERE state IN ('BUY_WORKING','SELL_WORKING','CLOSING','BUY_SUBMITTING','SELL_SUBMITTING') LIMIT 1")
     if active:
         return {"kept": active[0]["symbol"], "reason": "active_cycle_locked"}
     rows = fetch_all(
@@ -385,7 +385,13 @@ def _submit_limit(client, symbol: str, side: str, qty: float, price: float, clie
         extended_hours=False,
         client_order_id=client_order_id[:48],
     )
-    return client.submit_order(order_data=request)
+    from . import order_journal as journal
+    from .account_config import profile_for_pool
+    row = journal.get_intent(client_order_id)
+    if row is None:
+        row = journal.prepare(client_order_id, profile_for_pool("D"), "D", symbol, side,
+            {"symbol": symbol, "side": side, "qty": qty, "price": price})
+    return journal.submit_prepared(client, request, row)
 
 
 def _set_cycle(cur, symbol: str, **values) -> None:
@@ -424,7 +430,16 @@ def _start_cycle(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: boo
     if dry_run:
         order_id = f"DRY-D-{symbol}-{cycle_no}-B"
     else:
-        order = _submit_limit(client, symbol, "buy", plan.qty, plan.buy_limit, f"dgrid-{symbol}-{cycle_no}-b")
+        cid = f"dgrid-{symbol}-{cycle_no}-b"
+        from . import order_journal as journal
+        from .account_config import profile_for_pool
+        journal.prepare(cid, profile_for_pool("D"), "D", symbol, "buy",
+            {"symbol": symbol, "side": "buy", "qty": plan.qty, "price": plan.buy_limit}, plan.notional)
+        _set_cycle(cur, symbol, state="BUY_SUBMITTING", cycle_no=cycle_no,
+                   anchor_price=plan.anchor_price, buy_limit=plan.buy_limit,
+                   buy_qty=plan.qty, sell_limit=plan.sell_limit, pending_client_order_id=cid)
+        cur.connection.commit()  # Persist intent and release row locks before HTTP.
+        order = _submit_limit(client, symbol, "buy", plan.qty, plan.buy_limit, cid)
         order_id = str(getattr(order, "id", "") or "")
         if not order_id:
             raise RuntimeError("Alpaca did not return a buy order id")
@@ -465,7 +480,14 @@ def _submit_sell(cur, config: dict, cycle: dict, qty: float, fill_price: float, 
     if dry_run:
         order_id = f"DRY-D-{symbol}-{cycle_no}-S"
     else:
-        order = _submit_limit(client, symbol, "sell", qty, target, f"dgrid-{symbol}-{cycle_no}-s")
+        previous = str(cycle.get("sell_order_id") or "")
+        suffix = ("-c-" + previous[-8:]) if closing else "-s"
+        cid = f"dgrid-{symbol}-{cycle_no}{suffix}"
+        _set_cycle(cur, symbol, state="SELL_SUBMITTING", buy_filled_qty=qty,
+                   buy_filled_price=fill_price, sell_limit=target,
+                   pending_client_order_id=cid, last_error="near_close_exit" if closing else None)
+        cur.connection.commit()
+        order = _submit_limit(client, symbol, "sell", qty, target, cid)
         order_id = str(getattr(order, "id", "") or "")
         if not order_id:
             raise RuntimeError("Alpaca did not return a sell order id")
@@ -490,6 +512,8 @@ def _finish_cycle(cur, config: dict, cycle: dict, sell_price: float) -> str:
     pnl = _money((sell_price - buy_price) * qty)
     cooldown = _now_la().replace(tzinfo=None) + timedelta(seconds=int(float(_runtime_text("D_GRID_COOLDOWN_SEC", "D_GRID_COOLDOWN_SEC", "5"))))
     _set_cycle(cur, config["symbol"], state="COOLDOWN", sell_filled_price=sell_price, realized_pnl=pnl, cooldown_until=cooldown, last_error=None)
+    from .order_journal import update
+    update(f"dgrid-{config['symbol']}-{cycle['cycle_no']}-b", reserved_notional=0, state="closed")
     _event(cur, config["symbol"], int(cycle["cycle_no"]), "CYCLE_FILLED", "COOLDOWN", order_id=str(cycle.get("sell_order_id") or ""), qty=qty, price=sell_price, message=f"gross_pnl={pnl:.2f}")
     return f"cycle_filled gross_pnl={pnl:.2f}"
 
@@ -515,6 +539,8 @@ def _advance_buy(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: boo
     if status in TERMINAL_ORDER_STATES:
         if filled_qty > 0:
             return _submit_sell(cur, config, cycle, filled_qty, fill_price or float(cycle["buy_limit"]), False, client)
+        from .order_journal import update
+        update(f"dgrid-{config['symbol']}-{cycle['cycle_no']}-b", reserved_notional=0, state=status)
         cooldown = _now_la().replace(tzinfo=None) + timedelta(seconds=_buy_retry_cooldown_seconds())
         _set_cycle(
             cur,
@@ -553,6 +579,14 @@ def _advance_sell(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: bo
 
 
 def run_symbol(symbol: str, *, now: datetime | None = None) -> str:
+    from .order_journal import execution_lock
+    from .account_config import profile_for_pool
+    ensure_schema()
+    with execution_lock(profile_for_pool("D")):
+        return _run_symbol_locked(symbol, now=now)
+
+
+def _run_symbol_locked(symbol: str, *, now: datetime | None = None) -> str:
     ensure_schema()
     symbol = symbol.strip().upper()
     dry_run = _runtime_bool("D_GRID_DRY_RUN", "D_GRID_DRY_RUN", True)
@@ -570,12 +604,24 @@ def run_symbol(symbol: str, *, now: datetime | None = None) -> str:
             try:
                 cur.execute("SELECT * FROM d_grid_symbols WHERE symbol=%s", (symbol,))
                 config = cur.fetchone()
-                if not config or int(config.get("enabled") or 0) != 1:
-                    return "symbol_disabled"
+                if not config:
+                    return "symbol_missing"
                 cur.execute("INSERT IGNORE INTO d_grid_cycles (symbol) VALUES (%s)", (symbol,))
                 cur.execute("SELECT * FROM d_grid_cycles WHERE symbol=%s FOR UPDATE", (symbol,))
                 cycle = cur.fetchone()
                 state = str(cycle.get("state") or "IDLE").upper()
+                conn.commit()  # Named lock owns execution; do not hold row locks across network calls.
+                if state in {"BUY_SUBMITTING", "SELL_SUBMITTING"}:
+                    if dry_run:
+                        return "live_pending_order_requires_live_reconciliation"
+                    buying = state == "BUY_SUBMITTING"
+                    order = _submit_limit(client, symbol, "buy" if buying else "sell",
+                        float(cycle["buy_qty"] if buying else cycle["buy_filled_qty"]),
+                        float(cycle["buy_limit"] if buying else cycle["sell_limit"]),
+                        str(cycle["pending_client_order_id"]))
+                    target_state = "BUY_WORKING" if buying else ("CLOSING" if "-c-" in str(cycle.get("pending_client_order_id") or "") else "SELL_WORKING")
+                    _set_cycle(cur, symbol, state=target_state, **{("buy_order_id" if buying else "sell_order_id"): str(order.id)})
+                    return "recovered_" + target_state.lower()
                 if state == "COOLDOWN":
                     until = cycle.get("cooldown_until")
                     if until and naive_now < until:
@@ -583,10 +629,13 @@ def run_symbol(symbol: str, *, now: datetime | None = None) -> str:
                     _set_cycle(cur, symbol, state="IDLE", cooldown_until=None)
                     state = "IDLE"
                     cycle["state"] = state
+                    conn.commit()
                 last_entry = _time_setting("D_GRID_LAST_ENTRY_TIME_LA", "12:30")
                 flatten_at = _time_setting("D_GRID_FLATTEN_TIME_LA", settings().market_close_flatten_time)
                 in_entry_window = now.weekday() < 5 and _time_setting("D_GRID_OPEN_TIME_LA", "06:35") <= now.time() < last_entry
                 if state == "IDLE":
+                    if int(config.get("enabled") or 0) != 1:
+                        return "symbol_disabled"
                     if not _runtime_bool("D_GRID_ENABLED", "D_GRID_ENABLED", False):
                         return "grid_disabled"
                     if not in_entry_window:
@@ -613,6 +662,8 @@ def run_symbol(symbol: str, *, now: datetime | None = None) -> str:
                                 quote=get_latest_stock_quote(symbol, pool="D"),
                             )
                         if status in TERMINAL_ORDER_STATES:
+                            from .order_journal import update
+                            update(f"dgrid-{symbol}-{cycle['cycle_no']}-b", reserved_notional=0, state=status)
                             _set_cycle(cur, symbol, state="IDLE", buy_order_id=None, last_error=f"buy_{status}_at_cutoff")
                             return f"buy_{status}_at_cutoff"
                         client.cancel_order_by_id(str(cycle["buy_order_id"]))
@@ -643,8 +694,11 @@ def run_symbol(symbol: str, *, now: datetime | None = None) -> str:
                     return _advance_sell(cur, config, cycle, quote, dry_run, client, closing=True)
                 return f"state_requires_review:{state}"
             except Exception as exc:
-                _set_cycle(cur, symbol, state="ERROR", last_error=str(exc)[:512])
-                _event(cur, symbol, int((cycle or {}).get("cycle_no") or 0), "ERROR", "ERROR", message=str(exc))
+                conn.rollback()
+                # Keep the last durable state, especially SUBMITTING, recoverable.
+                _set_cycle(cur, symbol, last_error=str(exc)[:512])
+                _event(cur, symbol, int((cycle or {}).get("cycle_no") or 0), "ERROR", str((cycle or {}).get("state") or "UNKNOWN"), message=str(exc))
+                conn.commit()  # Error evidence survives the context manager rollback.
                 raise
             finally:
                 cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
@@ -653,7 +707,7 @@ def run_symbol(symbol: str, *, now: datetime | None = None) -> str:
 def run_all() -> list[dict]:
     ensure_schema()
     selection = _auto_select_candidate()
-    rows = fetch_all("SELECT symbol FROM d_grid_symbols WHERE enabled=1 ORDER BY sort_order, symbol")
+    rows = fetch_all("SELECT s.symbol FROM d_grid_symbols s LEFT JOIN d_grid_cycles c ON c.symbol=s.symbol WHERE s.enabled=1 OR c.state IN ('BUY_WORKING','SELL_WORKING','CLOSING','BUY_SUBMITTING','SELL_SUBMITTING') ORDER BY s.sort_order, s.symbol")
     results = [{"symbol": "AUTO", "ok": True, "message": str(selection)}] if selection else []
     for row in rows:
         symbol = str(row["symbol"])

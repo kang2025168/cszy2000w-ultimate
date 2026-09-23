@@ -48,7 +48,7 @@ def refresh_dashboard_state(sync_positions: bool = False) -> list[dict]:
     rows = []
     for group in ("A", "B", "C", "D"):
         target = allocation.target_for(group)
-        used = allocation.used.get(group, get_strategy_used_capital(group))
+        used = allocation.used[group] if group in allocation.used else get_strategy_used_capital(group)
         available = allocation.available.get(group, max(0.0, target - used))
         can_open = True
         reason = "allow"

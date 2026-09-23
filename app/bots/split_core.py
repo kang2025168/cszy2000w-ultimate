@@ -68,6 +68,13 @@ def _strategy_enabled(stype: str) -> bool:
 
 
 def _sell_one(code: str, stype: str, phase: str) -> bool:
+    from ultimate_v1.order_journal import execution_lock
+    from ultimate_v1.account_config import profile_for_pool
+    with execution_lock(profile_for_pool(stype)):
+        return _sell_one_locked(code, stype, phase)
+
+
+def _sell_one_locked(code: str, stype: str, phase: str) -> bool:
     if stype == "B":
         if phase == "premarket_sell":
             return tb.safe_call(tb.strategy_B_premarket_manage, code) is True
@@ -94,6 +101,13 @@ def _sell_one(code: str, stype: str, phase: str) -> bool:
 
 
 def _buy_one(code: str, stype: str) -> bool:
+    from ultimate_v1.order_journal import execution_lock
+    from ultimate_v1.account_config import profile_for_pool
+    with execution_lock(profile_for_pool(stype)):
+        return _buy_one_locked(code, stype)
+
+
+def _buy_one_locked(code: str, stype: str) -> bool:
     if not _strategy_enabled(stype):
         tb.log.info(f"[BUY BOT] skip {code}: strategy_{stype.lower()}_enabled=0")
         return False
@@ -305,6 +319,8 @@ def run_buy_round(conn, config: SplitBotConfig, phase: str, control: dict) -> tu
 
 
 def main_loop(role: str) -> None:
+    from ultimate_v1.schema import ensure_schema
+    ensure_schema()
     config = load_config(role)
     tb.log.info(
         f"===== split {role} bot start ===== env={tb.TRADE_ENV} "

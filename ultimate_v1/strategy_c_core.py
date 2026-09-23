@@ -257,7 +257,13 @@ def _execution_lock():
             cur.execute("SELECT GET_LOCK(%s, 0) AS acquired", (lock_name,))
             acquired = int((cur.fetchone() or {}).get("acquired") or 0) == 1
             try:
-                yield acquired
+                if acquired:
+                    from .order_journal import execution_lock as account_lock
+                    from .account_config import profile_for_pool
+                    with account_lock(profile_for_pool("C")):
+                        yield True
+                else:
+                    yield False
             finally:
                 if acquired:
                     cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))

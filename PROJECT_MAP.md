@@ -1,243 +1,35 @@
 # Project Map
 
-这份文档只记录当前项目结构和运行链路，方便以后改代码前先确认影响范围。它不改变任何交易逻辑。
+## 运行拓扑
 
-## 当前结论
+- `docker-compose.yml`：MySQL、B/F 四个独立买卖容器、Ultimate 网页与机器人监管、旧手机看板、行情分类更新。
+- 启动完整拓扑：`docker compose --profile split-bots --profile ultimate up -d --build`。
+- `scripts/run.sh`：入口分发；支持容器与项目目录运行。
+- `app/bots/runtime_core.py` / `split_core.py`：B/F 调度、时间窗口、开关与心跳。
+- `ultimate_v1/bot_supervisor.py`：其他机器人子进程监管；外部容器机器人不重复拉起。
 
-这个项目是一个 Python 交易机器人，使用 Docker Compose 启动两个主要服务：
+## 交易与状态
 
-- `mysql`: MySQL 8.0，保存行情池和交易状态。
-- `tradebot`: Python 程序，读取 MySQL 中的股票状态，调用策略函数，并通过 Alpaca 下单。
+- `app/b_config.py`：B 策略环境参数；`app/strategy_b.py`：B 策略行为。
+- `ultimate_v1/order_fills.py`：基于订单回报确认成交，不使用总持仓推断成交。
+- `ultimate_v1/account_config.py` / `broker_transport.py` / `alpaca_gateway.py`：账户隔离、身份校验、HTTP 连接与券商访问。
+- `ultimate_v1/order_journal.py`：手动与 D 网格订单意图、幂等提交、资金预占。
+- `ultimate_v1/manual_execution.py`：手动与强平订单执行服务。
+- `ultimate_v1/manual_ledger.py`：手动订单累计成交对账、事务入账与后台恢复。
+- `ultimate_v1/capital_manager.py` / `risk_controller.py` / `trading_gate.py`：额度、风险和新开仓检查。
+- `ultimate_v1/d_grid.py`：D 网格状态机与提交恢复。
+- `ultimate_v1/sync_positions.py` / `position_holdings.py`：券商持仓与策略持仓同步。
+- `ultimate_v1/schema.py`：版本化迁移；`db.py`：有界连接池与事务。
 
-当前主运行链路是：
+## 网页与运维
 
-```text
-docker compose up -d --build
-  -> split-bots profile
-  -> ./scripts/run.sh b_buy_bot / b_sell_bot / f_buy_bot / f_sell_bot
-  -> import strategy_b / strategy_f 等当前实盘策略
-  -> main_loop()
-  -> one_round()
-  -> load_rows()
-  -> dispatch_one()
-  -> strategy_B_buy() / strategy_B_sell()
-```
+- `ultimate_v1/web_app.py`：HTTP/API 与业务适配。
+- `ultimate_v1/templates/`：独立网页模板。
+- `ultimate_v1/web_auth.py`：有期限会话、密码配置与限速。
+- `ultimate_v1/dashboard_cache.py`：后台展示快照，与执行检查分离。
+- `ultimate_v1/metrics.py`：有界请求耗时与计数。
+- `tests/`：离线回归测试。
+- `scripts/test_execution_mysql.py`：隔离 MySQL 事务、幂等和恢复测试。
+- `.github/workflows/tests.yml`：Python 3.12 + MySQL CI。
 
-注意：虽然 Docker 命令里写的是 `strategy_a`，但实际主程序当前只在 `dispatch_one()` 里对 `stock_type == "B"` 调用买卖策略。A/C/D/E 目前被导入，但主分发里没有实际执行它们。
-
-## 关键文件
-
-### 启动和部署
-
-- `docker-compose.yml`
-  - 定义 `mysql` 和 `tradebot`。
-  - `tradebot` 使用 `.env`，并把 `ALPACA_MODE` 映射为 `TRADE_ENV`。
-  - 默认命令是 `./scripts/run.sh strategy_a`。
-
-- `Dockerfile`
-  - 基于 `python:3.12-slim`。
-  - 安装 `requirements.txt`。
-  - 默认 CMD 是 healthcheck，但在 compose 中会被覆盖。
-
-- `scripts/run.sh`
-  - 先执行 `app/healthcheck.py`。
-  - 当前交易入口是 `b_buy_bot`、`b_sell_bot`、`f_buy_bot`、`f_sell_bot`。
-  - 还支持 `getdata_full`、`unlock_can_sell`、`healthcheck` 和 Ultimate V1 辅助入口。
-
-### 主循环
-
-- `app/bots/runtime_core.py`
-  - 当前独立机器人的运行时公共工具。
-  - 读取 `TRADE_ENV` / `ALPACA_MODE`，只允许 `paper` 或 `live`。
-  - 根据环境把 paper/live key 注入到通用变量：
-    - `APCA_API_KEY_ID`
-    - `APCA_API_SECRET_KEY`
-    - `ALPACA_KEY`
-    - `ALPACA_SECRET`
-  - 控制交易时间：美西时间 `06:40` 到 `13:00`。
-  - 控制买入开关：
-    - Alpaca buying power 是否高于 `MIN_BUYING_POWER`。
-    - `stock_operations` 中 `QQQ` / `stock_type='N'` 的 `entry_open` 是否为 `1`。
-  - 先扫描可卖股票，再扫描可买股票。
-
-### 策略
-
-- `app/strategy_b.py`
-  - 当前主循环实际调用的 B 策略实现。
-  - 主要函数：
-    - `strategy_B_buy(code)`
-    - `strategy_B_sell(code)`
-
-- `app/strategies/abcd_strategy.py`
-  - A/B/C/D 买卖策略统一入口。
-  - A/C/D 目前仍是新系统占位和风控检查入口。
-  - B 会先经过 Ultimate V1 风控和资金池检查，再调用 `app.strategy_b` 的成熟买卖逻辑。
-
-- `app/strategy_c.py`
-  - 看起来偏向筛选/生成候选，而不是当前主循环直接交易。
-
-- `app/strategy_d.py`
-  - 旧占位文件，不作为新的 ABCD 统一入口。
-
-### 数据和表
-
-- `mysql-init/001_create_tables.sql`
-  - 创建 `stock_prices_pool`。
-  - 创建 `stock_operations`。
-
-- `stock_prices_pool`
-  - 历史行情池。
-  - 主要字段：`symbol`、`date`、`open`、`high`、`low`、`close`、`volume`。
-
-- `stock_operations`
-  - 当前交易状态表。
-  - 主要字段：
-    - `stock_code`
-    - `stock_type`
-    - `is_bought`
-    - `qty`
-    - `can_buy`
-    - `can_sell`
-    - `cost_price`
-    - `close_price`
-    - `trigger_price`
-    - `stop_loss_price`
-    - `take_profit_price`
-    - `last_order_intent`
-    - `last_order_side`
-    - `last_order_id`
-    - `last_order_time`
-
-### 数据同步和辅助脚本
-
-- `app/getdata_alpaca.py`
-  - 从 Alpaca 拉行情，写入 `stock_prices_pool`。
-
-- `scripts/sync_positions_to_ops.py`
-  - 从 Alpaca 当前持仓同步到 `stock_operations`。
-
-- `scripts/sync_positions_simple.py`
-  - 简化版持仓同步脚本。
-
-- `app/unlock_can_sell.py`
-  - 解锁可卖状态相关脚本。
-
-- `app/risk_gate_qqq.py`
-  - 根据 QQQ 风险状态更新 `entry_open`，作为主循环的大盘买入开关。
-
-- `scripts/backtest_strategy_b_pool.py`
-  - B 策略回测。
-
-- `scripts/validate_strategy_b_from_date.py`
-  - 从指定日期验证 B 策略。
-
-- `scripts/analyze_access_key_trades.py`
-  - 分析 Alpaca access key 对应交易记录。
-
-## 配置变量
-
-项目里主要依赖这些环境变量：
-
-- `ALPACA_MODE`: `paper` 或 `live`。
-- `TRADE_ENV`: 主程序会兼容读取；compose 中由 `ALPACA_MODE` 映射。
-- `PAPER_APCA_API_KEY_ID`
-- `PAPER_APCA_API_SECRET_KEY`
-- `PAPER_ALPACA_BASE_URL`
-- `LIVE_APCA_API_KEY_ID`
-- `LIVE_APCA_API_SECRET_KEY`
-- `LIVE_ALPACA_BASE_URL`
-- `DB_HOST`
-- `DB_PORT`
-- `DB_USER`
-- `DB_PASS`
-- `DB_NAME`
-- `OPS_TABLE`
-- `GETDATA_TABLE`
-- `MIN_BUYING_POWER`
-- `BUYPOWER_REFRESH_SECS`
-- `SLEEP_BETWEEN_SYMBOLS`
-- `SLEEP_BETWEEN_ROUNDS`
-- `LOG_DIR`
-
-`.env` 已经在 `.gitignore` 中，不应提交到 git。
-
-## 运行命令
-
-常用启动：
-
-```bash
-docker compose up -d --build
-```
-
-查看交易机器人日志：
-
-```bash
-docker compose logs -f tradebot
-```
-
-查看 MySQL 日志：
-
-```bash
-docker compose logs -f mysql
-```
-
-进入 MySQL：
-
-```bash
-docker compose exec mysql mysql -u tradebot -p"$MYSQL_ROOT_PASSWORD" cszy2000
-```
-
-只跑健康检查：
-
-```bash
-docker compose run --rm tradebot ./scripts/run.sh healthcheck
-```
-
-## 当前低风险观察
-
-这些点只是观察，不代表必须马上改：
-
-- `requirements.txt` 中 `pandas-datareader>=0.10.0` 重复了一次。
-- 多个脚本里还保留数据库默认密码字符串。即使 `.env` 没提交，后续也建议逐步统一为“必须从环境变量读取”。
-- 主入口文件中有大段旧逻辑注释，短期不影响运行，但长期会增加维护难度。
-- `app/common/db.py` 和 `app/common/log.py` 目前为空文件，说明公共层还没真正收口。
-
-## 建议的安全改动顺序
-
-如果以后要整理，建议按下面顺序，每一步都单独验证：
-
-1. 只改文档，不动运行逻辑。
-2. 清理 `requirements.txt` 的重复依赖。
-3. 增加一个只读检查脚本，打印当前环境、入口、DB 表连接状态，不下单。
-4. 给 live 模式增加更明显的启动确认日志或保护开关。
-5. 统一 DB 配置读取方式。
-6. 标记旧入口，确认没有使用后再归档。
-7. 最后才考虑改 `app/bots/runtime_core.py`、`app/strategies/abcd_strategy.py`、`app/strategy_b.py` 的交易逻辑。
-
-## 改代码前检查清单
-
-在修改交易相关文件前，先确认：
-
-- 当前是在 `paper` 还是 `live`。
-- 是否有 MySQL 备份。
-- `docker compose logs -f tradebot` 中是否已经稳定运行。
-- 改动是否会影响：
-  - 下单 key 选择。
-  - `can_buy` / `can_sell`。
-  - `is_bought`。
-  - `qty`。
-  - `last_order_intent`。
-  - `entry_open` 大盘开关。
-- 是否可以先在 paper 模式跑一轮。
-
-## 本次检查结果
-
-已执行轻量语法检查：
-
-```bash
-python -m compileall -q app scripts
-```
-
-结果：通过。
-
-没有启动 Docker，没有连接 Alpaca，没有触发交易。
+部署、迁移、备份与故障处理见 [运行手册](docs/OPERATIONS.md)。审查基线见 PROJECT_AUDIT_2026-09-22.md。

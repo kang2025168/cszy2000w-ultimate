@@ -24,7 +24,7 @@ def should_flatten_now(now: datetime | None = None) -> bool:
 
 
 def flatten_d_positions(force: bool = False) -> int:
-    """执行 D 类持仓强平，并同步 stock_operations 和 position_holdings。"""
+    """提交 D 类限价平仓；只在真实成交后更新持仓。"""
     s = settings()
     if not s.enable_d_intraday:
         print("[D FLATTEN] disabled=1", flush=True)
@@ -33,45 +33,29 @@ def flatten_d_positions(force: bool = False) -> int:
         print(f"[D FLATTEN] skip before {s.market_close_flatten_time}", flush=True)
         return 0
 
-    flattened = 0
-    with db_conn(s) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT stock_code, qty, cost_price, close_price
-                FROM `{s.ops_table}`
-                WHERE is_bought=1
-                  AND UPPER(COALESCE(NULLIF(strategy_group, ''), stock_type))='D'
-                """
-            )
-            rows = list(cur.fetchall())
-            for row in rows:
-                symbol = str(row["stock_code"]).upper()
-                qty = float(row.get("qty") or 0)
-                if qty <= 0:
-                    continue
-                try:
-                    order = alpaca_gateway.submit_market_sell(symbol, qty)
-                    order_id = str(getattr(order, "id", "") or "")
-                    price = float(row.get("close_price") or row.get("cost_price") or 0)
-                    cur.execute(
-                        f"""
-                        UPDATE `{s.ops_table}`
-                        SET is_bought=0, can_sell=0, qty=0,
-                            last_order_side='sell',
-                            last_order_intent='D_FORCE_FLATTEN',
-                            last_order_id=%s,
-                            last_order_time=NOW()
-                        WHERE stock_code=%s
-                        """,
-                        (order_id, symbol),
-                    )
-                    update_sell_holding(symbol, "D", qty, price, remaining_qty=0, last_order_id=order_id)
-                    flattened += 1
-                    print(f"[D FLATTEN] symbol={symbol} qty={qty} order_id={order_id}", flush=True)
-                except Exception as exc:
-                    print(f"[D FLATTEN ERROR] symbol={symbol} qty={qty} error={exc}", flush=True)
-    return flattened
+    from .schema import ensure_schema
+    from .db import fetch_all
+    from .manual_execution import _manual_stock_order_payload
+    import hashlib
+    ensure_schema()
+    rows = fetch_all(f"SELECT stock_code,last_order_id FROM `{s.ops_table}` WHERE is_bought=1 AND qty>0 AND stock_type='D'")
+    submitted = 0
+    today = datetime.now(ZoneInfo(s.timezone)).date().isoformat()
+    for row in rows:
+        symbol = str(row["stock_code"]).upper()
+        intent = f"flatten:{today}:{symbol}:{row.get('last_order_id') or 'initial'}"
+        request_id = "flatten-" + hashlib.sha256(intent.encode()).hexdigest()[:40]
+        try:
+            result = _manual_stock_order_payload(dict(symbol=symbol, pool="D", side="sell",
+                size="full", order_type="limit", execute=True, request_id=request_id))
+            if result.get("ok") and result.get("order_id"):
+                submitted += 1
+                print(f"[D FLATTEN] {symbol} submitted; holdings change only on confirmed fills", flush=True)
+            else:
+                print(f"[D FLATTEN] {symbol}: {result.get('error')}", flush=True)
+        except Exception as exc:
+            print(f"[D FLATTEN ERROR] {symbol}: {type(exc).__name__}", flush=True)
+    return submitted
 
 
 if __name__ == "__main__":

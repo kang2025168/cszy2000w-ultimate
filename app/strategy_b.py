@@ -42,109 +42,13 @@ DB = dict(
 # =========================
 # 参数
 # =========================
-B_MIN_UP_PCT = float(os.getenv("B_MIN_UP_PCT", "0.03"))
-B_MAX_BUY_UP_PCT = float(os.getenv("B_MAX_BUY_UP_PCT", "0.10"))
-B_MAX_ENTRY_UP_PCT = float(os.getenv("B_MAX_ENTRY_UP_PCT", "0.4"))
-B_MIN_PRICE = float(os.getenv("B_MIN_PRICE", "5.0"))
-B_MAX_ACTIVE_POSITIONS = int(os.getenv("B_MAX_ACTIVE_POSITIONS", "4"))
-B_MAX_BELOW_OPEN_PCT = float(os.getenv("B_MAX_BELOW_OPEN_PCT", "0.015"))
-B_MAX_PULLBACK_FROM_HIGH_PCT = float(os.getenv("B_MAX_PULLBACK_FROM_HIGH_PCT", "0.03"))
-B_REQUIRE_INTRADAY_VOLUME = int(os.getenv("B_REQUIRE_INTRADAY_VOLUME", "0"))
-B_MIN_PREV_DAY_VOLUME = int(float(os.getenv("B_MIN_PREV_DAY_VOLUME", "3000000")))
-B_READY_LOOKBACK_DAYS = int(os.getenv("B_READY_LOOKBACK_DAYS", "35"))
-B_READY_AVG_VOLUME_DAYS = int(os.getenv("B_READY_AVG_VOLUME_DAYS", "20"))
-B_READY_MIN_PRICE = float(os.getenv("B_READY_MIN_PRICE", os.getenv("STRONG_MIN_PRICE", "5")))
-B_READY_MIN_VOLUME = float(os.getenv("B_READY_MIN_VOLUME", os.getenv("STRONG_MIN_VOLUME", "3000000")))
-B_READY_MIN_DAY_VOLUME = float(os.getenv("B_READY_MIN_DAY_VOLUME", os.getenv("B_READY_MIN_VOLUME", "3000000")))
-B_READY_MIN_DOLLAR_VOLUME = float(os.getenv("B_READY_MIN_DOLLAR_VOLUME", os.getenv("STRONG_MIN_DOLLAR_VOLUME", "5000000")))
-B_READY_MIN_GAIN_PCT = float(os.getenv("B_READY_MIN_GAIN_PCT", os.getenv("STRONG_MIN_GAIN_PCT", "0.05")))
-B_READY_MAX_GAIN_PCT = float(os.getenv("B_READY_MAX_GAIN_PCT", os.getenv("STRONG_MAX_GAIN_PCT", "0.15")))
-B_READY_MIN_UP_STREAK = int(os.getenv("B_READY_MIN_UP_STREAK", os.getenv("STRONG_MIN_UP_STREAK", "2")))
-B_READY_MAX_UP_STREAK = int(os.getenv("B_READY_MAX_UP_STREAK", os.getenv("STRONG_MAX_UP_STREAK", "4")))
-B_READY_MIN_CLOSE_POSITION = float(os.getenv("B_READY_MIN_CLOSE_POSITION", os.getenv("STRONG_MIN_CLOSE_POSITION", "0.80")))
-B_READY_MIN_VOLUME_RATIO = float(os.getenv("B_READY_MIN_VOLUME_RATIO", os.getenv("STRONG_MIN_VOLUME_RATIO", "1.2")))
-B_READY_LIMIT = int(os.getenv("B_READY_LIMIT", "50"))
-B_READY_WINDOW_TRADING_DAYS = int(os.getenv("B_READY_WINDOW_TRADING_DAYS", "5"))
-B_READY_REPLACE = os.getenv("B_READY_REPLACE", "1").strip().lower() not in {"0", "false", "no", "off"}
-B_READY_REQUIRE_GREEN = os.getenv("B_READY_REQUIRE_GREEN", "1").strip().lower() not in {"0", "false", "no", "off"}
-B_VOLUME_T1_LA = os.getenv("B_VOLUME_T1_LA", "07:30")
-B_VOLUME_T2_LA = os.getenv("B_VOLUME_T2_LA", "09:30")
-B_MIN_REALTIME_VOLUME = int(float(os.getenv("B_MIN_REALTIME_VOLUME", "100000")))
-B_MIN_REALTIME_DOLLAR_VOLUME = float(os.getenv("B_MIN_REALTIME_DOLLAR_VOLUME", "1000000"))
-B_RVOL_EARLY = float(os.getenv("B_RVOL_EARLY", "1.8"))
-B_RVOL_MID = float(os.getenv("B_RVOL_MID", "1.4"))
-B_RVOL_LATE = float(os.getenv("B_RVOL_LATE", "1.15"))
-B_MARKET_OPEN_LA = os.getenv("B_MARKET_OPEN_LA", "06:30")
-B_MARKET_CLOSE_LA = os.getenv("B_MARKET_CLOSE_LA", "13:00")
-B_SCORE_TABLE = os.getenv("B_SCORE_TABLE", "strategy_b_buy_scores")
-B_SCORE_TOP_N = int(os.getenv("B_SCORE_TOP_N", "3"))
-B_SCORE_INTERVAL_MINUTES = int(os.getenv("B_SCORE_INTERVAL_MINUTES", "5"))
-B_SCORE_CONFIRMATIONS = int(os.getenv("B_SCORE_CONFIRMATIONS", "3"))
-B_SCORE_LOOKBACK_MINUTES = int(os.getenv("B_SCORE_LOOKBACK_MINUTES", "30"))
-B_SCORE_LOG_EACH_CANDIDATE = int(os.getenv("B_SCORE_LOG_EACH_CANDIDATE", "1"))
-B_MARKET_FILTER_ENABLED = int(os.getenv("B_MARKET_FILTER_ENABLED", "1"))
-B_MARKET_SCORE_MIN = float(os.getenv("B_MARKET_SCORE_MIN", "55"))
-B_MARKET_MAX_VIX = float(os.getenv("B_MARKET_MAX_VIX", "28"))
-B_MARKET_WARN_VIX = float(os.getenv("B_MARKET_WARN_VIX", "22"))
-B_MARKET_MAX_QQQ_DROP_PCT = float(os.getenv("B_MARKET_MAX_QQQ_DROP_PCT", "-0.80"))
-B_MARKET_MAX_DOWNTREND_QQQ_DROP_PCT = float(os.getenv("B_MARKET_MAX_DOWNTREND_QQQ_DROP_PCT", "-0.30"))
-B_MIN_BUYING_POWER = float(os.getenv("B_MIN_BUYING_POWER", "1000"))
-B_MIN_OPEN_BUYING_POWER = float(os.getenv("B_MIN_OPEN_BUYING_POWER", "1000"))
-
-B_TARGET_NOTIONAL_USD = float(os.getenv("B_TARGET_NOTIONAL_USD", "2500"))
-B_MAX_NOTIONAL_USD = float(os.getenv("B_MAX_NOTIONAL_USD", "2500"))
-B_USE_DYNAMIC_CAPITAL_SIZING = int(os.getenv("B_USE_DYNAMIC_CAPITAL_SIZING", "1"))
-B_AVAILABLE_CAPITAL_MULTIPLIER = float(os.getenv("B_AVAILABLE_CAPITAL_MULTIPLIER", "1.0"))
-B_DYNAMIC_MAX_TRADE_NOTIONAL = float(os.getenv("B_DYNAMIC_MAX_TRADE_NOTIONAL", "10000"))
-B_DYNAMIC_MIN_TRADE_NOTIONAL = float(os.getenv("B_DYNAMIC_MIN_TRADE_NOTIONAL", "1000"))
-B_DYNAMIC_ORDER_MAX_NOTIONAL = float(os.getenv("B_DYNAMIC_ORDER_MAX_NOTIONAL", str(B_DYNAMIC_MAX_TRADE_NOTIONAL)))
-B_DYNAMIC_ORDER_TIERS = os.getenv(
-    "B_DYNAMIC_ORDER_TIERS",
-    "10000:2000,20000:2500,40000:3000,80000:4000,150000:5000,300000:7500,inf:10000",
-)
-B_REMAINDER_BUY_MIN_NOTIONAL = float(os.getenv("B_REMAINDER_BUY_MIN_NOTIONAL", "1000"))
-
-B_COOLDOWN_MINUTES = int(os.getenv("B_COOLDOWN_MINUTES", "30"))
-B_BP_USE_RATIO = float(os.getenv("B_BP_USE_RATIO", "0.98"))
-B_ALLOW_EXTENDED = int(os.getenv("B_ALLOW_EXTENDED", "0"))
-B_DEBUG = int(os.getenv("B_DEBUG", "0"))
-HTTP_TIMEOUT = float(os.getenv("B_HTTP_TIMEOUT", "6"))
-
-B_MONSTER_MIN_PEAK_GAIN_PCT = float(os.getenv("B_MONSTER_MIN_PEAK_GAIN_PCT", "0.03"))
-
-B_BP_USE_CASH = int(os.getenv("B_BP_USE_CASH", "0"))  # 0=buying_power,1=cash
-B_BUY_WINDOW_START_LA = os.getenv("B_BUY_WINDOW_START_LA", "06:50")
-B_BUY_WINDOW_END_LA = os.getenv("B_BUY_WINDOW_END_LA", "10:40")
-LA_TZ = ZoneInfo("America/Los_Angeles") if ZoneInfo else None
-
-B_INITIAL_STOP_MULT = float(os.getenv("B_INITIAL_STOP_MULT", "0.95"))
-B_TRAIL_LOCK_START_PCT = float(os.getenv("B_TRAIL_LOCK_START_PCT", "0.05"))
-B_TRAIL_LOCK_SL_MULT = float(os.getenv("B_TRAIL_LOCK_SL_MULT", "1.00"))
-B_INITIAL_STOP_GRACE_SECONDS = int(os.getenv("B_INITIAL_STOP_GRACE_SECONDS", "180"))
-B_CATASTROPHIC_STOP_LOSS_PCT = float(os.getenv("B_CATASTROPHIC_STOP_LOSS_PCT", "-0.08"))
-B_PEAK_GIVEBACK_RULES = (
-    (0.50, 0.10),
-    (0.30, 0.07),
-    (0.15, 0.05),
-    (0.08, 0.035),
-)
-B_STAGE_SELL_RULES = (
-    (1, 0.20, None, None, 0.20),
-    (2, 0.35, None, None, 0.20),
-    (3, 0.60, None, None, 0.15),
-    (4, 0.85, None, None, 0.10),
-    (5, 1.20, None, None, 0.10),
-)
-
-# 买入后同步 position
-B_POS_WAIT_SEC = int(os.getenv("B_POS_WAIT_SEC", "20"))
-B_POS_RETRY = int(os.getenv("B_POS_RETRY", "2"))
+from app.b_config import *  # noqa: F403; retain legacy parameter API
 
 ALPACA_DATA_BASE_URL = os.getenv("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets").rstrip("/")
 B_DATA_FEED = os.getenv("B_DATA_FEED", "iex").strip().lower()
 
 TRADE_ENV = (os.getenv("TRADE_ENV") or os.getenv("ALPACA_MODE") or "paper").strip().lower()
-APCA_API_KEY_ID, APCA_API_SECRET_KEY, _B_PAPER_ACCOUNT = credentials_for_profile(pool="B")
+APCA_API_KEY_ID, APCA_API_SECRET_KEY, _B_PAPER_ACCOUNT = "", "", True
 
 MAX_INTENT_LEN = int(os.getenv("B_INTENT_MAXLEN", "70"))
 
@@ -411,16 +315,8 @@ _trading_client = None
 _trading_client_signature = None
 
 def _get_trading_client():
-    global _trading_client, _trading_client_signature, APCA_API_KEY_ID, APCA_API_SECRET_KEY, _B_PAPER_ACCOUNT
-    key, secret, paper_account = credentials_for_profile(pool="B")
-    signature = (key, secret, paper_account)
-    if _trading_client is not None and _trading_client_signature == signature:
-        return _trading_client
-    from alpaca.trading.client import TradingClient
-    APCA_API_KEY_ID, APCA_API_SECRET_KEY, _B_PAPER_ACCOUNT = key, secret, paper_account
-    _trading_client = TradingClient(APCA_API_KEY_ID, APCA_API_SECRET_KEY, paper=bool(_B_PAPER_ACCOUNT))
-    _trading_client_signature = signature
-    return _trading_client
+    from ultimate_v1.alpaca_gateway import trading_client
+    return trading_client(pool="B")
 
 
 def _is_quote_transient_error(exc: Exception) -> bool:
@@ -916,58 +812,10 @@ def _cancel_open_buy_orders(tc, code: str) -> int:
 
 
 def _reconcile_fill(tc, code: str, order_id: str, wait_sec: float = 4.0):
-    """
-    确认订单成交结果。返回 (filled_qty, filled_avg_price)。
-
-    优先级：Alpaca 真实持仓 > 订单 filled_qty/filled_avg_price。
-    一旦订单进入终态（filled/canceled/expired/rejected）立即返回，不死等。
-    """
-    import time
-
-    deadline = time.time() + max(float(wait_sec), 0.5)
-    poll = 0.4
-
-    last_filled_qty = 0
-    last_filled_avg = 0.0
-
-    while time.time() < deadline:
-        # 优先看真实持仓（最准）
-        try:
-            pos = tc.get_open_position(code)
-            qty = int(float(getattr(pos, "qty", 0) or 0))
-            avg = float(getattr(pos, "avg_entry_price", 0) or 0)
-            if qty > 0 and avg > 0:
-                return qty, avg
-        except Exception:
-            pass  # position does not exist 是常态,不打印
-
-        # 再看订单状态;终态则立刻返回
-        try:
-            o = tc.get_order_by_id(str(order_id))
-            status = str(getattr(o, "status", "") or "").lower()
-            filled_qty = int(float(getattr(o, "filled_qty", 0) or 0))
-            filled_avg = float(getattr(o, "filled_avg_price", 0) or 0)
-
-            if filled_qty > 0 and filled_avg > 0:
-                last_filled_qty = filled_qty
-                last_filled_avg = filled_avg
-
-            if status in ("filled", "canceled", "cancelled", "expired", "rejected"):
-                return last_filled_qty, last_filled_avg
-        except Exception:
-            pass
-
-        time.sleep(poll)
-
-    # 超时:再尝试拿一次最新订单数据
-    try:
-        o = tc.get_order_by_id(str(order_id))
-        return (
-            int(float(getattr(o, "filled_qty", 0) or 0)),
-            float(getattr(o, "filled_avg_price", 0) or 0),
-        )
-    except Exception:
-        return last_filled_qty, last_filled_avg
+    """Return only this order's fills; existing holdings are not fills."""
+    from ultimate_v1.order_fills import wait_for_fill
+    qty, price, _status = wait_for_fill(tc, order_id, wait_sec)
+    return qty, price
 
 
 def _write_buy_cooldown(conn, code: str, order_id, reason: str):
@@ -1628,125 +1476,15 @@ def _buy_add_qty(conn, code: str, add_qty: int, reason: str, snap_price: float) 
 
 
 
-def _reconcile_sell_fill(tc, code: str, order_id: str, expected_real_qty: int, wait_sec: float = 4.0) -> int:
-    """
-    确认卖单成交结果。返回实际卖出 qty。
-
-    优先级：订单 filled_qty > 真实持仓减少量。
-    一旦订单进入终态立即返回。
-    """
-    import time
-
-    deadline = time.time() + max(float(wait_sec), 0.5)
-    poll = 0.4
-
-    last_filled_qty = 0
-
-    while time.time() < deadline:
-        # ① 直接看订单 filled_qty(最准)
-        try:
-            o = tc.get_order_by_id(str(order_id))
-            status = str(getattr(o, "status", "") or "").lower()
-            filled_qty = int(float(getattr(o, "filled_qty", 0) or 0))
-
-            if filled_qty > 0:
-                last_filled_qty = filled_qty
-
-            if status in ("filled", "canceled", "cancelled", "expired", "rejected"):
-                return last_filled_qty
-        except Exception:
-            pass
-
-        # ② 兜底:看 position 减少量
-        try:
-            pos = tc.get_open_position(code)
-            cur_qty = int(float(getattr(pos, "qty", 0) or 0))
-            sold = max(expected_real_qty - cur_qty, 0)
-            if sold > last_filled_qty:
-                last_filled_qty = sold
-
-
-        except Exception as e:
-            msg = str(e)
-            if "position does not exist" in msg or "40410000" in msg:
-                return max(last_filled_qty, expected_real_qty)
-            print(f"[B SELL] {code} position check error during reconcile: {e}", flush=True)
-
-        time.sleep(poll)
-
-    # 超时:再尝试拿一次
-    try:
-        o = tc.get_order_by_id(str(order_id))
-        return int(float(getattr(o, "filled_qty", 0) or 0))
-    except Exception:
-        return last_filled_qty
+def _reconcile_sell_fill(tc, code: str, order_id: str, expected_real_qty: int, wait_sec: float = 4.0) -> float:
+    """Count this sell order only, never another strategy's position changes."""
+    from ultimate_v1.order_fills import wait_for_fill
+    qty, _price, _status = wait_for_fill(tc, order_id, wait_sec)
+    return qty
 
 
 def _reconcile_add_fill(tc, order_id: str, wait_sec: float = 4.0):
-    """
-    确认加仓订单成交结果。返回 (filled_qty, filled_avg_price)。
-
-    专用于加仓：只看订单的 filled_qty / filled_avg_price，不看 position
-    （因为 position 的 avg 是合并后的均价，不是本次加仓的成交价）。
-    """
-    import time
-
-    deadline = time.time() + max(float(wait_sec), 0.5)
-    poll = 0.4
-
-    last_filled_qty = 0
-    last_filled_avg = 0.0
-
-    while time.time() < deadline:
-        try:
-            o = tc.get_order_by_id(str(order_id))
-            status = str(getattr(o, "status", "") or "").lower()
-            filled_qty = int(float(getattr(o, "filled_qty", 0) or 0))
-            filled_avg = float(getattr(o, "filled_avg_price", 0) or 0)
-
-            if filled_qty > 0 and filled_avg > 0:
-                last_filled_qty = filled_qty
-                last_filled_avg = filled_avg
-
-            if status in ("filled", "canceled", "cancelled", "expired", "rejected"):
-                return last_filled_qty, last_filled_avg
-        except Exception:
-            pass
-
-        time.sleep(poll)
-
-    # 超时:再尝试拿一次
-    try:
-        o = tc.get_order_by_id(str(order_id))
-        return (
-            int(float(getattr(o, "filled_qty", 0) or 0)),
-            float(getattr(o, "filled_avg_price", 0) or 0),
-        )
-    except Exception:
-        return last_filled_qty, last_filled_avg
-
-
-
-
-
-# =========================
-# BUY
-# =========================
-def _get_prev_close_from_db(conn, code: str):
-    sql = f"""
-    SELECT `close`
-    FROM `{PRICES_TABLE}`
-    WHERE `symbol`=%s
-    ORDER BY `date` DESC
-    LIMIT 1
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (code,))
-        row = cur.fetchone() or {}
-    try:
-        return float(row.get("close") or 0.0)
-    except Exception:
-        return 0.0
+    return _reconcile_fill(tc, "", order_id, wait_sec)
 
 
 def _get_prev_trading_day_volume(conn, code: str) -> tuple[int, str]:

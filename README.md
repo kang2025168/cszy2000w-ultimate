@@ -26,7 +26,7 @@
 ./scripts/run.sh f_sell_bot
 ```
 
-Docker 里已经预留了 `split-bots` profile，默认不影响现有 `tradebot`：
+Docker 里已经预留了 `split-bots` profile，通过独立服务运行：
 
 ```bash
 docker compose --profile split-bots up -d --build buybot sellbot f_buybot f_sellbot
@@ -39,14 +39,14 @@ docker compose --profile split-bots up -d --build buybot sellbot f_buybot f_sell
 - `B_BUY_WINDOW_START_LA=06:50`：B 策略默认避开开盘前 20 分钟。
 - `B_MAX_BUY_UP_PCT=0.10`：当天涨幅超过 10% 不追。
 - `B_UP_PCT_MAX=0.20`：筛选入池时，昨日涨幅超过 20% 不入池。
-- `B_MAX_ENTRY_UP_PCT=0.04`：相对候选入选价涨幅超过 4% 不追。
+- `B_MAX_ENTRY_UP_PCT=0.4`：相对候选入选价涨幅超过 40% 不追。
 - `B_MIN_PRICE=5.0`：低于 5 美元不买。
 - `B_MAX_SPREAD_PCT=0.015`：买入价差超过 1.5% 不买。
 - `B_MIN_AVG_DOLLAR_VOL20=20000000`：20 日均成交额低于 2000 万美元不买。
 - `B_MAX_ACTIVE_POSITIONS=4`：B 策略同时持仓上限。
 - `B_MAX_BELOW_OPEN_PCT=0.015`：实时价/限价低于当日开盘价超过 1.5% 不买。
 - `B_MAX_PULLBACK_FROM_HIGH_PCT=0.03`：实时价/限价距离当日最高价回落超过 3% 不买。
-- `B_REQUIRE_INTRADAY_VOLUME=1`：B 买入要求 `stock_operations.intraday_volume` 可用。
+- `B_REQUIRE_INTRADAY_VOLUME=0`：默认关闭此项旧成交量检查；设置为 1 时启用。
 - `B_VOLUME_RATIO_EARLY=0.15`：06:50-07:30 要求今日累计量达到 20 日均量的 15%。
 - `B_VOLUME_RATIO_MID=0.30`：07:30-09:30 要求今日累计量达到 20 日均量的 30%。
 - `B_VOLUME_RATIO_LATE=0.45`：09:30 以后要求今日累计量达到 20 日均量的 45%。
@@ -60,16 +60,16 @@ docker compose --profile split-bots up -d --build buybot sellbot f_buybot f_sell
 2. 构建并启动：
 
 ```bash
-docker compose up -d --build
+docker compose --profile split-bots --profile ultimate up -d --build
 ```
 3. 查看日志：
 
 ```bash
-docker compose logs -f tradebot
+docker compose logs -f buybot sellbot ultimate_v1
 ```
 
 云端流程一致。
-docker compose exec mysql mysql -u tradebot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT NOW() as now_time, @@global.time_zone as gtz, @@session.time_zone as stz;"
+docker compose exec mysql mysql -u tradebot -p -e "SELECT NOW() as now_time, @@global.time_zone as gtz, @@session.time_zone as stz;"
 
 ### 本地盘中成交量同步
 
@@ -91,3 +91,15 @@ OPS_VOLUME_RUN_ONCE=1 OPS_VOLUME_IGNORE_WINDOW=1 .venv/bin/python app/sync_ops_i
 写入字段只有一个：
 
 - `intraday_volume`
+
+
+### 工程验证与升级
+
+请先阅读 [升级与运行手册](docs/OPERATIONS.md)。新增执行日志和版本化迁移需要先备份数据库，再在 paper 环境验证。
+
+```bash
+.venv/bin/python scripts/test_offline.py
+```
+
+网页密码未配置或仍为 CHANGE_ME 时拒绝启动。A 账户必须配置独立凭证。
+默认发布端口仅允许本机访问；远程访问通过 HTTPS 代理，详见运行手册。

@@ -11,3 +11,10 @@ data/
 *.sql.dump
 stock_prices_pool.dump.sql
 cszy2000.dump.sql
+
+.venv/
+.pytest_cache/
+.DS_Store
+*.bak*
+.coverage
+htmlcov/

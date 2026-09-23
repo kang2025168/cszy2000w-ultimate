@@ -8,9 +8,9 @@ services:
       MYSQL_DATABASE: ${DB_NAME}
       MYSQL_USER: ${DB_USER}
       MYSQL_PASSWORD: ${DB_PASS}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}
     ports:
-      - "3307:3306"
+      - "127.0.0.1:3307:3306"
     volumes:
       - ./data/mysql:/var/lib/mysql
       - ./mysql-init:/docker-entrypoint-initdb.d
@@ -18,57 +18,10 @@ services:
       - --default-authentication-plugin=mysql_native_password
       - --default-time-zone=America/Los_Angeles
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-rootpass}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}"]
       interval: 5s
       timeout: 3s
       retries: 30
-
-  tradebot:
-    profiles: ["legacy"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: cszy_tradebot
-    working_dir: /app
-    env_file:
-      - .env
-    environment:
-      DB_HOST: mysql
-      DB_PORT: 3306
-      TZ: America/Los_Angeles
-
-      # ✅ 关键：运行环境统一（兼容你代码里 TRADE_ENV/ALPACA_MODE 两套）
-      # 只用 ALPACA_MODE 控制（paper/live）
-      TRADE_ENV: ${ALPACA_MODE}
-
-      # ✅ 同时注入 PAPER/LIVE 两套账号（由主程序按 TRADE_ENV 选择注入到 APCA_API_*）
-      PAPER_APCA_API_KEY_ID: ${PAPER_APCA_API_KEY_ID}
-      PAPER_APCA_API_SECRET_KEY: ${PAPER_APCA_API_SECRET_KEY}
-      PAPER_ALPACA_BASE_URL: ${PAPER_ALPACA_BASE_URL}
-
-      LIVE_APCA_API_KEY_ID: ${LIVE_APCA_API_KEY_ID}
-      LIVE_APCA_API_SECRET_KEY: ${LIVE_APCA_API_SECRET_KEY}
-      LIVE_ALPACA_BASE_URL: ${LIVE_ALPACA_BASE_URL}
-
-      # ✅ 注意：这里不要再写死 APCA_API_KEY_ID / ALPACA_KEY 等通用变量
-      # 否则会把你永远锁死在 paper key（你现在遇到的就是这个问题）
-
-    volumes:
-      - ./app:/app/app
-      - ./ultimate_v1:/app/ultimate_v1
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./scripts:/app/scripts
-    depends_on:
-      mysql:
-        condition: service_healthy
-    command: ["bash", "-lc", "./scripts/run.sh main"]
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
   buybot:
     profiles: ["split-bots"]
@@ -244,7 +197,7 @@ services:
       MOBILE_CONTROL_PORT: 5050
       MOBILE_CONTROL_TOKEN: ${MOBILE_CONTROL_TOKEN:-}
     ports:
-      - "5050:5050"
+      - "${DASHBOARD_BIND_IP:-127.0.0.1}:5050:5050"
     volumes:
       - ./app:/app/app
       - ./data:/app/data
@@ -285,7 +238,7 @@ services:
       RISK_USE_YFINANCE: ${RISK_USE_YFINANCE:-0}
       ULTIMATE_EXTERNAL_BOTS: b_buy_bot,b_sell_bot,f_buy_bot,f_sell_bot
     ports:
-      - "${ULTIMATE_WEB_PORT:-8060}:${ULTIMATE_WEB_PORT:-8060}"
+      - "${DASHBOARD_BIND_IP:-127.0.0.1}:${ULTIMATE_WEB_PORT:-8060}:${ULTIMATE_WEB_PORT:-8060}"
     volumes:
       - ./app:/app/app
       - ./ultimate_v1:/app/ultimate_v1

@@ -216,7 +216,8 @@ def _load_ops_row(cur, code: str):
     sql = f"""
     SELECT *
     FROM `{OPS_TABLE}`
-    WHERE stock_code=%s
+    WHERE stock_code=%s AND stock_type IN ('F','B')
+    ORDER BY FIELD(stock_type, 'F', 'B')
     LIMIT 1;
     """
     cur.execute(sql, (code,))
@@ -536,7 +537,7 @@ def _upsert_ready_f_ops(cur, code: str, row: dict, m: dict, detail: dict, note: 
             last_order_side=NULL,
             last_order_intent=%s,
             updated_at=CURRENT_TIMESTAMP
-        WHERE stock_code=%s;
+        WHERE stock_code=%s AND stock_type=%s;
         """
 
         cur.execute(
@@ -549,6 +550,7 @@ def _upsert_ready_f_ops(cur, code: str, row: dict, m: dict, detail: dict, note: 
                 entry_date,
                 _intent_short(note),
                 code,
+                old_type,
             ),
         )
         return True

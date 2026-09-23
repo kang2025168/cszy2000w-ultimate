@@ -30,18 +30,12 @@ BOT_SPECS: dict[str, BotSpec] = {
     "b_buy_bot": BotSpec(
         "app.bots.b_buy_bot",
         (),
-        {
-            "SPLIT_BOT_FORCE_PHASE": "regular",
-            "ALLOW_LIVE_FORCE_PHASE": "1",
-        },
+        None,
     ),
     "b_sell_bot": BotSpec(
         "app.bots.b_sell_bot",
         (),
-        {
-            "SPLIT_BOT_FORCE_PHASE": "regular",
-            "ALLOW_LIVE_FORCE_PHASE": "1",
-        },
+        None,
     ),
     "f_buy_bot": BotSpec(
         "app.bots.f_buy_bot",

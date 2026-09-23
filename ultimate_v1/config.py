@@ -9,6 +9,8 @@ from pathlib import Path
 
 def _load_dotenv() -> None:
     """轻量读取项目根目录 `.env`，避免额外依赖也能在本地直接运行。"""
+    if os.getenv("CSZY_LOAD_DOTENV", "1") == "0":
+        return
     env_path = Path(__file__).resolve().parents[1] / ".env"
     if not env_path.exists():
         return

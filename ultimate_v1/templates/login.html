@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>CSZY Ultimate V1 登录</title>
+  <style>
+    :root { --bg:#f4f7fb; --ink:#111827; --muted:#667085; --line:#d8dee8; --blue:#2563eb; --red:#c62828; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:22px; background:radial-gradient(circle at top left, #e8f1ff, transparent 36%), var(--bg); color:var(--ink); font-family:ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .login-card { width:min(420px, 100%); background:#fff; border:1px solid var(--line); border-radius:16px; padding:26px; box-shadow:0 24px 70px rgba(15,23,42,.12); }
+    .brand { display:flex; align-items:center; gap:14px; margin-bottom:22px; }
+    .brand img { width:54px; height:54px; border-radius:12px; object-fit:contain; box-shadow:0 10px 24px rgba(15,23,42,.08); }
+    h1 { margin:0; font-size:28px; line-height:1.05; letter-spacing:0; }
+    p { margin:8px 0 0; color:var(--muted); font-size:14px; }
+    label { display:block; color:var(--muted); font-size:13px; font-weight:750; margin-bottom:8px; }
+    input { width:100%; height:46px; border:1px solid var(--line); border-radius:10px; padding:0 13px; font-size:16px; outline:none; }
+    input:focus { border-color:var(--blue); box-shadow:0 0 0 4px rgba(37,99,235,.12); }
+    button { width:100%; height:46px; border:0; border-radius:10px; background:var(--blue); color:#fff; font-size:16px; font-weight:850; margin-top:14px; cursor:pointer; box-shadow:0 12px 26px rgba(37,99,235,.22); }
+    button:active { transform:scale(.98); }
+    .error { min-height:22px; margin-top:12px; color:var(--red); font-size:13px; font-weight:750; }
+    @media (max-width:480px) {
+      body { align-items:flex-start; padding:54px 18px 18px; }
+      .login-card { border-radius:14px; padding:22px; }
+      h1 { font-size:25px; }
+    }
+  </style>
+</head>
+<body>
+  <form class="login-card" id="loginForm">
+    <div class="brand">
+      <img src="/assets/cszy_ultimate_logo.png" alt="CSZY Ultimate logo" />
+      <div><h1>CSZY Ultimate V1</h1><p>请输入看板登录密码</p></div>
+    </div>
+    <label for="password">登录密码</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" autofocus />
+    <button id="loginBtn" type="submit">进入看板</button>
+    <div class="error" id="error"></div>
+  </form>
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('loginBtn');
+      const err = document.getElementById('error');
+      btn.disabled = true;
+      btn.textContent = '验证中';
+      err.textContent = '';
+      try {
+        const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:document.getElementById('password').value})});
+        const data = await r.json();
+        if (!data.ok) { err.textContent = data.error || '密码错误'; return; }
+        location.reload();
+      } catch (ex) {
+        err.textContent = '网络异常，请稍后再试';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '进入看板';
+      }
+    });
+  </script>
+</body>
+</html>

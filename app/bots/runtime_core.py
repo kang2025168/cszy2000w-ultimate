@@ -189,7 +189,7 @@ log = setup_logger()
 _install_timestamped_stdio()
 log.info(
     f"[ENV] bot={BOT_PROCESS_NAME} env={TRADE_ENV} "
-    f"key_prefix={(os.environ.get('APCA_API_KEY_ID', '')[:5] or '<EMPTY>')}"
+    f"credentials_configured={bool(os.environ.get('APCA_API_KEY_ID', ''))}"
 )
 
 
@@ -248,22 +248,15 @@ def ensure_conn_alive(conn):
 
 
 def _get_alpaca_client():
-    global _alpaca_client
-    if _alpaca_client is not None:
-        return _alpaca_client
-    from alpaca.trading.client import TradingClient
-
-    key = os.environ.get("APCA_API_KEY_ID", "")
-    secret = os.environ.get("APCA_API_SECRET_KEY", "")
-    _alpaca_client = TradingClient(key, secret, paper=(TRADE_ENV == "paper"))
-    return _alpaca_client
+    from ultimate_v1.alpaca_gateway import trading_client
+    return trading_client(pool="B")
 
 
 def get_buying_power() -> float:
-    """读取 Alpaca buying power。失败时返回上一次缓存值。"""
+    """读取 Alpaca buying power；失败时禁止新开仓。"""
     global _cached_buying_power
     try:
-        log.info(f"[BP] using key_prefix={(os.environ.get('APCA_API_KEY_ID', '')[:5] or '<EMPTY>')} env={TRADE_ENV}")
+        log.info(f"[BP] using credentials_configured={bool(os.environ.get('APCA_API_KEY_ID', ''))} env={TRADE_ENV}")
         client = _get_alpaca_client()
         acct = client.get_account()
         bp = getattr(acct, "buying_power", None)
@@ -272,7 +265,7 @@ def get_buying_power() -> float:
         return float(bp or 0.0)
     except Exception as exc:
         log.error(f"[BP] 获取购买力失败：{exc}")
-        return float(_cached_buying_power or 0.0)
+        return 0.0
 
 
 def refresh_buy_gate(force: bool = False) -> bool:

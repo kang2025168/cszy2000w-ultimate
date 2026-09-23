@@ -415,7 +415,8 @@ def refresh_capital_pool_usage(month: date | None = None) -> list[dict]:
                 base_target = float(row.get("base_target_capital") or 0)
                 risk_target = _risk_target_for_group(group, base_target, total_pct, pool_pct)
                 used_capital = used[group]
-                available = max(0.0, risk_target - used_capital)
+                from .order_journal import reserved_for_pool
+                available = max(0.0, risk_target - used_capital - reserved_for_pool(group))
                 used_percent = used_capital / risk_target if risk_target > 0 else 0.0
                 cur.execute(
                     """
@@ -609,7 +610,7 @@ def can_open_new_position(strategy_group: str, estimated_notional: float) -> tup
         if broker_snapshot.get("trade_suspended_by_user"):
             return False, "trade_suspended_by_user"
         target = allocation.target_for(group)
-        used = allocation.used.get(group, get_strategy_used_capital(group))
+        used = allocation.used[group] if group in allocation.used else get_strategy_used_capital(group)
         available = allocation.available.get(group, max(0.0, target - used))
         allow = float(estimated_notional or 0) <= available
         if allow:

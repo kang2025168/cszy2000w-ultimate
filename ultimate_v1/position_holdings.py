@@ -3,6 +3,7 @@ from __future__ import annotations
 """持仓展示表维护：买入写入/更新，卖出关闭或保留部分仓位。"""
 
 from datetime import datetime
+from contextlib import nullcontext
 
 from .config import settings
 from .db import db_conn
@@ -26,6 +27,7 @@ def upsert_buy_holding(
     capital_pool: str | None = None,
     margin_used: int = 0,
     last_order_id: str | None = None,
+    connection=None,
 ) -> None:
     """买入成交后写入 position_holdings；已有 open 记录则更新。"""
     if not _enabled():
@@ -35,7 +37,7 @@ def upsert_buy_holding(
     price = float(current_price or avg_entry_price or 0)
     cost_basis = float(qty or 0) * float(avg_entry_price or 0)
     market_value = float(qty or 0) * price
-    with db_conn() as conn:
+    with (nullcontext(connection) if connection is not None else db_conn()) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -117,6 +119,7 @@ def update_sell_holding(
     remaining_qty: float = 0,
     realized_pnl: float | None = None,
     last_order_id: str | None = None,
+    connection=None,
 ) -> None:
     """卖出成交后更新展示表；全部卖出标记 closed，部分卖出保持 open。"""
     if not _enabled():
@@ -125,7 +128,7 @@ def update_sell_holding(
     group = (strategy_group or "UNKNOWN").upper()
     status = "open" if float(remaining_qty or 0) > 0 else "closed"
     market_value = float(remaining_qty or 0) * float(sell_price or 0)
-    with db_conn() as conn:
+    with (nullcontext(connection) if connection is not None else db_conn()) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
