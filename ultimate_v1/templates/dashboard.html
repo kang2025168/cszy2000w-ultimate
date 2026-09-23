@@ -1540,6 +1540,18 @@
                 <div class="monthly-config" id="monthlyConfigGrid"></div>
                 <div class="monthly-result" id="monthlyInvestResult">A 每月 15 号按比例购买；C 不参与月投，由 C 机器人持续补齐长期核心仓并做 T。</div>
               </div>
+              <div class="account-config config-module" data-config-modules="A">
+                <h3>A 养老金目标配置</h3>
+                <p>基金 50%（QQQ 20% / VOO 20% / XLV 10%），主题标的 50%。比例按养老金账户总权益计算；月投优先补足低配标的，整股取整后余款保留现金。</p>
+                <div id="retirementRows"></div>
+                <div class="account-config-actions">
+                  <button onclick="addRetirementTarget()">添加股票</button>
+                  <button onclick="loadRetirementAllocation()">重载配置</button>
+                  <button class="primary" onclick="saveRetirementAllocation()">保存 A 分配</button>
+                </div>
+                <p id="retirementStatus" role="status">加载中...</p>
+                <p>新增股票需从主题部分调整比例，合计保持 50%。保存仅更新目标；不会立即买卖。移除标的不会卖出现有持仓。</p>
+              </div>
               <div class="schedule-panel config-module" data-config-modules="robots">
                 <div class="schedule-head">
                   <div class="schedule-title">自动化任务状态</div>
@@ -4619,6 +4631,42 @@
         <div class="monthly-card"><label>订单类型</label><select id="monthlyOrderType"><option value="limit" selected>实时价限价</option></select></div>
       `;
     }
+    function retirementItems() {
+      return Array.from(document.querySelectorAll('[data-retirement-row]')).map(row => ({
+        symbol: row.querySelector('.retirement-symbol').value.trim().toUpperCase(),
+        label: row.querySelector('.retirement-label').value.trim(),
+        percent: Number(row.querySelector('.retirement-percent').value)
+      }));
+    }
+    function renderRetirementAllocation(config) {
+      document.getElementById('retirementRows').innerHTML = (config.items || []).map(item => {
+        const fund = ['QQQ','VOO','XLV'].includes(item.symbol);
+        return `<div class="account-fields" data-retirement-row style="margin-bottom:10px">
+          <label>股票代码</label><input class="retirement-symbol" aria-label="股票代码" value="${esc(item.symbol)}" ${fund ? 'readonly' : ''} />
+          <label>类别说明</label><input class="retirement-label" aria-label="类别说明" value="${esc(item.label || '')}" />
+          <label>账户比例 %</label><input class="retirement-percent" aria-label="账户比例百分比" type="number" min="0.01" max="50" step="0.01" value="${esc(item.percent)}" ${fund ? 'readonly' : ''} />
+          ${fund ? '<span>基金部分</span>' : '<button onclick="this.parentElement.remove()">移除</button>'}
+        </div>`;
+      }).join('');
+    }
+    function addRetirementTarget() {
+      const items = retirementItems();
+      items.push({symbol:'',label:'自选股票',percent:0});
+      renderRetirementAllocation({items});
+      document.getElementById('retirementStatus').textContent = '填写新股票并调整主题比例，使主题合计为 50%。';
+    }
+    async function loadRetirementAllocation() {
+      const result = await api('/api/retirement_allocation');
+      if (result.ok) renderRetirementAllocation(result.config);
+      document.getElementById('retirementStatus').textContent = result.ok ? '基金 50% · 主题 50% · 总计 100%' : (result.error || '加载失败');
+    }
+    async function saveRetirementAllocation() {
+      const status = document.getElementById('retirementStatus');
+      status.textContent = '保存中...';
+      const result = await postJson('/api/retirement_allocation', {config:{items:retirementItems()}});
+      if (result.ok) renderRetirementAllocation(result.config);
+      status.textContent = result.ok ? 'A 分配已保存；未提交买卖订单。' : (result.error || '保存失败');
+    }
     async function loadAccountConfig() {
       const meta = document.getElementById('accountConfigMeta');
       if (meta) meta.textContent = '加载中...';
@@ -4665,7 +4713,7 @@
       if (!result?.ok) return result?.error || '月投预览失败';
       if (result.skipped) return `跳过：今天 ${result.today}，月投日 ${result.config?.day || 15}，上次执行 ${result.last_run_month || '--'}`;
       return (result.groups || []).map(g => {
-        const orders = (g.orders || []).slice(0, 8).map(o => `${o.symbol} ${o.qty}股 ${money(o.target_notional || 0)} ${o.status}${o.error ? ' ' + o.error : ''}`).join('\\n');
+        const orders = (g.orders || []).map(o => `${o.symbol} ${o.qty}股 ${money(o.target_notional || 0)} ${o.status}${o.error ? ' ' + o.error : ''}`).join('\\n');
         return `${g.group} 预算 ${money(g.budget || 0)} / 标的 ${g.target_count || 0}\\n${orders || '无订单'}`;
       }).join('\\n\\n');
     }
@@ -4715,6 +4763,7 @@
       configTab = CONFIG_TAB_COPY[tab] ? tab : 'account';
       applyConfigTab();
       if (configTab === 'account' || configTab === 'A') loadAccountConfig();
+      if (configTab === 'A') loadRetirementAllocation();
       if (configTab === 'B') loadStrategyBConfig();
       if (configTab === 'D') loadDGridConfig();
       if (configTab === 'robots') {

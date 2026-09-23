@@ -18,7 +18,7 @@ docker compose logs -f buybot sellbot ultimate_v1
 3. 配置真实网页密码、MYSQL_ROOT_PASSWORD。示例 CHANGE_ME 密码不能登录。A 账户需要 RETIREMENT 专属 key/secret；配置不完整会阻断，不能再回退到 B/C/D 账户。
 4. 建议配置 RETIREMENT_EXPECTED_ACCOUNT_ID / TRADING_EXPECTED_ACCOUNT_ID；系统会校验返回的账户身份，且拒绝两个 profile 指向同一已识别账户。
 5. 用 paper 配置验证登录、预览、下单、部分成交、撤单、重启恢复与持仓对账。确认后再安排 live 部署；不应在有未核对订单时切换凭证。
-6. 启动时版本迁移在数据库命名锁下执行，版本写入 schema_migrations。新增 execution_orders 和 d_grid_cycles.pending_client_order_id。
+6. 启动时版本迁移在数据库命名锁下执行，版本写入 schema_migrations。版本 4 将 app_settings.setting_value 扩容为 MEDIUMTEXT，以保存 A 类自选分配配置。新增 execution_orders 和 d_grid_cycles.pending_client_order_id。
 
 只执行迁移：`python -m ultimate_v1.schema`。迁移修改数据库；不是只读检查。DDL 有 MySQL 隐式提交语义，升级失败应检查备份与迁移版本，不能假定全部自动回滚。
 
@@ -54,7 +54,7 @@ docker compose logs -f buybot sellbot ultimate_v1
 .venv/bin/python scripts/test_offline.py
 ```
 
-该脚本清空运行环境、不加载 .env，并阻断网络。当前覆盖 67 项单元测试；集成测试只允许本机 13379/cszy_test，清理其中的测试数据：
+该脚本清空运行环境、不加载 .env，并阻断网络。当前覆盖 74 项单元测试；集成测试只允许本机 13379/cszy_test，清理其中的测试数据：
 
 ```bash
 docker run --rm -d --name cszy-test-mysql \

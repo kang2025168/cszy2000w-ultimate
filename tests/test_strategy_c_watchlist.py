@@ -17,7 +17,7 @@ class StrategyCWatchlistTests(unittest.TestCase):
         self.assertEqual(30, len(symbols))
         self.assertEqual(30, len(set(symbols)))
         self.assertAlmostEqual(1.0, sum(item.weight for item in STRATEGY_C_WATCHLIST))
-        self.assertEqual(["QQQ", "VOO", "XLV"], [item.symbol for item in STRATEGY_A_WATCHLIST])
+        self.assertEqual(["QQQ", "VOO", "XLV", "MSFT", "NVDA", "ISRG", "TER", "IBIT"], [item.symbol for item in STRATEGY_A_WATCHLIST])
         self.assertAlmostEqual(1.0, sum(item.weight for item in STRATEGY_A_WATCHLIST))
 
     def test_expected_core_symbols_are_present(self):

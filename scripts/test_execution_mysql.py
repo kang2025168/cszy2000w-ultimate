@@ -53,9 +53,46 @@ class ExecutionDatabaseTests(unittest.TestCase):
     def order(self, qty, price=100, status="partially_filled"):
         return SimpleNamespace(id="broker-order", filled_qty=qty, filled_avg_price=price, status=status)
 
+    def test_retirement_custom_targets_survive_restart_and_keep_holdings(self):
+        from ultimate_v1.retirement_allocation import load_config, save_config, CONFIG_KEY
+        from ultimate_v1.strategy_c_watchlist import sync_strategy_c_watchlist
+        with db_conn() as conn:
+            with conn.cursor() as cur:
+                # Match production watchlist table identity and collation.
+                cur.execute("ALTER TABLE stock_operations CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                cur.execute("SHOW COLUMNS FROM stock_operations LIKE 'id'")
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE stock_operations ADD COLUMN id BIGINT NOT NULL AUTO_INCREMENT UNIQUE")
+                cur.execute("DELETE FROM app_settings WHERE setting_key=%s", (CONFIG_KEY,))
+                cur.execute("INSERT INTO stock_operations (stock_code,stock_type,strategy_group,qty,is_bought,cost_price) VALUES ('MSFT','A','A',5,1,100)")
+        config = load_config()
+        config['items'][3]['percent'] -= 3
+        config['items'].append(dict(symbol='GOOGL', percent=3, label='Custom AI'))
+        try:
+            save_config(config)
+            sync_strategy_c_watchlist()
+            self.assertEqual(9, len(load_config()['items']))
+            a = fetch_one("SELECT qty,cost_price,weight FROM stock_operations WHERE stock_code='MSFT' AND stock_type='A'")
+            self.assertEqual(5, float(a['qty']))
+            self.assertEqual(100, float(a['cost_price']))
+            self.assertAlmostEqual(.12, float(a['weight']))
+            self.assertAlmostEqual(.03,float(fetch_one("SELECT weight FROM stock_operations WHERE stock_code='GOOGL' AND stock_type='A'")['weight']))
+            self.assertAlmostEqual(.035,float(fetch_one("SELECT weight FROM stock_operations WHERE stock_code='GOOGL' AND stock_type='C'")['weight']))
+            config['items'] = [r for r in config['items'] if r['symbol'] != 'MSFT']
+            next(r for r in config['items'] if r['symbol']=='GOOGL')['percent'] += 12
+            save_config(config)
+            sync_strategy_c_watchlist()
+            held = fetch_one("SELECT qty,weight FROM stock_operations WHERE stock_code='MSFT' AND stock_type='A'")
+            self.assertEqual(5,float(held['qty']))
+            self.assertEqual(0,float(held['weight']))
+        finally:
+            with db_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM app_settings WHERE setting_key=%s", (CONFIG_KEY,))
+
     def test_migration_is_versioned_and_repeatable(self):
         ensure_schema()
-        self.assertEqual(1, fetch_one("SELECT COUNT(*) AS n FROM schema_migrations WHERE version=3")["n"])
+        self.assertEqual(1, fetch_one("SELECT COUNT(*) AS n FROM schema_migrations WHERE version=4")["n"])
 
     def test_repeated_and_partial_fills_book_exactly_once(self):
         self.prepare()

@@ -267,7 +267,7 @@ def ensure_control_state_tables() -> None:
                 """
                 CREATE TABLE IF NOT EXISTS app_settings (
                   setting_key VARCHAR(128) PRIMARY KEY,
-                  setting_value VARCHAR(512) NOT NULL DEFAULT '',
+                  setting_value MEDIUMTEXT NOT NULL,
                   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
@@ -630,7 +630,7 @@ def ensure_strategy_lot_identity(conn) -> None:
                 cur.execute(f"ALTER TABLE `{table}` {clause}")
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _SCHEMA_READY = False
 from threading import Lock
 _SCHEMA_LOCK = Lock()
@@ -656,6 +656,8 @@ def ensure_schema() -> None:
                         ensure_stock_operations_columns()
                         ensure_position_holdings_table()
                         ensure_control_state_tables()
+                        if _column_data_type(conn, 'app_settings', 'setting_value') != 'mediumtext':
+                            cur.execute('ALTER TABLE app_settings MODIFY COLUMN setting_value MEDIUMTEXT NOT NULL')
                         from .order_journal import ensure_table
                         ensure_table(conn)
                         ensure_strategy_lot_identity(conn)

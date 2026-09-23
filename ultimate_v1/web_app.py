@@ -334,7 +334,7 @@ STRATEGY_2_DEFAULT_CONFIG = {
     "version": "2.0",
     "capital": {
         "title": "A 养老金 + B 自动策略 + C 长期股票 + D 日内交易",
-        "desc": "A 用养老金账户定投三只指数基金；B 自动动量；C 按 28 个长期标的自动建仓并做 T；D 做日内交易。",
+        "desc": "A 用养老金账户配置 50% 基金和 50% 主题股票；B 自动动量；C 按 28 个长期标的自动建仓并做 T；D 做日内交易。",
         "rules": [
             {"key": "a_capital_role", "label": "A 职责", "value": "养老金账户/长期定投", "unit": "", "enabled": True},
             {"key": "b_capital_role", "label": "B 职责", "value": "Alpaca/策略B自动执行", "unit": "", "enabled": True},
@@ -356,7 +356,7 @@ STRATEGY_2_DEFAULT_CONFIG = {
                 {"key": "a_rebalance_source", "label": "资金来源", "value": "A 养老金账户", "unit": "", "enabled": True},
             ],
             "buy_rules": [
-                {"key": "a_buy_style", "label": "买入方式", "value": "每月15号按比例买入", "unit": "", "enabled": True},
+                {"key": "a_buy_style", "label": "买入方式", "value": "每月15号按目标缺口补仓", "unit": "", "enabled": True},
                 {"key": "a_position_role", "label": "仓位角色", "value": "长期核心仓", "unit": "", "enabled": True},
                 {"key": "a_t_frequency", "label": "做T频率", "value": "A全账户每日最多1轮", "unit": "", "enabled": True},
                 {"key": "a_t_serial", "label": "循环约束", "value": "上一轮闭环后才可开启下一轮", "unit": "", "enabled": True},
@@ -2654,6 +2654,9 @@ class Handler(BaseHTTPRequestHandler):
                 pending = fetch_all("SELECT state,COUNT(*) AS n FROM execution_orders WHERE state IN ('unknown','submitting','prepared') GROUP BY state")
                 beats = bot_heartbeats()
                 self._send_json({"ok": True, "metrics": snapshot(), "orders_requiring_review": pending, "heartbeats": beats})
+            elif path == "/api/retirement_allocation":
+                from .retirement_allocation import load_config
+                self._send_json({"ok": True, "config": load_config()})
             elif path == "/api/capital":
                 self._send_json(self.server.snapshots.get("capital"))
             elif path == "/api/risk":
@@ -2738,6 +2741,23 @@ class Handler(BaseHTTPRequestHandler):
                     {"ok": True},
                     headers={"Set-Cookie": auth_cookie("")},
                 )
+            elif path == "/api/retirement_allocation":
+                from .retirement_allocation import save_config, validate_config, load_config
+                try:
+                    config = validate_config(payload.get("config"))
+                    existing = {r['symbol'] for r in load_config()['items']}
+                    additions = [r['symbol'] for r in config['items'] if r['symbol'] not in existing]
+                    if additions:
+                        client = alpaca_gateway.trading_client(pool='A')
+                        for symbol in additions:
+                            asset = client.get_asset(symbol)
+                            if not asset.tradable or str(getattr(asset.asset_class, 'value', asset.asset_class)) != 'us_equity':
+                                raise ValueError(f'{symbol} 不是账户可交易的美股或 ETF')
+                    result = save_config(config)
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, 400)
+                    return
+                self._send_json({"ok": True, "config": result})
             elif path == "/api/clear_position":
                 if not self._check_password(payload):
                     self._send_json({"ok": False, "error": "密码错误或未配置操作密码"}, 403)

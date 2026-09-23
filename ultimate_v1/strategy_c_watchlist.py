@@ -18,10 +18,11 @@ class StrategyCWatchItem:
     priority: int = 100
 
 
-STRATEGY_A_WATCHLIST: tuple[StrategyCWatchItem, ...] = (
-    StrategyCWatchItem("QQQ", 0.40, "nasdaq_100", 1, 1),
-    StrategyCWatchItem("VOO", 0.40, "sp500", 1, 2),
-    StrategyCWatchItem("XLV", 0.20, "healthcare_etf", 1, 3),
+from .retirement_allocation import DEFAULT_ITEMS, load_config as load_retirement_config
+
+STRATEGY_A_WATCHLIST: tuple[StrategyCWatchItem, ...] = tuple(
+    StrategyCWatchItem(symbol, percent / 100, sleeve, 1, i + 1)
+    for i, (symbol, percent, sleeve, label) in enumerate(DEFAULT_ITEMS)
 )
 
 
@@ -73,7 +74,7 @@ def validate_strategy_c_watchlist() -> None:
         raise ValueError(f"Strategy C weights must total 1.0, got {total_weight:.8f}")
 
     a_symbols = [item.symbol for item in STRATEGY_A_WATCHLIST]
-    if a_symbols != ["QQQ", "VOO", "XLV"]:
+    if len(a_symbols) != 8 or len(set(a_symbols)) != 8:
         raise ValueError(f"Strategy A watchlist is unexpected: {a_symbols}")
     if abs(sum(item.weight for item in STRATEGY_A_WATCHLIST) - 1.0) > 1e-9:
         raise ValueError("Strategy A weights must total 1.0")
@@ -83,6 +84,8 @@ def sync_strategy_c_watchlist(*, dry_run: bool = False, prune_legacy: bool = Tru
     """Replace A/C candidate pools while protecting active broker holdings."""
     validate_strategy_c_watchlist()
     ensure_schema()
+    a_watchlist = tuple(StrategyCWatchItem(row['symbol'], row['percent'] / 100, row['sleeve'])
+                        for row in load_retirement_config()['items'])
     table = settings().ops_table
     if not table.replace("_", "").isalnum():
         raise ValueError(f"Invalid operations table name: {table!r}")
@@ -102,7 +105,7 @@ def sync_strategy_c_watchlist(*, dry_run: bool = False, prune_legacy: bool = Tru
     }
     with db_conn() as conn:
         with conn.cursor() as cur:
-            for item in STRATEGY_A_WATCHLIST:
+            for item in a_watchlist:
                 cur.execute(
                     f"""
                     SELECT id, is_bought, qty
@@ -296,28 +299,7 @@ def sync_strategy_c_watchlist(*, dry_run: bool = False, prune_legacy: bool = Tru
                 stats["inserted"] += 1
 
             if prune_legacy:
-                a_symbols = tuple(item.symbol for item in STRATEGY_A_WATCHLIST)
-                a_placeholders = ", ".join(["%s"] * len(a_symbols))
-                cur.execute(
-                    f"""
-                    SELECT id
-                    FROM `{table}`
-                    WHERE UPPER(COALESCE(NULLIF(strategy_group,''), stock_type))='A'
-                      AND UPPER(stock_code) NOT IN ({a_placeholders})
-                      AND COALESCE(is_bought,0)=0
-                      AND ABS(COALESCE(qty,0))=0
-                    """,
-                    a_symbols,
-                )
-                stale_a_ids = [int(row["id"]) for row in cur.fetchall() or []]
-                stats["a_deleted_operations"] = len(stale_a_ids)
-                if stale_a_ids and not dry_run:
-                    delete_placeholders = ", ".join(["%s"] * len(stale_a_ids))
-                    cur.execute(
-                        f"DELETE FROM `{table}` WHERE id IN ({delete_placeholders})",
-                        tuple(stale_a_ids),
-                    )
-
+                # User-added A targets and existing holdings survive every restart.
                 symbols = tuple(item.symbol for item in STRATEGY_C_WATCHLIST)
                 placeholders = ", ".join(["%s"] * len(symbols))
                 cur.execute(
@@ -385,8 +367,8 @@ def sync_strategy_c_watchlist(*, dry_run: bool = False, prune_legacy: bool = Tru
             conn.rollback()
     stats["count"] = len(STRATEGY_C_WATCHLIST)
     stats["weight_total"] = sum(item.weight for item in STRATEGY_C_WATCHLIST)
-    stats["a_count"] = len(STRATEGY_A_WATCHLIST)
-    stats["a_weight_total"] = sum(item.weight for item in STRATEGY_A_WATCHLIST)
+    stats["a_count"] = len(a_watchlist)
+    stats["a_weight_total"] = sum(item.weight for item in a_watchlist)
     stats["dry_run"] = dry_run
     stats["prune_legacy"] = prune_legacy
     return stats

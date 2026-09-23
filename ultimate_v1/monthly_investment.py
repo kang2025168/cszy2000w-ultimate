@@ -93,6 +93,13 @@ def _columns(table: str) -> set[str]:
 
 
 def _load_targets(group: str, limit: int) -> list[dict]:
+    if group == 'A':
+        from .retirement_allocation import load_config
+        items = load_config()['items']
+        if limit < len(items):
+            raise ValueError(f'A 最大标的数需至少为 {len(items)}，避免截断分配')
+        return [dict(symbol=r['symbol'], name=r['label'], percent=r['percent'], raw_weight=r['percent'] / 100)
+                for r in items]
     s = settings()
     cols = _columns(s.ops_table)
     weight_expr = "1.0"
@@ -128,7 +135,20 @@ def _plan_group(group: str, rule: dict, execute: bool) -> dict:
         return {"group": group, "ok": False, "error": "capital_allocation_failed", "orders": []}
     available = float(allocation.available.get(group, 0.0) or 0.0)
     budget = max(0.0, available * float(rule.get("budget_fraction") or 0.0))
-    targets = _load_targets(group, int(rule.get("max_symbols") or 20))
+    try:
+        targets = _load_targets(group, int(rule.get("max_symbols") or 20))
+        a_budgets = {}
+        if group == 'A':
+            from .retirement_allocation import target_budgets
+            a_client = alpaca_gateway.trading_client(pool='A')
+            positions = {str(p.symbol).upper(): float(p.market_value or 0)
+                         for p in a_client.get_all_positions()}
+            account = a_client.get_account()
+            budget = min(budget, max(0, float(account.cash or 0)))
+            planned = target_budgets(targets, float(account.equity), budget, positions)
+            a_budgets = {r['symbol']: r for r in planned}
+    except Exception as exc:
+        return {"group": group, "ok": False, "error": str(exc), "orders": []}
     positive_weights = [max(0.0, float(row.get("raw_weight") or 0.0)) for row in targets]
     total_weight = sum(positive_weights)
     if total_weight <= 0 and targets:
@@ -143,7 +163,8 @@ def _plan_group(group: str, rule: dict, execute: bool) -> dict:
     for row, weight in zip(targets, positive_weights):
         symbol = str(row.get("symbol") or "").strip().upper()
         price = alpaca_gateway.get_latest_stock_price(symbol, pool=group)
-        notional = budget * (weight / total_weight) if total_weight > 0 else 0.0
+        notional = (a_budgets[symbol]['buy_budget'] if group == 'A' else
+                    budget * (weight / total_weight) if total_weight > 0 else 0.0)
         qty = int(notional / price) if price > 0 else 0
         order_row = {
             "symbol": symbol,
@@ -156,9 +177,17 @@ def _plan_group(group: str, rule: dict, execute: bool) -> dict:
             "order_id": "",
             "error": "",
         }
+        if group == 'A':
+            order_row.update({k: round(a_budgets[symbol][k], 2)
+                              for k in ('portfolio_target', 'current_value', 'deficit')})
         if qty <= 0:
             order_row["status"] = "skipped"
             order_row["error"] = "qty<=0"
+        elif group == 'A' and not any(int(r.get('can_buy') or 0) == 1 for r in fetch_all(
+                f"SELECT can_buy FROM `{settings().ops_table}` WHERE stock_type='A' AND stock_code=%s",
+                (symbol,))):
+            order_row['status'] = 'skipped'
+            order_row['error'] = 'A 标的未启用买入'
         elif execute and client is not None:
             try:
                 from alpaca.trading.enums import OrderSide, TimeInForce
