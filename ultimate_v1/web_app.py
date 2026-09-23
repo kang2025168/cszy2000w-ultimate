@@ -433,7 +433,7 @@ STRATEGY_2_DEFAULT_CONFIG = {
             "sell_rules": [
                 {"key": "c_up_pullback_sell", "label": "上涨回落卖新增仓", "value": 1, "unit": "%", "enabled": True},
                 {"key": "c_gap_pullback_sell", "label": "高开回撤临时卖出", "value": 1, "unit": "%", "enabled": True},
-                {"key": "c_force_recover", "label": "收盘前强制恢复核心仓", "value": "12:55", "unit": "LA", "enabled": True},
+                {"key": "c_force_recover", "label": "收盘前强制恢复/平新增仓", "value": "12:50", "unit": "LA", "enabled": True},
                 {"key": "c_sell_limit_buffer", "label": "卖出限价缓冲", "value": 0.2, "unit": "%", "enabled": True},
             ],
         },
@@ -1595,9 +1595,18 @@ def _trade_records_payload() -> dict:
                 order_id = str(getattr(order, "id", "") or "")
                 symbol = str(getattr(order, "symbol", "") or "").upper()
                 client_order_id = str(getattr(order, "client_order_id", "") or "")
-                client_match = re.search(r"cszy-manual-([ABCD])-", client_order_id, re.I)
+                client_match = re.search(r"cszy-manual-([ABCDQ])-", client_order_id, re.I)
+                automated_group = ""
+                normalized_client_id = client_order_id.lower()
+                if normalized_client_id.startswith("dgrid-"):
+                    automated_group = "D"
+                elif normalized_client_id.startswith("c-core-"):
+                    automated_group = "C"
+                elif normalized_client_id.startswith(("q-", "qopt-", "option-q-")):
+                    automated_group = "Q"
                 group = (
                     (client_match.group(1).upper() if client_match else "")
+                    or automated_group
                     or group_by_order.get(order_id)
                     or default_group
                     or group_by_symbol.get(symbol)
@@ -1650,9 +1659,10 @@ def _trade_records_payload() -> dict:
     seen = set()
     cleaned = []
     source_priority = {
-        "manual_trade_records": 0,
+        # Alpaca 历史是成交状态的最终事实，避免本地 PENDING/RECORDED 覆盖 FILLED/EXPIRED。
+        "alpaca_orders": 0,
         "orders": 1,
-        "alpaca_orders": 2,
+        "manual_trade_records": 2,
         "stock_operations": 3,
     }
     rows.sort(key=lambda row: source_priority.get(str(row.get("source") or ""), 9))
@@ -1666,7 +1676,39 @@ def _trade_records_payload() -> dict:
             row = {**row, "qty": note_qty}
         cleaned.append(row)
     cleaned.sort(key=lambda r: str(r.get("event_time") or ""), reverse=True)
-    return {"ok": True, "rows": cleaned[:500]}
+    terminal_attempt_statuses = {"CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "FAILED", "ERROR"}
+    fill_statuses = {"FILLED", "PARTIAL_FILLED"}
+    filled_rows: list[dict] = []
+    attempt_rows: list[dict] = []
+    for row in cleaned[:500]:
+        status = str(row.get("status") or "").upper()
+        note = str(row.get("note") or "").upper()
+        if status in fill_statuses:
+            filled_rows.append(row)
+        elif status in terminal_attempt_statuses or any(marker in note for marker in ("_ERR", "NO_FILL", "CANCELED", "EXPIRED", "REJECTED")):
+            attempt_rows.append(row)
+        else:
+            # 未终结委托和旧版 RECORDED 事件不是已确认成交，不能污染真实成交统计。
+            attempt_rows.append(row)
+
+    d_orders = [row for row in cleaned if str(row.get("strategy_group") or "").upper() == "D"]
+    d_filled = sum(1 for row in d_orders if str(row.get("status") or "").upper() in fill_statuses)
+    d_unfilled = sum(1 for row in d_orders if str(row.get("status") or "").upper() in terminal_attempt_statuses)
+    d_terminal = d_filled + d_unfilled
+    return {
+        "ok": True,
+        "rows": cleaned[:500],
+        "filled_rows": filled_rows,
+        "attempt_rows": attempt_rows,
+        "diagnostics": {
+            "D": {
+                "submitted": len(d_orders),
+                "filled": d_filled,
+                "unfilled": d_unfilled,
+                "fill_rate": (d_filled / d_terminal) if d_terminal else None,
+            }
+        },
+    }
 
 
 def _stock_selection_payload() -> dict:
@@ -3299,6 +3341,10 @@ INDEX_HTML = r"""<!doctype html>
     .trade-records-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .trade-records-title { font-size:13px; font-weight:850; color:var(--ink); }
     .trade-records-count { color:var(--muted); font-size:11px; font-weight:800; }
+    .trade-record-tabs { display:inline-flex; padding:3px; gap:3px; border:1px solid var(--line); border-radius:8px; background:#f5f8fc; }
+    .trade-record-tab { border:0; border-radius:6px; padding:6px 10px; background:transparent; color:var(--muted); font-size:11px; font-weight:850; cursor:pointer; }
+    .trade-record-tab.active { background:var(--ink); color:#fff; }
+    .trade-diagnostic { margin-left:8px; color:var(--muted); font-size:11px; font-weight:750; }
     .trade-records-scroll { height:520px; overflow:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; border:1px solid #eef2f6; border-radius:8px; }
     .trade-records table { width:100%; min-width:940px; table-layout:auto; }
     .trade-records th, .trade-records td { padding:8px 10px; font-size:11px; }
@@ -4743,8 +4789,15 @@ INDEX_HTML = r"""<!doctype html>
       </div>
       <div class="trade-records log-section" id="tradeLogsSection" hidden>
         <div class="trade-records-head">
-          <span class="trade-records-title">近30天交易记录</span>
           <span>
+            <span class="trade-records-title">近30天交易记录</span>
+            <span class="trade-diagnostic" id="tradeDiagnostic"></span>
+          </span>
+          <span>
+            <span class="trade-record-tabs">
+              <button class="trade-record-tab active" id="tradeFilledTab" onclick="setTradeRecordView('filled')">真实成交</button>
+              <button class="trade-record-tab" id="tradeAttemptTab" onclick="setTradeRecordView('attempts')">未成交委托</button>
+            </span>
             <span class="trade-records-count" id="tradeRecordsCount">--</span>
             <button class="log-refresh-btn" onclick="loadTradeRecords()">刷新记录</button>
           </span>
@@ -6848,15 +6901,32 @@ INDEX_HTML = r"""<!doctype html>
       el.textContent = `今日收益 ${diff >= 0 ? '+' : ''}${money(diff)} (${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%)`;
       el.className = `today-pnl ${diff < 0 ? 'neg' : 'pos'}`;
     }
+    let tradeRecordView = 'filled';
+    let latestTradeRecordPayload = null;
+    function setTradeRecordView(view) {
+      tradeRecordView = view === 'attempts' ? 'attempts' : 'filled';
+      document.getElementById('tradeFilledTab')?.classList.toggle('active', tradeRecordView === 'filled');
+      document.getElementById('tradeAttemptTab')?.classList.toggle('active', tradeRecordView === 'attempts');
+      if (latestTradeRecordPayload) renderTradeRecords(latestTradeRecordPayload);
+    }
     function renderTradeRecords(payload) {
-      const rows = ((payload && payload.ok ? payload.rows : []) || []).filter(r => r.source !== 'bot_lifecycle_events');
+      latestTradeRecordPayload = payload;
+      const sourceRows = tradeRecordView === 'attempts' ? payload?.attempt_rows : payload?.filled_rows;
+      const rows = ((payload && payload.ok ? (sourceRows || payload.rows) : []) || []).filter(r => r.source !== 'bot_lifecycle_events');
       latestTradeRecords = rows;
       const countEl = document.getElementById('tradeRecordsCount');
       const tableEl = document.getElementById('tradeRecords');
       if (!countEl || !tableEl) return;
       countEl.textContent = `${rows.length} 条`;
+      const d = payload?.diagnostics?.D || {};
+      const diagnosticEl = document.getElementById('tradeDiagnostic');
+      if (diagnosticEl) {
+        const rate = d.fill_rate == null ? '--' : `${(Number(d.fill_rate) * 100).toFixed(1)}%`;
+        diagnosticEl.textContent = `D 成交率 ${rate} · 成交 ${Number(d.filled || 0)} / 未成交 ${Number(d.unfilled || 0)}`;
+      }
       if (!rows.length) {
-        tableEl.innerHTML = `<tbody><tr><td class="small-muted" style="padding:18px;text-align:center;">近30天暂无真实买卖记录</td></tr></tbody>`;
+        const emptyLabel = tradeRecordView === 'filled' ? '近30天暂无已确认成交' : '近30天暂无未成交委托';
+        tableEl.innerHTML = `<tbody><tr><td class="small-muted" style="padding:18px;text-align:center;">${emptyLabel}</td></tr></tbody>`;
         return;
       }
       const widths = [92, 82, 90, 160, 92, 108, 128, 248];

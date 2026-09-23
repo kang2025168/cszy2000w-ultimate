@@ -390,6 +390,18 @@ class BCStrategyFlowTests(unittest.TestCase):
         finally:
             ac.A_T_MAX_CYCLES_PER_DAY = original
 
+    def test_ac_force_close_limit_is_marketable_but_bounded(self):
+        import app.strategy_ac_t as ac
+
+        original = ac.FORCE_EXIT_BUFFER_PCT
+        try:
+            ac.FORCE_EXIT_BUFFER_PCT = 0.005
+            self.assertEqual(99.5, ac._force_limit_price(100.0, "SELL"))
+            self.assertEqual(100.5, ac._force_limit_price(100.0, "BUY"))
+            self.assertEqual(0.01, ac._force_limit_price(0.001, "SELL"))
+        finally:
+            ac.FORCE_EXIT_BUFFER_PCT = original
+
 
 if __name__ == "__main__":
     unittest.main()
