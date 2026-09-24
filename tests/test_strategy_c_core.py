@@ -41,7 +41,7 @@ class StrategyCCorePlanTests(unittest.TestCase):
         self.assertEqual(["BRK.B", "MSFT", "GOOGL"], [plan.symbol for plan in plans])
         self.assertEqual(2, plans[0].tier)
 
-    def test_daily_cap_and_cash_reserve_can_block_orders(self):
+    def test_daily_cap_can_block_orders(self):
         plans = build_c_core_buy_plan(
             target_capital=1000,
             available_capital=1000,
@@ -54,6 +54,31 @@ class StrategyCCorePlanTests(unittest.TestCase):
             min_order=25,
         )
         self.assertEqual([], plans)
+
+    def test_margin_plan_works_with_zero_or_negative_cash(self):
+        for cash in (0, -500):
+            with self.subTest(cash=cash):
+                plans = build_c_core_buy_plan(
+                    target_capital=10000, available_capital=834.64,
+                    buying_power=2000, cash=cash, cash_reserve=25,
+                    current_values={}, daily_budget_pct=1, daily_budget_max=0,
+                )
+                spent = sum(p.notional for p in plans)
+                self.assertGreater(spent, 834)
+                self.assertLessEqual(spent, 834.64)
+
+    def test_broker_power_and_pool_budget_remain_hard_caps(self):
+        for available, power in ((800, 100), (100, 800), (800, 0), (0, 800)):
+            with self.subTest(available=available, power=power):
+                plans = build_c_core_buy_plan(
+                    target_capital=10000, available_capital=available,
+                    buying_power=power, cash=-500, current_values={},
+                    daily_budget_pct=1, daily_budget_max=0,
+                )
+                spent = sum(p.notional for p in plans)
+                self.assertLessEqual(spent, min(available, power))
+                if min(available, power) > 0:
+                    self.assertGreater(spent, 0)
 
     def test_busy_symbol_is_excluded(self):
         plans = build_c_core_buy_plan(

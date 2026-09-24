@@ -2,7 +2,8 @@ from __future__ import annotations
 
 """Automatic Strategy C core-position builder.
 
-The builder only spends unlevered cash assigned to pool C. It fills the ETF
+The builder uses pool C budget and broker buying power, including margin.
+It fills the ETF
 foundation first, then core leaders, then the remaining growth/diversifier
 sleeve. Filled positions are handed to the existing AC-T state machine.
 """
@@ -97,7 +98,7 @@ def build_c_core_buy_plan(
     target_capital: float,
     available_capital: float,
     buying_power: float,
-    cash: float,
+    cash: float = 0.0,
     current_values: dict[str, float],
     daily_spent: float = 0.0,
     excluded_symbols: set[str] | None = None,
@@ -108,7 +109,11 @@ def build_c_core_buy_plan(
     max_orders: int = 3,
     tier_fill_ratio: float = 0.90,
 ) -> list[CoreBuyPlan]:
-    """Create a target-gap plan without placing orders."""
+    """Create a target-gap plan bounded by pool budget and broker buying power.
+
+    cash/cash_reserve remain accepted for compatibility, but do not cap C
+    margin purchases. Retirement pool A has its own cash-only planner.
+    """
     target_capital = max(0.0, float(target_capital or 0.0))
     min_order = max(1.0, float(min_order or 0.0))
     if target_capital <= 0:
@@ -121,7 +126,6 @@ def build_c_core_buy_plan(
     usable = min(
         max(0.0, float(available_capital or 0.0)),
         max(0.0, float(buying_power or 0.0)),
-        max(0.0, float(cash or 0.0) - max(0.0, float(cash_reserve or 0.0))),
         daily_remaining,
     )
     if usable < min_order:
@@ -516,14 +520,12 @@ def _run_strategy_c_core_buy_locked(*, dry_run: bool | None = None, ignore_marke
         target_capital=float(allocation.C_target or 0.0),
         available_capital=float(allocation.available.get("C", 0.0) or 0.0),
         buying_power=_safe_float(getattr(account, "buying_power", 0)),
-        cash=_safe_float(getattr(account, "cash", 0)),
         current_values=current_values,
         daily_spent=_daily_spent(),
         excluded_symbols=_busy_c_symbols(),
         min_order=env_float("C_CORE_MIN_ORDER_USD", 25.0),
         daily_budget_pct=env_float("C_CORE_DAILY_BUDGET_PCT", 1.0),
         daily_budget_max=env_float("C_CORE_DAILY_BUDGET_MAX_USD", 0.0),
-        cash_reserve=env_float("C_CORE_CASH_RESERVE_USD", 25.0),
         max_orders=env_int("C_CORE_MAX_ORDERS_PER_RUN", 3),
         tier_fill_ratio=env_float("C_CORE_TIER_FILL_RATIO", 0.90),
     )
