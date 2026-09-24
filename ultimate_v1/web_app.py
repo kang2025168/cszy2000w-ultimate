@@ -1737,10 +1737,18 @@ def _stock_selection_payload() -> dict:
     min_price = _safe_float(env_str("SELECTION_MIN_PRICE", "5"), 5.0)
     min_volume = _safe_float(env_str("SELECTION_MIN_VOLUME", "3000000"), 3000000.0)
     min_dollar_volume = _safe_float(env_str("SELECTION_MIN_DOLLAR_VOLUME", "30000000"), 30000000.0)
+    # Actual unheld B pool, independent of the selected day's gainers.
+    b_pool_rows = fetch_all("""
+        SELECT UPPER(stock_code) AS symbol, trigger_price, entry_close,
+               entry_date, can_buy, last_order_intent
+        FROM stock_operations
+        WHERE UPPER(stock_type)='B' AND COALESCE(is_bought,0)=0
+        ORDER BY entry_date DESC, stock_code
+    """) or []
     latest = fetch_all("SELECT MAX(DATE(`date`)) AS d FROM stock_prices_pool")
     snapshot_date = (latest[0] or {}).get("d") if latest else None
     if not snapshot_date:
-        return {"ok": True, "snapshot_date": None, "min_up_pct": min_up_pct, "rows": [], "b_rows": []}
+        return {"ok": True, "snapshot_date": None, "min_up_pct": min_up_pct, "rows": [], "b_rows": [], "b_pool_rows": b_pool_rows}
     previous = fetch_all(
         """
         SELECT MAX(DATE(`date`)) AS d
@@ -1848,6 +1856,7 @@ def _stock_selection_payload() -> dict:
         "min_dollar_volume": min_dollar_volume,
         "rows": out,
         "b_rows": b_rows,
+        "b_pool_rows": b_pool_rows,
     }
 
 

@@ -322,6 +322,19 @@
     .stats-table td { font-size:12px; }
     .stats-strategy { display:inline-flex; align-items:center; justify-content:center; min-width:30px; height:26px; border-radius:6px; background:#101828; color:#fff; font-weight:950; }
     .stats-method { margin-top:10px; color:#667085; font-size:11px; line-height:1.5; }
+    .selection-advice { padding:12px 14px; margin-bottom:16px; border:1px solid #d8e4f0; border-radius:10px; background:#f8fbff; font-size:12px; }
+    .selection-advice-toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; }
+    .selection-advice h3 { margin:0 0 4px; font-size:15px; }
+    .selection-advice-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+    .selection-advice-actions select, .selection-advice-actions button { height:32px; padding:0 10px; font-size:12px; border-radius:7px; }
+    .selection-advice-actions select { max-width:100%; border:1px solid #d8e4f0; background:white; color:var(--ink); }
+    #adviceStatus { margin:8px 0 5px; color:var(--muted); font-size:12px; }
+    #adviceDetails summary { cursor:pointer; color:#075985; font-weight:700; }
+    #adviceResult { max-height:300px; overflow:auto; font-size:12px; }
+    .b-pool-card { margin-bottom:14px; }
+    .b-pool-scroll { max-height:280px; overflow:auto; }
+    .b-pool-scroll .stock-selection-table { min-width:620px; width:100%; }
+    .b-pool-scroll th { position:sticky; top:0; background:#edf3fa; z-index:1; }
     .stock-selection-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; margin-bottom:14px; }
     .stock-selection-title { display:grid; gap:5px; }
     .stock-selection-title h2 { font-size:20px; }
@@ -334,7 +347,7 @@
     .stock-selection-panel { display:none; }
     .stock-selection-panel.active { display:block; }
     .stock-selection-meta { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
-    .selection-summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:12px; }
+    .selection-summary-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-bottom:12px; }
     .selection-summary-card { border:1px solid #d8e4f0; border-radius:8px; background:linear-gradient(180deg,#fff,#f8fbff); padding:12px; display:grid; gap:5px; min-height:72px; box-shadow:0 8px 18px rgba(15,23,42,.035); }
     .selection-summary-label { color:var(--muted); font-size:11px; font-weight:900; }
     .selection-summary-value { color:var(--ink); font-size:20px; font-weight:950; line-height:1.1; font-variant-numeric:tabular-nums; }
@@ -1180,16 +1193,19 @@
         </div>
       </div>
     </section>
-    <section class="panel" style="padding:10px 14px;margin-bottom:10px;font-size:13px">
-      <h3 style="margin:0 0 6px">盘后预选池复盘</h3>
-      <p class="small-muted">比较已入池标的的日线趋势、量能及波动风险，选出次日优先关注名单。</p>
-      <select id="adviceMode" aria-label="分析方式"><option value="rules">规则分析（免费）</option><option value="ai">AI 分析（需配置接口，按调用计费）</option></select>
-      <button id="adviceButton" class="primary" onclick="startDailyAdvice()">分析预选池</button>
-      <button onclick="loadDailyAdvice()">查看上次结果</button>
-      <p id="adviceStatus" role="status">按已入库收盘数据分析，不检查盘中买点。</p>
-      <details id="adviceDetails"><summary>查看排名与理由</summary><div id="adviceResult" style="max-height:300px;overflow:auto;font-size:12px"></div></details>
-    </section>
     <section class="panel stock-focus-panel" id="stockFocusPanel">
+      <div class="selection-advice">
+        <div class="selection-advice-toolbar">
+          <div><h3>盘后预选池复盘</h3><div class="small-muted">比较入池标的的趋势、量能与风险，整理次日关注名单。</div></div>
+          <div class="selection-advice-actions">
+            <select id="adviceMode" aria-label="分析方式"><option value="rules">规则分析（免费）</option><option value="ai">AI 分析（按调用计费）</option></select>
+            <button id="adviceButton" class="stock-selection-refresh" onclick="startDailyAdvice()">分析预选池</button>
+            <button onclick="loadDailyAdvice()">上次结果</button>
+          </div>
+        </div>
+        <p id="adviceStatus" role="status">按已入库收盘数据分析，不检查盘中买点。</p>
+        <details id="adviceDetails"><summary>查看排名与理由</summary><div id="adviceResult"></div></details>
+      </div>
       <div class="stock-selection-head">
         <div class="stock-selection-title">
           <h2>选股复盘</h2>
@@ -1205,6 +1221,13 @@
         <button class="stock-selection-subtab" id="selectionPullbackTab" onclick="setStockSelectionTab('pullback')">等待回调股</button>
       </div>
       <div class="stock-selection-panel active" id="selectionReviewPanel">
+        <div class="stock-selection-card b-pool-card">
+          <div class="stock-selection-card-head">
+            <div><div class="stock-selection-card-title">B 策略预选池</div><div class="small-muted">全部未持仓候选 · 不受当日涨幅列表限制</div></div>
+            <span class="stock-selection-count" id="bPoolCount">未加载</span>
+          </div>
+          <div class="b-pool-scroll"><table class="stock-selection-table" id="bPoolTable"></table></div>
+        </div>
         <div class="stock-selection-meta" id="stockSelectionMeta"></div>
         <div class="selection-summary-grid" id="stockSelectionSummary"></div>
         <div class="stock-selection-grid">
@@ -2608,6 +2631,16 @@
       latestStockSelection = payload || {};
       const rows = latestStockSelection.rows || [];
       const bRows = latestStockSelection.b_rows || [];
+      const bPool = latestStockSelection.b_pool_rows || [];
+      document.getElementById('bPoolCount').textContent = `${bPool.length} 只 · 启用 ${bPool.filter(r => Number(r.can_buy) === 1).length} 只`;
+      document.getElementById('bPoolTable').innerHTML = bPool.length
+        ? `<thead><tr>${['代码','状态','触发价','入池收盘','入池日期','最近说明'].map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${bPool.map(r => `<tr>
+          <td><strong>${esc(r.symbol)}</strong></td>
+          <td><span class="b-match-pill ${Number(r.can_buy) === 1 ? '' : 'off'}">${Number(r.can_buy) === 1 ? '候选' : '暂停'}</span></td>
+          <td>${maybeMoney(r.trigger_price)}</td><td>${maybeMoney(r.entry_close)}</td>
+          <td>${esc(r.entry_date || '--')}</td><td class="note-cell" title="${esc(r.last_order_intent || '')}">${esc(r.last_order_intent || '--')}</td>
+        </tr>`).join('')}</tbody>`
+        : '<tbody><tr><td><div class="stock-selection-empty">B 预选池暂无未持仓候选</div></td></tr></tbody>';
       const dRows = rows.filter(row => row.d_match);
       const status = document.getElementById('stockSelectionStatus');
       if (status) status.textContent = `${new Date().toLocaleTimeString()} 已更新`;
