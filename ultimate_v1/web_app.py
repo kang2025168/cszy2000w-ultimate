@@ -3,6 +3,7 @@ from __future__ import annotations
 """轻量网页看板：展示资金池、风控状态和 position_holdings 持仓。"""
 
 import json
+import math
 import hashlib
 import hmac
 import contextlib
@@ -182,19 +183,45 @@ def _ensure_weekly_goal_reset() -> None:
     set_app_setting("WEEKLY_GOALS_WEEK_KEY", current_key)
 
 
+def _goal_account_equity(allocation, group: str) -> float:
+    profile = allocation.pool_brokers.get(group, 'retirement' if group == 'A' else 'trading')
+    return float((allocation.broker_snapshots.get(profile) or {}).get('equity') or 0)
+
+
+def _reset_stock_growth(equity: float) -> None:
+    if not math.isfinite(equity) or equity <= 0:
+        raise ValueError('股票账户净资产暂不可用，无法重置')
+    values = {
+        'ANNUAL_STOCK_START_EQUITY': f'{equity:.6f}',
+        'ANNUAL_STOCK_COMPLETIONS': '0',
+        'ANNUAL_STOCK_LAST_COMPLETED_AT': '',
+        'ANNUAL_STOCK_LAST_COMPLETED_EQUITY': '0',
+        'ANNUAL_STOCK_BASIS': 'trading-v2',
+        'ANNUAL_STOCK_RESET_AT': _now_market_tz().isoformat(),
+    }
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            for key, value in values.items():
+                cur.execute("INSERT INTO app_settings (setting_key,setting_value,updated_at) VALUES (%s,%s,NOW()) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_at=NOW()", (key,value))
+
+
 def _annual_goals_payload(allocation) -> list[dict]:
     """年度任务完成进度。金额类任务可通过 app_settings 或同名环境变量覆盖。"""
     _ensure_weekly_goal_reset()
 
     retirement_target = _setting_float("ANNUAL_RETIREMENT_TARGET", 7500.0)
-    retirement_current = _setting_float("ANNUAL_RETIREMENT_CURRENT", 0.0)
+    retirement_current = _goal_account_equity(allocation, "A")
 
     cash_target = _setting_float("ANNUAL_CASH_MIN_TARGET", 12500.0)
     cash_current = _setting_float("ANNUAL_CASH_CURRENT", 0.0)
 
     return_target = _setting_float("ANNUAL_STOCK_RETURN_TARGET", 0.30)
     start_equity = _setting_float("ANNUAL_STOCK_START_EQUITY", 0.0)
-    equity = float(allocation.equity or 0.0)
+    equity = _goal_account_equity(allocation, "B")
+    # One-time reset requested when switching from combined equity to the stock account.
+    if equity > 0 and get_app_setting('ANNUAL_STOCK_BASIS', '') != 'trading-v2':
+        _reset_stock_growth(equity)
+        start_equity = equity
     if start_equity <= 0 and equity > 0:
         start_equity = equity
         set_app_setting("ANNUAL_STOCK_START_EQUITY", f"{start_equity:.2f}")
@@ -218,7 +245,9 @@ def _annual_goals_payload(allocation) -> list[dict]:
         {
             "key": "stock_growth",
             "name": "股票账户跃迁",
-            "desc": f"年度回报目标 30% · 已完成 {stock_completions} 次",
+            "desc": f"股票账户净值目标 {return_target:.0%} · 已完成 {stock_completions} 次",
+            "step": 1,
+            "action_label": "重置",
             "current": return_current,
             "target": return_target,
             "unit": "percent",
@@ -240,12 +269,10 @@ def _annual_goals_payload(allocation) -> list[dict]:
         {
             "key": "retirement",
             "name": "退休金满额计划",
-            "desc": f"目标存满 ${retirement_target:,.0f}",
+            "desc": f"A 养老金账户净资产 · 目标 ${retirement_target:,.0f}",
             "current": retirement_current,
             "target": retirement_target,
             "unit": "money",
-            "step": 500,
-            "action_label": "+500",
         },
         {
             "key": "fitness",
@@ -276,8 +303,14 @@ def _advance_annual_goal(goal_key: str) -> dict:
     """推进可手动打卡的年度任务。"""
     _ensure_weekly_goal_reset()
 
+    if goal_key == 'stock_growth':
+        from .alpaca_gateway import get_account_snapshot
+        snap = get_account_snapshot(profile='trading')
+        if snap is None or float(snap.equity or 0) <= 0:
+            return {'ok':False,'error':'股票账户净资产不可用，未重置'}
+        _reset_stock_growth(float(snap.equity))
+        return {'ok':True,'message':'已从当前股票账户净资产重新计起，完成次数已清零'}
     specs = {
-        "retirement": ("ANNUAL_RETIREMENT_CURRENT", "ANNUAL_RETIREMENT_TARGET", 500.0),
         "cash_guard": ("ANNUAL_CASH_CURRENT", "ANNUAL_CASH_MIN_TARGET", 500.0),
         "fitness": ("WEEKLY_FITNESS_CURRENT", "WEEKLY_FITNESS_TARGET", 1.0),
         "vocabulary": ("WEEKLY_WORDS_CURRENT", "WEEKLY_WORDS_TARGET", 10.0),
