@@ -5,19 +5,22 @@ from unittest.mock import patch,Mock
 from ultimate_v1 import daily_advice as a
 
 class DailyAdviceTests(unittest.TestCase):
-    def test_stale_quote_never_prioritized(self):
-        now=datetime.now(timezone.utc)
-        q=a.quote_summary(NS(latest_trade=NS(price=110,timestamp=now-timedelta(hours=1)),previous_daily_bar=NS(close=100)),now)
-        c=dict(b=[dict(symbol='MOCK',quote=q,can_buy=1,trigger_price=100)],d=[],option_modes=[])
-        self.assertEqual('等待',a.rule_report(c)['rows'][0]['decision'])
+    def bars(self):
+        from datetime import date,timedelta
+        return [dict(date=date(2026,9,1)+timedelta(days=i),close=100+i,high=101+i,low=98+i,volume=1000000 if i<19 else 1500000) for i in range(20)]
 
-    def test_d_filter_block_wins_over_positive_gain(self):
-        c=dict(b=[],d=[dict(symbol='MOCK',quote={'fresh':True,'price':110},entry_filter={'ok':False,'reason':'collecting_prices'})],option_modes=[])
-        self.assertEqual('等待',a.rule_report(c)['rows'][0]['decision'])
+    def test_completed_daily_bars_rank_after_hours(self):
+        result=a.rank_candidate({'symbol':'MOCK'},self.bars(),'2026-09-20')
+        self.assertEqual('优先复盘',result['decision'])
+        self.assertGreaterEqual(result['score'],70)
 
-    def test_b_trigger_is_watch_only_not_execution(self):
-        c=dict(b=[dict(symbol='MOCK',quote={'fresh':True,'price':110},can_buy=1,trigger_price=100)],d=[],option_modes=[])
-        self.assertEqual('优先观察',a.rule_report(c)['rows'][0]['decision'])
+    def test_missing_or_outdated_daily_history_unranked(self):
+        self.assertIsNone(a.rank_candidate({'symbol':'MOCK'},self.bars()[:5],'2026-09-20')['score'])
+        self.assertIsNone(a.rank_candidate({'symbol':'MOCK'},self.bars(),'2026-09-21')['score'])
+
+    def test_ranks_by_score_not_symbol_or_intraday_gate(self):
+        c=dict(b=[dict(symbol='AAA',review=dict(symbol='AAA',score=20)),dict(symbol='ZZZ',review=dict(symbol='ZZZ',score=80))],d=[],option_modes=[])
+        self.assertEqual('ZZZ',a.rule_report(c)['rows'][0]['symbol'])
 
     def test_options_without_chain_decline_contract_advice(self):
         c=dict(b=[],d=[],option_modes=[dict(mode='BULL_CALL',label='看涨',desc='借方价差')])

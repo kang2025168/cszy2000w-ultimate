@@ -19,8 +19,8 @@ class DEntryFilterTests(unittest.TestCase):
         bars=[(t,106-i*.1) for i,(t,_) in enumerate(self.bars)]
         self.assertFalse(evaluate_entry(105,100,bars,now=self.now)['ok'])
 
-    def test_pullback_fails(self):
-        self.assertFalse(evaluate_entry(103.8,100,self.bars,now=self.now)['ok'])
+    def test_small_pullback_does_not_override_positive_slope(self):
+        self.assertTrue(evaluate_entry(103.8,100,self.bars,now=self.now)['ok'])
 
     def test_stale_missing_gapped_and_flat_fail(self):
         for bars in (self.bars[:-2],[(t-600,p) for t,p in self.bars],
@@ -90,3 +90,12 @@ class DEntryFilterTests(unittest.TestCase):
             old=update_observation(old,snapshot,now,'iex')
         self.assertEqual(20,len(old['samples']))
         self.assertTrue(evaluate_entry(104,100,old['samples'],now=now)['ok'])
+
+    def test_pool_candidate_not_rejected_by_intraday_liquidity_or_price(self):
+        from unittest.mock import MagicMock
+        from ultimate_v1 import d_grid as d
+        candidate=dict(symbol='MOCK',base_score=1,avg_range_pct=0,day_volume=0)
+        with patch.object(d,'_runtime_bool',return_value=True),patch.object(d,'_runtime_text',side_effect=lambda k,e,v:v),patch.object(d,'fetch_all',side_effect=[[],[candidate]]),patch('ultimate_v1.d_entry_filter.check_entry',return_value={'ok':True,'price':2.24,'day_gain_pct':12}) as check,patch.object(d,'db_conn',return_value=MagicMock()),patch.object(d,'set_app_setting'):
+            selected=d._auto_select_candidate(force=True)
+        self.assertEqual('MOCK',selected['symbol'])
+        check.assert_called_once_with('MOCK')

@@ -321,39 +321,25 @@ def _auto_select_candidate(*, force: bool = False, exclude: set[str] | None = No
            WHERE enabled=1
            ORDER BY signal_date DESC, base_score DESC, signal_dollar_volume DESC LIMIT 120"""
     )
+    from .d_entry_filter import check_entry
     scored = []
     for row in rows:
-        symbol = str(row.get("symbol") or "").upper()
-        if symbol in (exclude or set()) or symbol in D_AUTO_EXCLUDED_SYMBOLS or symbol.endswith("W"):
+        symbol = str(row.get('symbol') or '').upper()
+        if not symbol or symbol in (exclude or set()):
             continue
-        avg_range = float(row.get("avg_range_pct") or 0)
-        if not 0.015 <= avg_range <= 0.04:
+        # Pool admission already applied liquidity/price/range filters.
+        # Intraday selection uses the same signal check as actual buy entry.
+        entry = check_entry(symbol)
+        if not entry['ok']:
             continue
-        try:
-            from .d_entry_filter import read_observation
-            observation = read_observation(symbol)
-        except Exception:
-            continue
-        last, prev, high = (float(observation.get(k) or 0) for k in ('price','previous_close','day_high'))
-        if last < 5 or prev <= 0:
-            continue
-        gain = (last - prev) / prev
-        drawdown = (high - last) / high if high > 0 else 0.0
-        if not (0.03 < gain <= 0.08) or drawdown > 0.03:
-            continue
-        day_volume = int(observation.get("day_volume") or 0)
-        if day_volume < 3_000_000 or last * day_volume < 30_000_000:
-            continue
-        live_score = float(row.get("base_score") or 0) + gain * 300.0 - drawdown * 200.0
-        scored.append((live_score, symbol, last, gain, drawdown))
+        price = entry['price']
+        gain = entry['day_gain_pct'] / 100
+        score = float(row.get('base_score') or 0) + gain * 300
+        scored.append((score, symbol, price, gain, 0.0))
     if not scored:
-        return {"reason": "no_eligible_candidate"}
-    scored.sort(reverse=True)
-    from .d_entry_filter import check_entry
-    chosen = next((candidate for candidate in scored
-                   if check_entry(candidate[1], candidate[2])['ok']), None)
-    if chosen is None:
         return {"reason": "no_candidate_passed_entry_filter"}
+    scored.sort(reverse=True)
+    chosen = scored[0]
     set_app_setting("D_AUTO_SELECT_LAST_EPOCH", str(int(time_module.time())))
     score, symbol, price, gain, drawdown = chosen
     step = max(0.03, price * 0.001)

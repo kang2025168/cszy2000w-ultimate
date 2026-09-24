@@ -36,8 +36,7 @@ def evaluate_entry(current_price, previous_close, samples, *, now=None):
     prices = [p for t,p in samples]
     mean_t, mean_p = sum(times)/COUNT, sum(prices)/COUNT
     slope = sum((t-mean_t)*(p-mean_p) for t,p in zip(times,prices))/sum((t-mean_t)**2 for t in times)
-    first, last = sum(prices[:5])/5, sum(prices[-5:])/5
-    rising = slope > 0 and last > first and current_price >= last
+    rising = slope > 0
     return dict(ok=rising, reason='ok' if rising else 'not_rising',
                 day_gain_pct=round((current_price/previous_close-1)*100,4),
                 slope=slope, sample_count=COUNT, span_seconds=times[-1], price=current_price)

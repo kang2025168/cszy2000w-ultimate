@@ -1180,14 +1180,14 @@
         </div>
       </div>
     </section>
-    <section class="panel" style="padding:18px;margin-bottom:16px">
-      <h2>今日交易建议</h2>
-      <p class="small-muted">分析当前 B、D 候选及期权结构，显示行情时间；建议供复盘参考，交易仍由原策略规则决定。</p>
+    <section class="panel" style="padding:10px 14px;margin-bottom:10px;font-size:13px">
+      <h3 style="margin:0 0 6px">盘后预选池复盘</h3>
+      <p class="small-muted">比较已入池标的的日线趋势、量能及波动风险，选出次日优先关注名单。</p>
       <select id="adviceMode" aria-label="分析方式"><option value="rules">规则分析（免费）</option><option value="ai">AI 分析（需配置接口，按调用计费）</option></select>
-      <button id="adviceButton" class="primary" onclick="startDailyAdvice()">分析并给出建议</button>
+      <button id="adviceButton" class="primary" onclick="startDailyAdvice()">分析预选池</button>
       <button onclick="loadDailyAdvice()">查看上次结果</button>
-      <p id="adviceStatus" role="status">点击后读取行情并分析。</p>
-      <div id="adviceResult"></div>
+      <p id="adviceStatus" role="status">按已入库收盘数据分析，不检查盘中买点。</p>
+      <details id="adviceDetails"><summary>查看排名与理由</summary><div id="adviceResult" style="max-height:300px;overflow:auto;font-size:12px"></div></details>
     </section>
     <section class="panel stock-focus-panel" id="stockFocusPanel">
       <div class="stock-selection-head">
@@ -1863,14 +1863,20 @@
         const result = await api('/api/daily_advice');
         if (!result.ok) throw new Error(result.error || '读取失败');
         document.getElementById('adviceButton').disabled = result.status === 'running';
-        status.textContent = result.status === 'running' ? '正在分析，请稍候…' : (result.error || (result.report ? '结果已加载，请注意报告和报价时间。' : '尚无分析结果。'));
+        status.textContent = result.status === 'running' ? '正在分析，请稍候…' : (result.error || (result.report ? '盘后排名已生成，展开查看。' : '尚无分析结果。'));
         const r = result.report;
         if (r) {
-          document.getElementById('adviceResult').innerHTML = `<p>${esc(r.mode === 'ai' ? 'AI 分析' : '规则分析')} · ${esc(r.as_of)} · 行情 ${esc(r.feed)}</p>` +
-            (r.rows || []).map(x => `<div style="padding:8px 0;border-bottom:1px solid #eee"><b>${esc(x.group)} / ${esc(x.symbol)} · ${esc(x.decision)}</b><div>${esc(x.reason)}</div><small>行情：${esc(x.quote?.quote_at || '不可用')} · 价格：${esc(x.quote?.price ?? '--')}</small></div>`).join('') +
-            '<h3>期权结构</h3>' + (r.option_guidance || []).map(x => `<p><b>${esc(x.label)}</b>：${esc(x.advice)}</p>`).join('') +
-            (r.ai ? `<h3>AI 综合建议</h3><div style="white-space:pre-wrap">${esc(r.ai.text)}</div>` : '') +
-            `<p class="small-muted">${(r.limitations || []).map(esc).join('；')}</p>` + (r.errors || []).map(x => `<p>${esc(x)}</p>`).join('');
+          const rows = r.rows || [];
+          const top = ['B','D'].flatMap(g => rows.filter(x => x.group === g).slice(0,3));
+          const rowHtml = x => `<div style="padding:5px 0;border-bottom:1px solid #eee"><b>${esc(x.group)} / ${esc(x.symbol)} · ${x.score == null ? '--' : esc(x.score)}分 · ${esc(x.decision)}</b><div>${esc(x.reason)}</div></div>`;
+          document.getElementById('adviceResult').innerHTML = `<p>复盘日 ${esc(r.data_date || '--')} · ${esc(r.mode === 'ai' ? 'AI + 规则排名' : '规则排名')} · 共 ${rows.length} 个候选</p>` +
+            top.map(rowHtml).join('') +
+            (rows.length > top.length ? `<details><summary>全部 ${rows.length} 个候选</summary>${rows.map(rowHtml).join('')}</details>` : '') +
+            `<details><summary>期权结构参考</summary>${(r.option_guidance || []).map(x => `<p>${esc(x.label)}：${esc(x.advice)}</p>`).join('')}</details>` +
+            (r.ai ? `<details open><summary>AI 综合建议</summary><div style="white-space:pre-wrap">${esc(r.ai.text)}</div></details>` : '') +
+            `<details><summary>评分说明与数据限制</summary>${(r.limitations || []).map(x => `<p>${esc(x)}</p>`).join('')}</details>` +
+            (r.errors || []).map(x => `<p>${esc(x)}</p>`).join('');
+
         }
         clearTimeout(adviceTimer);
         if (result.status === 'running') adviceTimer = setTimeout(loadDailyAdvice, 2000);
