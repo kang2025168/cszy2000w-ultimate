@@ -1180,6 +1180,15 @@
         </div>
       </div>
     </section>
+    <section class="panel" style="padding:18px;margin-bottom:16px">
+      <h2>今日交易建议</h2>
+      <p class="small-muted">分析当前 B、D 候选及期权结构，显示行情时间；建议供复盘参考，交易仍由原策略规则决定。</p>
+      <select id="adviceMode" aria-label="分析方式"><option value="rules">规则分析（免费）</option><option value="ai">AI 分析（需配置接口，按调用计费）</option></select>
+      <button id="adviceButton" class="primary" onclick="startDailyAdvice()">分析并给出建议</button>
+      <button onclick="loadDailyAdvice()">查看上次结果</button>
+      <p id="adviceStatus" role="status">点击后读取行情并分析。</p>
+      <div id="adviceResult"></div>
+    </section>
     <section class="panel stock-focus-panel" id="stockFocusPanel">
       <div class="stock-selection-head">
         <div class="stock-selection-title">
@@ -1847,6 +1856,42 @@
     const pullbackStorageKey = 'cszy2000.stock.pullback_watchlist';
     const manualSymbolLockStorageKey = 'cszy2000.trade.locked_symbol';
     let selectedJournalDate = '';
+    let adviceTimer = null;
+    async function loadDailyAdvice() {
+      const status = document.getElementById('adviceStatus');
+      try {
+        const result = await api('/api/daily_advice');
+        if (!result.ok) throw new Error(result.error || '读取失败');
+        document.getElementById('adviceButton').disabled = result.status === 'running';
+        status.textContent = result.status === 'running' ? '正在分析，请稍候…' : (result.error || (result.report ? '结果已加载，请注意报告和报价时间。' : '尚无分析结果。'));
+        const r = result.report;
+        if (r) {
+          document.getElementById('adviceResult').innerHTML = `<p>${esc(r.mode === 'ai' ? 'AI 分析' : '规则分析')} · ${esc(r.as_of)} · 行情 ${esc(r.feed)}</p>` +
+            (r.rows || []).map(x => `<div style="padding:8px 0;border-bottom:1px solid #eee"><b>${esc(x.group)} / ${esc(x.symbol)} · ${esc(x.decision)}</b><div>${esc(x.reason)}</div><small>行情：${esc(x.quote?.quote_at || '不可用')} · 价格：${esc(x.quote?.price ?? '--')}</small></div>`).join('') +
+            '<h3>期权结构</h3>' + (r.option_guidance || []).map(x => `<p><b>${esc(x.label)}</b>：${esc(x.advice)}</p>`).join('') +
+            (r.ai ? `<h3>AI 综合建议</h3><div style="white-space:pre-wrap">${esc(r.ai.text)}</div>` : '') +
+            `<p class="small-muted">${(r.limitations || []).map(esc).join('；')}</p>` + (r.errors || []).map(x => `<p>${esc(x)}</p>`).join('');
+        }
+        clearTimeout(adviceTimer);
+        if (result.status === 'running') adviceTimer = setTimeout(loadDailyAdvice, 2000);
+      } catch (error) {
+        clearTimeout(adviceTimer);
+        document.getElementById('adviceButton').disabled = false;
+        status.textContent = error.message || '分析服务暂不可用';
+      }
+    }
+    async function startDailyAdvice() {
+      const button = document.getElementById('adviceButton');
+      button.disabled = true;
+      try {
+        const result = await postJson('/api/daily_advice', {mode:document.getElementById('adviceMode').value});
+        if (!result.ok) throw new Error(result.error || '启动失败');
+        await loadDailyAdvice();
+      } catch (error) {
+        button.disabled = false;
+        document.getElementById('adviceStatus').textContent = error.message || '启动失败';
+      }
+    }
     async function api(path) {
       const r = await fetch(path);
       if (r.status === 401) { location.reload(); return {ok:false, error:'unauthorized'}; }
@@ -1953,7 +1998,7 @@
     function poolRiskPct(g, cap) {
       const poolPct = Number(cap.pool_risk_percents?.[g] || 0);
       if (g === 'A') return poolPct * 100;
-      return (g === 'D' ? poolPct : Number(cap.total_risk_percent || 0) * poolPct) * 100;
+      return Number(cap.total_risk_percent || 0) * poolPct * 100;
     }
     function poolRole(g) {
       return {
@@ -2009,7 +2054,7 @@
         return `<div class="pool-card defensive-pool"><div class="pool-head"><div><div class="pool-name">${g} 资金池 <span class="pool-label">${defensive.label}</span></div><div class="small-muted">${sub}</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>底仓目标 ${money(target)}</span><span>缺口 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
       }
       const riskTarget = Number(cap.targets[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
-      const displayTarget = riskTarget > 0 ? riskTarget : baseTarget;
+      const displayTarget = riskTarget;
       const used = Number(cap.used[g] || 0), av = Number(cap.available[g] || 0);
       const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
@@ -2018,12 +2063,12 @@
     }
     function poolRow(g, cap) {
       const riskTarget = Number(cap.targets?.[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
-      const displayTarget = riskTarget > 0 ? riskTarget : baseTarget;
+      const displayTarget = riskTarget;
       const used = Number(cap.used?.[g] || 0), av = Number(cap.available?.[g] || 0);
       const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
       const riskPct = poolRiskPct(g, cap);
-      const totalLabel = g === 'A' ? '可用现金' : '总可用';
+      const totalLabel = g === 'A' ? '现金预算' : '资金池预算';
       return `<div class="hero-pool-row"><div class="hero-pool-top"><div><div class="hero-pool-title"><span class="hero-pool-name">${poolName(g)}</span><span class="hero-pool-total">${totalLabel} ${money(displayTarget)}</span></div><div class="hero-pool-meta">${poolBaseLabel(g, basePct)} · ${poolRiskLabel(g, riskPct)}</div></div><span class="small-muted">${w.toFixed(1)}%</span></div><div class="hero-pool-mid"><span class="hero-pool-used">${money(used)}</span><span class="hero-pool-available">${poolAvailableLabel(g)} ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
     function renderMobileRealAssets(cap) {
@@ -2056,7 +2101,7 @@
       grid.innerHTML = ['A','B','C','D'].map(g => {
         const riskTarget = Number(cap.targets?.[g] || 0);
         const baseTarget = Number(cap.base_targets?.[g] || 0);
-        const displayTarget = riskTarget > 0 ? riskTarget : baseTarget;
+        const displayTarget = riskTarget;
         const used = Number(cap.used?.[g] || 0);
         const av = Number(cap.available?.[g] || 0);
         const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
@@ -4999,7 +5044,7 @@
         ? `自动杠杆 ${leverageLabel}`
         : `固定杠杆 ${leverageLabel}`;
       if (!exposureState) {
-        const target = Number(risk?.recommended_exposure || 0);
+        const target = Number(cap.margin_summary?.target_percent ?? cap.total_risk_percent ?? 0);
         el.innerHTML = `
           <span class="rebalance-icon">调</span>
           <span class="rebalance-title">自动调仓 <span class="risk-chip info">等待建议</span></span>
@@ -5049,7 +5094,8 @@
       const usedTotal = Number(cap?.used_total || 0);
       const usableTotal = Number(cap?.usable_total || 0);
       const availableTotal = Object.values(available || {}).reduce((sum, value) => sum + Number(value || 0), 0);
-      const usedPct = usableTotal > 0 ? usedTotal / usableTotal : 0;
+      const margin = cap?.margin_summary || {};
+      const ratioText = value => value == null ? '--' : (Number(value) * 100).toFixed(1) + '%';
       const riskBlocked = risk?.block_all_new;
       const advice = riskBlocked
         ? '风控已阻止新开仓，今天以复盘持仓、检查止损和等待风险解除为主。'
@@ -5070,7 +5116,7 @@
         <div class="daily-action-section">
           <div class="daily-action-title">风险预算</div>
           <div class="daily-action-main">${leverage.toFixed(2)}x</div>
-          <div class="daily-action-note">${leverageMode} · 目标 ${(targetExposure * 100).toFixed(0)}% · 已用 ${(usedPct * 100).toFixed(1)}%</div>
+          <div class="daily-action-note">${leverageMode}上限 · 有效目标 ${ratioText(margin.target_percent)}<br>保证金账户仓位 ${ratioText(margin.exposure_percent)} · 预算使用率 ${ratioText(margin.budget_used_percent)}</div>
           <div class="daily-action-note">${cap?.margin_usage_reason || '跟随当前风控设置'}</div>
         </div>
         <div class="daily-action-section">

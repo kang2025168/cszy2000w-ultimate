@@ -645,3 +645,15 @@ def log_capital_startup() -> CapitalAllocation | None:
     print(f"[C TARGET] {allocation.C_target:.2f}", flush=True)
     print(f"[D TARGET] {allocation.D_target:.2f}", flush=True)
     return allocation
+
+
+def margin_budget_summary(allocation) -> dict:
+    """Margin-account budget metrics, excluding the independent retirement account."""
+    profile = allocation.pool_brokers.get('B', 'trading')
+    equity = float(allocation.broker_snapshots.get(profile, {}).get('equity') or 0)
+    used = sum(float(allocation.used.get(g, 0)) for g in ('B','C','D'))
+    budget = sum(allocation.target_for(g) for g in ('B','C','D'))
+    return dict(equity=equity, used=used, budget=budget,
+                exposure_percent=used/equity if equity > 0 else None,
+                target_percent=budget/equity if equity > 0 else None,
+                budget_used_percent=used/budget if budget > 0 else None)

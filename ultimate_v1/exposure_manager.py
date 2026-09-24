@@ -14,7 +14,7 @@ from .risk_controller import get_risk_state
 from .state_store import get_app_setting
 
 
-GROUPS = ("A", "B", "C", "D", "F")
+GROUPS = ("B", "C", "D", "F")
 SIGNAL_POOL_SYMBOLS = {"B_SIGNAL_POOL", "D_SIGNAL_POOL", "F_SIGNAL_POOL"}
 
 
@@ -72,18 +72,11 @@ def _pool_enabled(group: str) -> bool:
 
 def _target_exposure_pct() -> tuple[float, str]:
     """根据保证金额度和市场大环境给出总仓位目标。"""
-    risk = get_risk_state()
-    if risk.market_trend == "向上" and risk.vix < env_float("REBALANCE_LOW_VIX", 20.0):
-        market_pct = env_float("REBALANCE_TARGET_UP", 0.90)
-        reason = "up_low_vix"
-    elif risk.market_trend == "向下":
-        market_pct = env_float("REBALANCE_TARGET_DOWN", 0.35)
-        reason = "downtrend"
-    else:
-        market_pct = env_float("REBALANCE_TARGET_SIDEWAYS", 0.80)
-        reason = "sideways"
-    margin_pct = _margin_usage_pct()
-    return market_pct * margin_pct, f"{reason}; margin={margin_pct:.0%}"
+    from .capital_manager import _pool_base_percents, _risk_percents
+    total_pct, pool_pct = _risk_percents()
+    base = _pool_base_percents()
+    effective = total_pct * sum(base[g] * pool_pct[g] for g in ('B','C','D'))
+    return effective, f"capital_pool_target={effective:.1%}"
 
 
 def _target_exposure_cap() -> float:
@@ -120,35 +113,17 @@ def _symbols_for_group(group: str) -> list[str]:
 
 def _strategy_weights(risk) -> dict[str, float]:
     """给加仓建议使用的策略目标权重，减仓不使用这里，减仓按现有持仓等比例。"""
-    if risk.recommended_weights:
-        weights = {
-            group: max(0.0, _safe_float(risk.recommended_weights.get(group), 0.0))
-            for group in ("A", "B", "C", "D")
-        }
-    else:
-        a, b, c, d = {
-            "NORMAL": (0.20, 0.30, 0.50, 0.30),
-            "SAFE": (0.35, 0.15, 0.50, 0.10),
-            "ATTACK": (0.15, 0.35, 0.50, 0.30),
-            "RISK_OFF": (0.60, 0.00, 0.40, 0.00),
-        }.get(str(risk.mode or "NORMAL").upper(), (0.20, 0.30, 0.50, 0.30))
-        weights = {"A": a, "B": b, "C": c, "D": d}
-
-    if os.getenv("REBALANCE_INCLUDE_D_BUY", "0") != "1":
-        weights["D"] = 0.0
-
-    for group in ("A", "B", "C", "D"):
-        if not _pool_enabled(group):
-            weights[group] = 0.0
-
-    f_weight = env_float("REBALANCE_F_WEIGHT", 0.0)
-    if f_weight > 0:
-        weights["F"] = f_weight
-
-    total = sum(max(0.0, v) for v in weights.values())
+    from .capital_manager import _pool_base_percents, _risk_percents
+    base = _pool_base_percents()
+    _, pool = _risk_percents()
+    weights = {g: base[g] * pool[g] for g in ('B','C','D')}
+    total = sum(weights.values())
     if total <= 0:
         return {}
-    return {group: max(0.0, value) / total for group, value in weights.items() if value > 0}
+    weights = {g:v/total for g,v in weights.items() if v > 0}
+    if os.getenv('REBALANCE_INCLUDE_D_BUY', '0') != '1':
+        weights.pop('D', None)  # Keep its budget reserved, not redistributed to B/C.
+    return weights
 
 
 def _load_open_holdings() -> list[Holding]:
@@ -189,11 +164,10 @@ def _load_open_holdings() -> list[Holding]:
 
 
 def _account_equity() -> float:
-    snap = alpaca_gateway.get_account_snapshot()
+    snap = alpaca_gateway.get_account_snapshot(profile="trading")
     if snap and snap.equity > 0:
         return float(snap.equity)
-    row = fetch_one("SELECT equity FROM account_equity_snapshots ORDER BY created_at DESC LIMIT 1")
-    return _safe_float((row or {}).get("equity"))
+    return 0.0  # Never substitute an unscoped, potentially stale account snapshot.
 
 
 def _latest_position_map(pool: str | None = None) -> dict[str, float]:
@@ -282,12 +256,6 @@ def _build_weighted_buy_actions(
         gap = group_target - group_values.get(group, 0.0)
         if gap >= min_trade:
             group_gaps.append((group, group_target, gap))
-
-    # 如果现有仓位结构已经让所有目标组超配，但总仓位仍不足，就把新增资金放进 A 核心池。
-    if not group_gaps and target_value - current_value >= min_trade:
-        group = "A" if "A" in weights else next(iter(weights))
-        group_target = target_value * weights[group]
-        group_gaps.append((group, group_target, target_value - current_value))
 
     actions: list[dict] = []
     for group, group_target, group_gap in group_gaps:

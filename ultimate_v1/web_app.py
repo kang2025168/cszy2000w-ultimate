@@ -85,6 +85,8 @@ def _allocation_payload() -> dict:
     if allocation is None:
         return {"ok": False, "error": "account_snapshot_failed"}
     margin_mode, margin_usage, margin_reason = resolve_margin_usage_pct()
+    from .capital_manager import margin_budget_summary
+    margin_summary = margin_budget_summary(allocation)
     used = allocation.used
     available = allocation.available
     usable_total = sum(allocation.target_for(g) for g in ("A", "B", "C", "D"))
@@ -129,6 +131,7 @@ def _allocation_payload() -> dict:
         "trade_suspended_by_user": allocation.trade_suspended_by_user,
         "base_total": base_total,
         "usable_total": usable_total,
+        "margin_summary": margin_summary,
         "used_total": used_total,
         "total_risk_percent": allocation.total_risk_percent,
         "margin_usage_percent": margin_usage,
@@ -2649,6 +2652,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/":
                 self._send_html()
+            elif path == "/api/daily_advice":
+                from .daily_advice import status
+                self._send_json(status())
             elif path == "/api/health":
                 from .metrics import snapshot
                 pending = fetch_all("SELECT state,COUNT(*) AS n FROM execution_orders WHERE state IN ('unknown','submitting','prepared') GROUP BY state")
@@ -2758,6 +2764,10 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": str(exc)}, 400)
                     return
                 self._send_json({"ok": True, "config": result})
+            elif path == "/api/daily_advice":
+                from .daily_advice import start
+                result = start(str(payload.get('mode','rules')))
+                self._send_json(result, 202 if result.get('ok') else 400)
             elif path == "/api/clear_position":
                 if not self._check_password(payload):
                     self._send_json({"ok": False, "error": "密码错误或未配置操作密码"}, 403)
