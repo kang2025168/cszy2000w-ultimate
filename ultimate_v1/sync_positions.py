@@ -123,6 +123,10 @@ def _resolve_strategy_group(
     3. 新券商持仓默认归 B。
     """
     with conn.cursor() as cur:
+        if 'D' in (allowed_groups or VALID_GROUPS):
+            cur.execute("SELECT id FROM position_holdings WHERE symbol=%s AND status='open' AND strategy_group='D' AND qty>0", (symbol,))
+            if cur.fetchone():
+                return 'D'
         cur.execute(
             f"""
             SELECT stock_type, strategy_group
@@ -487,6 +491,41 @@ def _account_sync_plans() -> list[tuple[str, str, set[str]]]:
     ]
 
 
+def _repair_verified_d_ownership(positions, profile, managed_groups):
+    """Only repair whole positions proven to be the remaining D cycle lot."""
+    if 'D' not in managed_groups or profile != profile_for_pool('D'):
+        return
+    from .d_grid import _cycle_sell_totals, _order_snapshot
+    client = alpaca_gateway.trading_client(profile=profile)
+    for pos in positions:
+        symbol, broker_qty = _position_symbol(pos), _position_qty(pos)
+        with db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM d_grid_cycles WHERE symbol=%s AND state IN ('SELL_WORKING','CLOSING','ERROR')", (symbol,))
+                cycle = cur.fetchone()
+                if not cycle or not cycle.get('buy_order_id'):
+                    continue
+                buy = client.get_order_by_id(str(cycle['buy_order_id']))
+                if str(getattr(buy, 'client_order_id', '')) != f"dgrid-{symbol}-{cycle['cycle_no']}-b":
+                    continue
+                _, bought, _ = _order_snapshot(buy)
+                sold, _ = _cycle_sell_totals(cur, cycle, client)
+                if broker_qty <= 0 or abs(bought - sold - broker_qty) > .000001:
+                    raise RuntimeError(f'{symbol}: D lot differs from broker quantity; manual allocation review required')
+                cur.execute("SELECT id,strategy_group,stock_type FROM position_holdings WHERE symbol=%s AND status='open'", (symbol,))
+                lots = cur.fetchall() or []
+                if len(lots) > 1 or any(r.get('stock_type') == 'A' or r.get('strategy_group') == 'A' for r in lots):
+                    raise RuntimeError(f'{symbol}: mixed strategy ownership requires review')
+                cur.execute("""UPDATE position_holdings SET strategy_group='D',stock_type='D',capital_pool='D'
+                               WHERE symbol=%s AND status='open'""", (symbol,))
+                # Keep C watchlist membership but remove the incorrectly assigned position.
+                cur.execute("""UPDATE stock_operations SET qty=0,is_bought=0,can_sell=0,
+                               last_order_intent='D ownership verified: cleared mislabeled holding'
+                               WHERE stock_code=%s AND stock_type IN ('B','C','F')""", (symbol,))
+        if not lots:
+            sync_open_holding_from_position(pos, 'D', allowed_groups=managed_groups)
+
+
 def _sync_profile_snapshot(profile, default_group, managed_groups, *, include_ops=False):
     from .manual_ledger import reconcile_manual_orders
     from .order_journal import execution_lock
@@ -498,6 +537,7 @@ def _sync_profile_snapshot(profile, default_group, managed_groups, *, include_op
             print(f"[POSITION SYNC] {profile}: pending manual order; preserve strategy lots until reconciled", flush=True)
             return None
         positions = alpaca_gateway.list_positions(profile=profile)
+        _repair_verified_d_ownership(positions, profile, managed_groups)
         holdings = _sync_position_holdings_from_positions(positions, default_group=default_group, managed_groups=managed_groups)
         operations = _sync_stock_operations_from_positions(positions, default_group=default_group, managed_groups=managed_groups) if include_ops else {}
         return holdings, operations

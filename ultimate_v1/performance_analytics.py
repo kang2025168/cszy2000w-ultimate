@@ -120,7 +120,7 @@ def _d_closed_trades(start: date | None) -> list[dict]:
             "entry_price": entry_price, "exit_price": exit_price, "realized_pnl": pnl,
             "return_pct": pnl / (entry_price * qty) if entry_price > 0 and qty > 0 else 0.0,
             "cost_effect": "PROFIT" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT",
-            "exit_reason": f"D 循环 #{int(_number(row.get('cycle_no')))}",
+            "exit_reason": f"D 循环 #{int(_number(row.get('cycle_no')))}" + (" · 5%止损" if "STOP_LOSS_5PCT" in str(row.get("message") or "") else ""),
             "exit_order_id": row.get("order_id"),
             "entry_order_id": row.get("entry_order_id"),
             "entry_submitted_at": row.get("entry_submitted_at"),

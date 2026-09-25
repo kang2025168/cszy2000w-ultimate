@@ -4642,7 +4642,8 @@
             ${bConfigRow('卖出订单', '实时价限价卖出，不走市价', 'good')}
             ${bConfigRow('初始止损', bCfgPct(sell.initial_stop_pct), 'warn')}
             ${bConfigRow('提前锁盈', `涨幅 > ${bCfgPct(sell.early_lock_start_pct ?? 0.03)}，止损抬到成本 ${bCfgPct(sell.early_lock_profit_pct ?? 0.01)}`, 'good')}
-            ${bConfigRow('锁盈启动', `${bCfgPct(sell.trail_lock_start_pct)} 后止损抬到 ${bCfgPct(sell.trail_lock_profit_pct)}`, 'good')}
+            ${bConfigRow('原保本规则', `${bCfgPct(sell.trail_lock_start_pct)} 后至少保本；不降低已抬高止损`, 'good')}
+            ${bConfigRow('高点保护', '保护价只升不降；回撤清仓成交后进入 F 观察池')}
             ${bConfigRow('买入后宽限', `${Number(sell.initial_stop_grace_seconds || 0)} 秒`)}
             ${bConfigRow('灾难止损', bCfgPct(sell.catastrophic_stop_loss_pct), 'warn')}
             ${flashWaitRows || ''}
@@ -4707,7 +4708,9 @@
         <div class="d-grid-field"><label>成交后止盈</label><input id="dGridProfitPct" type="number" min="0.01" max="20" step="0.1" value="${(Number(payload.profit_pct || 0.01) * 100).toFixed(2)}"><span class="small-muted">按实际成交价计算</span></div>
         <div class="d-grid-field"><label>开始交易</label><input id="dGridOpenTime" type="time" value="${esc(payload.open_time || '06:35')}"></div>
         <div class="d-grid-field"><label>停止开仓</label><input id="dGridLastEntry" type="time" value="${esc(payload.last_entry_time || '12:30')}"></div>
-        <div class="d-grid-field"><label>收盘平仓</label><input id="dGridFlattenTime" type="time" value="${esc(payload.flatten_time || '12:50')}"></div>
+        <div class="d-grid-field"><label>极端止损</label><strong>买入均价下跌 ${(Number(payload.stop_loss_pct ?? 0.05) * 100).toFixed(0)}%</strong><span class="small-muted">撤单确认后市价卖出剩余数量；触发后不因反弹取消</span></div>
+        <div class="d-grid-field"><label>收盘限价退出</label><strong>提前 ${Number(payload.flatten_minutes_before_close ?? 10)} 分钟</strong><span class="small-muted">按最新现价限价，每30秒撤单确认后重新报价</span></div>
+        <div class="d-grid-field"><label>收盘市价兜底</label><strong>提前 ${Number(payload.market_exit_minutes_before_close ?? 1)} 分钟</strong><span class="small-muted">撤单确认后市价退出；按券商实际收盘时间，支持提前收盘</span></div>
         <div class="d-grid-field"><label>买单等待秒数</label><input id="dGridBuyTimeout" type="number" min="5" step="1" value="${Number(payload.buy_timeout_seconds || 45)}"></div>
         <div class="d-grid-field"><label>每轮冷却秒数</label><input id="dGridCooldown" type="number" min="1" step="1" value="${Number(payload.cooldown_seconds || 5)}"></div>
         <div class="d-grid-field"><label>机器人状态</label><div class="d-grid-symbol-state ${payload.bot_enabled ? 'active' : ''}">${payload.bot_enabled ? '运行开关已开启' : '机器人关闭，保存配置不会自动启动'}</div></div>`;
@@ -4732,7 +4735,7 @@
         const read = name => row.querySelector(`[data-field="${name}"]`);
         return {enabled:!!read('enabled')?.checked, symbol:String(read('symbol')?.value || '').trim().toUpperCase(), lot_notional:Number(read('lot_notional')?.value || 0), entry_offset:Number(read('entry_offset')?.value || 0), profit_offset:Number(read('profit_offset')?.value || 0), max_spread:Number(read('max_spread')?.value || 0)};
       }).filter(row => row.symbol);
-      return {enabled:document.getElementById('dGridEnabled')?.value === '1', dry_run:document.getElementById('dGridDryRun')?.value !== '0', auto_select_enabled:document.getElementById('dAutoSelectEnabled')?.value !== '0', auto_select_interval_seconds:Number(document.getElementById('dAutoSelectInterval')?.value || 3600), entry_pct:Number(document.getElementById('dGridEntryPct')?.value || 0.25)/100, profit_pct:Number(document.getElementById('dGridProfitPct')?.value || 1)/100, open_time:document.getElementById('dGridOpenTime')?.value || '06:35', last_entry_time:document.getElementById('dGridLastEntry')?.value || '12:30', flatten_time:document.getElementById('dGridFlattenTime')?.value || '12:50', buy_timeout_seconds:Number(document.getElementById('dGridBuyTimeout')?.value || 45), cooldown_seconds:Number(document.getElementById('dGridCooldown')?.value || 5), symbols};
+      return {enabled:document.getElementById('dGridEnabled')?.value === '1', dry_run:document.getElementById('dGridDryRun')?.value !== '0', auto_select_enabled:document.getElementById('dAutoSelectEnabled')?.value !== '0', auto_select_interval_seconds:Number(document.getElementById('dAutoSelectInterval')?.value || 3600), entry_pct:Number(document.getElementById('dGridEntryPct')?.value || 0.25)/100, profit_pct:Number(document.getElementById('dGridProfitPct')?.value || 1)/100, open_time:document.getElementById('dGridOpenTime')?.value || '06:35', last_entry_time:document.getElementById('dGridLastEntry')?.value || '12:30', buy_timeout_seconds:Number(document.getElementById('dGridBuyTimeout')?.value || 45), cooldown_seconds:Number(document.getElementById('dGridCooldown')?.value || 5), symbols};
     }
     async function saveDGridConfig() {
       const config = collectDGridConfig();

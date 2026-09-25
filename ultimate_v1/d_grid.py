@@ -23,6 +23,8 @@ from .state_store import get_app_setting, set_app_setting
 from .trading_gate import can_open_position
 from .yahoo_market_data import get_yahoo_stock_quote
 
+D_STOP_LOSS_PCT = 0.05
+
 ACTIVE_STATES = {"BUY_WORKING", "SELL_WORKING", "CLOSING", "BUY_SUBMITTING", "SELL_SUBMITTING"}
 TERMINAL_ORDER_STATES = {"filled", "canceled", "cancelled", "expired", "rejected"}
 D_AUTO_EXCLUDED_SYMBOLS = {
@@ -177,7 +179,10 @@ def config_payload() -> dict:
         "bot_enabled": bool(controls and int(controls[0].get("enabled") or 0) == 1),
         "open_time": _runtime_text("D_GRID_OPEN_TIME_LA", "D_GRID_OPEN_TIME_LA", "06:35"),
         "last_entry_time": _runtime_text("D_GRID_LAST_ENTRY_TIME_LA", "D_GRID_LAST_ENTRY_TIME_LA", "12:30"),
-        "flatten_time": _runtime_text("D_GRID_FLATTEN_TIME_LA", "D_GRID_FLATTEN_TIME_LA", settings().market_close_flatten_time),
+        "flatten_time": "12:50",
+        "flatten_minutes_before_close": 10,
+        "market_exit_minutes_before_close": 1,
+        "stop_loss_pct": D_STOP_LOSS_PCT,
         "cooldown_seconds": int(float(_runtime_text("D_GRID_COOLDOWN_SEC", "D_GRID_COOLDOWN_SEC", "5"))),
         "buy_timeout_seconds": _buy_timeout_seconds(),
         "entry_pct": float(_runtime_text("D_GRID_ENTRY_PCT", "D_GRID_ENTRY_PCT", "0.0025")),
@@ -225,7 +230,6 @@ def save_config(payload: dict) -> dict:
     times = {
         "D_GRID_OPEN_TIME_LA": str(payload.get("open_time") or "06:35"),
         "D_GRID_LAST_ENTRY_TIME_LA": str(payload.get("last_entry_time") or "12:30"),
-        "D_GRID_FLATTEN_TIME_LA": str(payload.get("flatten_time") or "12:50"),
     }
     parsed_times = {key: _parse_time_value(value) for key, value in times.items()}
     if not parsed_times["D_GRID_OPEN_TIME_LA"] < parsed_times["D_GRID_LAST_ENTRY_TIME_LA"] < parsed_times["D_GRID_FLATTEN_TIME_LA"]:
@@ -366,7 +370,7 @@ def _auto_select_candidate(*, force: bool = False, exclude: set[str] | None = No
 
 def _submit_limit(client, symbol: str, side: str, qty: float, price: float, client_order_id: str):
     from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import LimitOrderRequest
+    from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
     request = LimitOrderRequest(
         symbol=symbol,
@@ -377,6 +381,9 @@ def _submit_limit(client, symbol: str, side: str, qty: float, price: float, clie
         extended_hours=False,
         client_order_id=client_order_id[:48],
     )
+    if side == 'sell' and '-cm-' in client_order_id:
+        request = MarketOrderRequest(symbol=symbol, qty=str(qty), side=OrderSide.SELL,
+                                     time_in_force=TimeInForce.DAY, client_order_id=client_order_id[:48])
     from . import order_journal as journal
     from .account_config import profile_for_pool
     row = journal.get_intent(client_order_id)
@@ -460,24 +467,35 @@ def _start_cycle(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: boo
     return f"buy_working qty={plan.qty} limit={plan.buy_limit:.2f} budget={cycle_budget:.2f} notional={plan.notional:.2f}"
 
 
-def _submit_sell(cur, config: dict, cycle: dict, qty: float, fill_price: float, dry_run: bool, client, *, closing: bool = False, quote: StockQuote | None = None) -> str:
+def _submit_sell(cur, config: dict, cycle: dict, qty: float, fill_price: float, dry_run: bool, client, *, closing: bool = False, quote: StockQuote | None = None, force_market: bool = False) -> str:
     symbol = config["symbol"]
+    if closing and not dry_run and not bool(client.get_clock().is_open):
+        return 'close_waiting_market_open'
     cycle_no = int(cycle["cycle_no"])
-    target = stock_limit_price(
-        (quote.bid if closing and quote else 0)
-        or sell_limit_from_fill(
-            fill_price,
-            float(config["profit_offset"]),
-            profit_pct=float(_runtime_text("D_GRID_PROFIT_PCT", "D_GRID_PROFIT_PCT", "0.01")),
-        )
-    )
+    if force_market:
+        target = stock_limit_price(fill_price)  # Accounting placeholder, not a market-order limit.
+    elif closing:
+        if quote is None:
+            quote = get_latest_stock_quote(symbol, pool='D')
+        target = float(quote.last or quote.bid or 0)
+        if target <= 0:
+            return 'close_waiting_current_price'
+        if quote.timestamp is not None:
+            age = (_now_la() - quote.timestamp).total_seconds()
+            if age < -5 or age > 60:
+                return 'close_waiting_fresh_price'
+        target = stock_limit_price(target)
+    else:
+        target = stock_limit_price(sell_limit_from_fill(
+            fill_price, float(config['profit_offset']),
+            profit_pct=float(_runtime_text('D_GRID_PROFIT_PCT', 'D_GRID_PROFIT_PCT', '0.01'))))
     if dry_run:
         order_id = f"DRY-D-{symbol}-{cycle_no}-S"
     else:
         previous = str(cycle.get("sell_order_id") or "")
-        suffix = ("-c-" + previous[-8:]) if closing else "-s"
+        suffix = (("-cm-" if force_market else "-cl-") + (previous or str(cycle.get("buy_order_id") or ""))[-8:]) if closing else "-s"
         cid = f"dgrid-{symbol}-{cycle_no}{suffix}"
-        _set_cycle(cur, symbol, state="SELL_SUBMITTING", buy_filled_qty=qty,
+        _set_cycle(cur, symbol, state="SELL_SUBMITTING", buy_filled_qty=(float(cycle.get("buy_filled_qty") or qty) if closing else qty),
                    buy_filled_price=fill_price, sell_limit=target,
                    pending_client_order_id=cid, last_error="near_close_exit" if closing else None)
         cur.connection.commit()
@@ -490,7 +508,7 @@ def _submit_sell(cur, config: dict, cycle: dict, qty: float, fill_price: float, 
         cur,
         symbol,
         state=state,
-        buy_filled_qty=qty,
+        buy_filled_qty=(float(cycle.get("buy_filled_qty") or qty) if closing else qty),
         buy_filled_price=fill_price,
         sell_limit=target,
         sell_order_id=order_id,
@@ -508,7 +526,7 @@ def _finish_cycle(cur, config: dict, cycle: dict, sell_price: float) -> str:
     _set_cycle(cur, config["symbol"], state="COOLDOWN", sell_filled_price=sell_price, realized_pnl=pnl, cooldown_until=cooldown, last_error=None)
     from .order_journal import update
     update(f"dgrid-{config['symbol']}-{cycle['cycle_no']}-b", reserved_notional=0, state="closed")
-    _event(cur, config["symbol"], int(cycle["cycle_no"]), "CYCLE_FILLED", "COOLDOWN", order_id=str(cycle.get("sell_order_id") or ""), qty=qty, price=sell_price, message=f"gross_pnl={pnl:.2f}")
+    _event(cur, config["symbol"], int(cycle["cycle_no"]), "CYCLE_FILLED", "COOLDOWN", order_id=str(cycle.get("sell_order_id") or ""), qty=qty, price=sell_price, message=f"gross_pnl={pnl:.2f}" + (" exit_reason=STOP_LOSS_5PCT" if _stop_pending(cycle) else ""))
     return f"cycle_filled gross_pnl={pnl:.2f}"
 
 
@@ -553,6 +571,26 @@ def _advance_buy(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: boo
     return f"waiting_buy status={status or 'unknown'} filled={filled_qty:g}"
 
 
+def _cycle_sell_totals(cur, cycle, client):
+    # Include fills of canceled/replaced sell orders, not just the latest one.
+    cur.execute("""SELECT DISTINCT order_id FROM d_grid_events WHERE symbol=%s AND cycle_no=%s
+                   AND event_type IN ('SELL_SUBMITTED','CLOSE_SUBMITTED') AND order_id IS NOT NULL
+                   AND id > COALESCE((SELECT MAX(id) FROM d_grid_events WHERE symbol=%s
+                       AND cycle_no=%s AND event_type='BUY_SUBMITTED'),0)""",
+                (cycle['symbol'], cycle['cycle_no'], cycle['symbol'], cycle['cycle_no']))
+    ids = {r['order_id'] for r in cur.fetchall() or []}
+    if cycle.get('sell_order_id'):
+        ids.add(cycle['sell_order_id'])
+    qty = value = 0.0
+    for oid in ids:
+        _, filled, price = _order_snapshot(client.get_order_by_id(str(oid)))
+        if filled > 0 and price <= 0:
+            raise ValueError('Sell fill price unavailable')
+        qty += filled
+        value += filled * price
+    return qty, value
+
+
 def _advance_sell(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: bool, client, closing: bool = False) -> str:
     if dry_run:
         if quote.bid <= 0 or quote.bid < float(cycle["sell_limit"]):
@@ -560,6 +598,22 @@ def _advance_sell(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: bo
         return _finish_cycle(cur, config, cycle, max(float(cycle["sell_limit"]), quote.bid))
     order = client.get_order_by_id(str(cycle["sell_order_id"]))
     status, filled_qty, fill_price = _order_snapshot(order)
+    if closing:
+        sold, value = _cycle_sell_totals(cur, cycle, client)
+        expected = float(cycle.get('buy_filled_qty') or 0)
+        if sold >= expected > 0:
+            return _finish_cycle(cur, config, cycle, value / sold)
+        if status in TERMINAL_ORDER_STATES:
+            if not bool(client.get_clock().is_open):
+                _set_cycle(cur, config['symbol'], last_error='close_incomplete_market_closed')
+                return 'close_incomplete_market_closed'
+            return _submit_sell(cur, config, cycle, expected - sold,
+                                float(cycle['buy_filled_price']), False, client, closing=True, quote=quote)
+        if status not in TERMINAL_ORDER_STATES and status != 'filled':
+            age = (_now_la().replace(tzinfo=None) - cycle['state_changed_at']).total_seconds()
+            if age >= 30 and status != 'pending_cancel' and bool(client.get_clock().is_open):
+                client.cancel_order_by_id(str(cycle['sell_order_id']))
+                return 'close_cancel_requested_for_reprice'
     if status == "filled":
         return _finish_cycle(cur, config, cycle, fill_price)
     if status in TERMINAL_ORDER_STATES:
@@ -570,6 +624,75 @@ def _advance_sell(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: bo
         _event(cur, config["symbol"], int(cycle["cycle_no"]), "SELL_TERMINAL", "ERROR", message=f"{status} filled={filled_qty:g}")
         return f"sell_{status}_manual_review"
     return f"waiting_{'close' if closing else 'sell'} status={status or 'unknown'} filled={filled_qty:g}"
+
+
+def _stop_key(cycle):
+    return 'D_STOP_LOSS:' + str(cycle.get('symbol') or '')
+
+
+def _stop_pending(cycle):
+    identity = str(cycle.get('buy_order_id') or '')
+    return bool(identity) and get_app_setting(_stop_key(cycle), '') == identity
+
+
+def _stop_threshold_hit(cost, quote, now):
+    if cost <= 0 or quote.timestamp is None:
+        return False
+    age = (now - quote.timestamp).total_seconds()
+    price = float(quote.bid or quote.last or 0)
+    return -5 <= age <= 60 and price > 0 and price <= cost * (1 - D_STOP_LOSS_PCT)
+
+
+def _handle_stop_loss(cur, config, cycle, client, now, dry_run=False):
+    pending = _stop_pending(cycle)
+    if not pending:
+        try:
+            quote = get_latest_stock_quote(config['symbol'], pool='D')
+        except Exception:
+            return None  # Keep scheduled closeout available when quotes fail.
+        if not _stop_threshold_hit(float(cycle.get('buy_filled_price') or 0), quote, now):
+            return None
+        if not dry_run:
+            sold, value = _cycle_sell_totals(cur, cycle, client)
+            if sold >= float(cycle.get('buy_filled_qty') or 0) > 0:
+                return _finish_cycle(cur, config, cycle, value / sold)
+        set_app_setting(_stop_key(cycle), str(cycle['buy_order_id']))
+        _event(cur, config['symbol'], int(cycle['cycle_no']), 'STOP_LOSS_TRIGGERED',
+               str(cycle['state']), price=float(quote.bid or quote.last),
+               message='actual_entry_loss>=5%; cancel-confirm then market remaining')
+    if dry_run:
+        quote = get_latest_stock_quote(config['symbol'], pool='D')
+        price = float(quote.bid or quote.last or 0)
+        if price <= 0:
+            return 'stop_waiting_price'
+        return _finish_cycle(cur, config, cycle, price)
+    if not bool(client.get_clock().is_open):
+        return 'stop_waiting_market_open'
+    return _last_minute_exit(cur, config, cycle, client)
+
+
+def _last_minute_exit(cur, config, cycle, client):
+    """Cancel-confirm-reconcile before replacing a limit order with market."""
+    order = client.get_order_by_id(str(cycle['sell_order_id']))
+    status, _, _ = _order_snapshot(order)
+    sold, value = _cycle_sell_totals(cur, cycle, client)
+    expected = float(cycle.get('buy_filled_qty') or 0)
+    if sold >= expected > 0:
+        return _finish_cycle(cur, config, cycle, value / sold)
+    if status not in TERMINAL_ORDER_STATES and status != 'filled':
+        if '-cm-' in str(getattr(order, 'client_order_id', '')):
+            return 'waiting_market_close_fill'
+        if status != 'pending_cancel':
+            client.cancel_order_by_id(str(cycle['sell_order_id']))
+        return 'limit_cancel_requested_before_market_close'
+    remaining = expected - sold
+    if remaining <= 0:
+        return 'close_quantity_requires_review'
+    position = client.get_open_position(config['symbol'])
+    if float(position.qty) + 1e-8 < remaining:
+        raise ValueError('D remaining quantity exceeds broker holding')
+    return _submit_sell(cur, config, cycle, remaining, float(cycle['buy_filled_price']),
+                        False, client, closing=True, force_market=True)
 
 
 def run_symbol(symbol: str, *, now: datetime | None = None) -> str:
@@ -609,13 +732,32 @@ def _run_symbol_locked(symbol: str, *, now: datetime | None = None) -> str:
                     if dry_run:
                         return "live_pending_order_requires_live_reconciliation"
                     buying = state == "BUY_SUBMITTING"
+                    from .order_journal import get_intent
+                    import json
+                    pending = get_intent(str(cycle['pending_client_order_id']))
+                    request_data = (pending or {}).get('request_json') or {}
+                    if isinstance(request_data, str):
+                        request_data = json.loads(request_data)
                     order = _submit_limit(client, symbol, "buy" if buying else "sell",
-                        float(cycle["buy_qty"] if buying else cycle["buy_filled_qty"]),
+                        float(request_data.get("qty") or (cycle["buy_qty"] if buying else cycle["buy_filled_qty"])),
                         float(cycle["buy_limit"] if buying else cycle["sell_limit"]),
                         str(cycle["pending_client_order_id"]))
-                    target_state = "BUY_WORKING" if buying else ("CLOSING" if "-c-" in str(cycle.get("pending_client_order_id") or "") else "SELL_WORKING")
+                    target_state = "BUY_WORKING" if buying else ("CLOSING" if any(tag in str(cycle.get("pending_client_order_id") or "") for tag in ("-c-", "-cl-", "-cm-")) else "SELL_WORKING")
                     _set_cycle(cur, symbol, state=target_state, **{("buy_order_id" if buying else "sell_order_id"): str(order.id)})
                     return "recovered_" + target_state.lower()
+                if cycle.get('sell_order_id') and state in {'SELL_WORKING','CLOSING','ERROR'}:
+                    stopped = _handle_stop_loss(cur, config, cycle, client, now, dry_run)
+                    if stopped is not None:
+                        return stopped
+                if not dry_run and cycle.get('sell_order_id') and state in {'SELL_WORKING','CLOSING','ERROR'}:
+                    close_clock = client.get_clock()
+                    seconds_left = (close_clock.next_close - close_clock.timestamp).total_seconds()
+                    if close_clock.is_open and 0 < seconds_left <= 60:
+                        return _last_minute_exit(cur, config, cycle, client)
+                if state == 'ERROR' and str(cycle.get('last_error') or '').startswith('sell_') and cycle.get('sell_order_id'):
+                    if dry_run or not bool(client.get_clock().is_open):
+                        return 'close_recovery_waiting_market'
+                    return _advance_sell(cur, config, cycle, get_latest_stock_quote(symbol, pool='D'), False, client, closing=True)
                 if state == "COOLDOWN":
                     until = cycle.get("cooldown_until")
                     if until and naive_now < until:
@@ -625,7 +767,12 @@ def _run_symbol_locked(symbol: str, *, now: datetime | None = None) -> str:
                     cycle["state"] = state
                     conn.commit()
                 last_entry = _time_setting("D_GRID_LAST_ENTRY_TIME_LA", "12:30")
-                flatten_at = _time_setting("D_GRID_FLATTEN_TIME_LA", settings().market_close_flatten_time)
+                flatten_at = _parse_time_value('12:50')
+                if not dry_run:
+                    clock = client.get_clock()
+                    if clock.is_open:
+                        flatten_at = (clock.next_close.astimezone(now.tzinfo) - timedelta(minutes=10)).time()
+                last_entry = min(last_entry, flatten_at)
                 in_entry_window = now.weekday() < 5 and _time_setting("D_GRID_OPEN_TIME_LA", "06:35") <= now.time() < last_entry
                 if state == "IDLE":
                     if int(config.get("enabled") or 0) != 1:
@@ -676,7 +823,8 @@ def _run_symbol_locked(symbol: str, *, now: datetime | None = None) -> str:
                     if status not in TERMINAL_ORDER_STATES:
                         client.cancel_order_by_id(str(cycle["sell_order_id"]))
                         return "sell_cancel_requested_before_closeout"
-                    remaining = max(0.0, total_qty - filled_qty)
+                    sold, value = _cycle_sell_totals(cur, cycle, client)
+                    remaining = max(0.0, total_qty - sold)
                     if remaining <= 0:
                         return _finish_cycle(cur, config, cycle, fill_price or float(cycle["sell_limit"]))
                     return _submit_sell(cur, config, cycle, remaining, float(cycle["buy_filled_price"]), False, client, closing=True, quote=quote)
