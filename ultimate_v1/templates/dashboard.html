@@ -4074,7 +4074,7 @@
       return `<div style="padding:12px;background:#f8fbff;border:1px solid #d8e4f0;border-radius:8px;white-space:normal">
         <b>${esc(row.strategy_group)} / ${esc(row.symbol)} · 买卖详情</b>
         <table class="stats-table" style="margin-top:8px"><thead><tr><th>交易</th><th>${option ? '合约数' : '闭环数量'}</th><th>价格</th><th>系统记录时间</th><th>订单编号</th></tr></thead><tbody>
-        ${leg('第一笔',first,row.entry_price,row.started_at,row.entry_order_id)}
+        ${leg('第一笔',first,row.entry_price,row.started_at || (row.entry_submitted_at ? String(row.entry_submitted_at) + '（委托提交）' : null),row.entry_order_id)}
         ${leg('第二笔',second,row.exit_price,row.completed_at,row.exit_order_id)}
         </tbody></table>
         <p>本轮收益：<strong class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</strong> · 收益率 ${pct(row.return_pct)} · 退出原因：${esc(row.exit_reason || '未记录')}</p>

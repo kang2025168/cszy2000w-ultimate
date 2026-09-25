@@ -89,14 +89,21 @@ def _b_closed_trades(start: date | None) -> list[dict]:
 
 
 def _d_closed_trades(start: date | None) -> list[dict]:
-    where = "" if start is None else "AND created_at >= %s"
+    where = "" if start is None else "AND e.created_at >= %s"
     args = () if start is None else (start,)
     rows = _safe_fetch(
         f"""
-        SELECT created_at,symbol,cycle_no,qty,price,message,order_id
-        FROM d_grid_events
-        WHERE event_type='CYCLE_FILLED' {where}
-        ORDER BY created_at DESC,id DESC
+        SELECT e.created_at,e.symbol,e.cycle_no,e.qty,e.price,e.message,e.order_id,
+               b.order_id AS entry_order_id, b.created_at AS entry_submitted_at
+        FROM d_grid_events e
+        LEFT JOIN d_grid_events b ON b.id = (
+            SELECT MAX(buy.id) FROM d_grid_events buy
+            WHERE buy.symbol=e.symbol AND buy.cycle_no=e.cycle_no
+              AND buy.event_type='BUY_SUBMITTED'
+              AND buy.id < e.id AND buy.created_at <= e.created_at
+        )
+        WHERE e.event_type='CYCLE_FILLED' {where}
+        ORDER BY e.created_at DESC,e.id DESC
         """,
         args,
         quiet=True,
@@ -115,7 +122,9 @@ def _d_closed_trades(start: date | None) -> list[dict]:
             "cost_effect": "PROFIT" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT",
             "exit_reason": f"D 循环 #{int(_number(row.get('cycle_no')))}",
             "exit_order_id": row.get("order_id"),
-            "price_note": "首笔价格由循环成交收益反算；时间为系统记录时间。",
+            "entry_order_id": row.get("entry_order_id"),
+            "entry_submitted_at": row.get("entry_submitted_at"),
+            "price_note": "首笔价格由循环成交收益反算；买入时间为委托提交时间，卖出时间为闭环确认时间，均非券商逐笔成交时间。",
         })
     return trades
 
