@@ -208,6 +208,9 @@
     .annual-grid { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:10px; }
     .annual-goal { border:1px solid #e0e8f2; border-radius:8px; padding:12px; background:linear-gradient(180deg,#fff,#f9fbff); min-height:94px; display:grid; gap:9px; align-content:start; box-shadow:0 8px 18px rgba(15,23,42,.035); }
     .annual-goal { grid-column:span 2; }
+    .annual-goal.weekly_stock { grid-column:1 / -1; min-height:82px; }
+    .annual-goal.weekly_stock .annual-desc { white-space:normal; }
+    .annual-goal.weekly_stock .annual-fill { background:var(--green); }
     .annual-goal.stock_growth { grid-column:1 / -1; min-height:92px; }
     .annual-goal.stock_growth .annual-goal-top { align-items:center; }
     .annual-goal.stock_growth .annual-name { font-size:15px; }
@@ -2000,7 +2003,7 @@
         const rawPct = target > 0 ? current / target * 100 : 0;
         const donePct = Math.max(0, Math.min(100, rawPct));
         const pctText = `${Math.max(0, rawPct).toFixed(0)}%`;
-        const currentLabel = goalValue(goal, current);
+        const currentLabel = goal.current == null ? '--' : goalValue(goal, current);
         const targetLabel = goalValue(goal, target);
         const extra = `${currentLabel} / ${targetLabel}`;
         const statusLabel = goal.status_label || (rawPct >= 100 ? '已达成' : '推进中');

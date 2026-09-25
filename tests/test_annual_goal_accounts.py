@@ -9,7 +9,7 @@ class AnnualGoalAccountTests(unittest.TestCase):
         allocation=SimpleNamespace(equity=3300,pool_brokers={'A':'retirement','B':'trading'},broker_snapshots={'retirement':{'equity':100},'trading':{'equity':3200}})
         def reset(equity):
             settings.update(ANNUAL_STOCK_START_EQUITY=str(equity),ANNUAL_STOCK_COMPLETIONS='0',ANNUAL_STOCK_BASIS='trading-v2')
-        with patch.object(web,'_ensure_weekly_goal_reset'),patch.object(web,'get_app_setting',side_effect=lambda k,d='':settings.get(k,d)),patch.object(web,'_setting_float',side_effect=lambda k,d:float(settings.get(k,d))),patch.object(web,'_reset_stock_growth',side_effect=reset) as call:
+        with patch.object(web,'_weekly_stock_goal',return_value={'key':'weekly_stock'}),patch.object(web,'_ensure_weekly_goal_reset'),patch.object(web,'get_app_setting',side_effect=lambda k,d='':settings.get(k,d)),patch.object(web,'_setting_float',side_effect=lambda k,d:float(settings.get(k,d))),patch.object(web,'_reset_stock_growth',side_effect=reset) as call:
             first={r['key']:r for r in web._annual_goals_payload(allocation)}
             web._annual_goals_payload(allocation)
         call.assert_called_once_with(3200)

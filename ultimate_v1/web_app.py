@@ -205,6 +205,42 @@ def _reset_stock_growth(equity: float) -> None:
                 cur.execute("INSERT INTO app_settings (setting_key,setting_value,updated_at) VALUES (%s,%s,NOW()) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_at=NOW()", (key,value))
 
 
+def _weekly_stock_goal(allocation) -> dict:
+    today = _now_market_tz().date()
+    monday = today - timedelta(days=today.weekday())
+    equity = _goal_account_equity(allocation, "B")
+    profile = allocation.pool_brokers.get("B", "trading")
+    key = f"WEEKLY_STOCK_BASE:{profile}:{monday.isoformat()}"
+    raw = get_app_setting(key, "")
+    try:
+        baseline = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        baseline = {}
+    start = float(baseline.get("equity") or 0)
+    if start <= 0 and math.isfinite(equity) and equity > 0:
+        # Snapshots use the same database dates as the existing equity curve.
+        rows = fetch_all(
+            "SELECT equity FROM account_equity_snapshots "
+            "WHERE broker_profile=%s AND created_at >= %s AND created_at < %s "
+            "AND equity > 0 ORDER BY created_at DESC,id DESC LIMIT 1",
+            (profile, monday - timedelta(days=7), monday),
+        )
+        start = float(rows[0]["equity"]) if rows else equity
+        baseline = {"equity": start, "partial": not bool(rows)}
+        set_app_setting(key, json.dumps(baseline))
+    available = start > 0 and math.isfinite(equity) and equity > 0
+    current = equity / start - 1 if available else None
+    period = f"{monday:%m/%d}–{monday + timedelta(days=6):%m/%d}"
+    return {
+        "key": "weekly_stock", "name": "周收益目标", "unit": "percent",
+        "target": 0.05, "current": current,
+        "desc": f"{period} · 股票账户净值目标 5% · 不含 A，入出金会影响净值",
+        "status_label": ("等待账户数据" if not available else
+                         ("从首次记录起 · " if baseline.get("partial") else "") +
+                         ("已达成" if current >= 0.05 - 1e-10 else "推进中")),
+    }
+
+
 def _annual_goals_payload(allocation) -> list[dict]:
     """年度任务完成进度。金额类任务可通过 app_settings 或同名环境变量覆盖。"""
     _ensure_weekly_goal_reset()
@@ -256,6 +292,7 @@ def _annual_goals_payload(allocation) -> list[dict]:
             "completed_count": stock_completions,
             "status_label": f"第 {stock_completions + 1} 轮",
         },
+        _weekly_stock_goal(allocation),
         {
             "key": "cash_guard",
             "name": "现金安全垫",
