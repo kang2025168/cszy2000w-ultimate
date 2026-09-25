@@ -82,6 +82,8 @@ def _b_closed_trades(start: date | None) -> list[dict]:
             "return_pct": pnl / (entry_price * closed_qty) if entry_price > 0 else 0.0,
             "cost_effect": "PROFIT" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT",
             "exit_reason": "B 平仓成交",
+            "exit_order_id": row.get("order_id"),
+            "price_note": "首笔价格为历史持仓平均成本，可能包含多笔买入。",
         })
     return trades
 
@@ -91,7 +93,7 @@ def _d_closed_trades(start: date | None) -> list[dict]:
     args = () if start is None else (start,)
     rows = _safe_fetch(
         f"""
-        SELECT created_at,symbol,cycle_no,qty,price,message
+        SELECT created_at,symbol,cycle_no,qty,price,message,order_id
         FROM d_grid_events
         WHERE event_type='CYCLE_FILLED' {where}
         ORDER BY created_at DESC,id DESC
@@ -112,6 +114,8 @@ def _d_closed_trades(start: date | None) -> list[dict]:
             "return_pct": pnl / (entry_price * qty) if entry_price > 0 and qty > 0 else 0.0,
             "cost_effect": "PROFIT" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT",
             "exit_reason": f"D 循环 #{int(_number(row.get('cycle_no')))}",
+            "exit_order_id": row.get("order_id"),
+            "price_note": "首笔价格由循环成交收益反算；时间为系统记录时间。",
         })
     return trades
 
@@ -358,7 +362,7 @@ def performance_payload(period: str = "90d") -> dict:
     t_args = () if start is None else (start,)
     t_rows = _safe_fetch(
         f"""
-        SELECT strategy_group,symbol,direction,qty,entry_price,exit_price,
+        SELECT strategy_group,symbol,direction,entry_side,exit_side,started_at,exit_order_id,qty,entry_price,exit_price,
                realized_pnl,return_pct,cost_effect,exit_reason,completed_at
         FROM ac_t_cycle_results
         {t_where}

@@ -4054,15 +4054,40 @@
       const t = payload.ac_t || {}, tSummary = t.summary || [], tRows = t.rows || [];
       document.getElementById('tStatsMeta').textContent = `${tRows.length} 条真实闭环记录`;
       document.getElementById('tCycleStatsTable').innerHTML = `<thead><tr>${['策略','闭环次数','盈利','亏损','胜率','做低成本','做高成本','累计收益'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${tSummary.map(row => `<tr><td><span class="stats-strategy">${esc(row.strategy)}</span></td><td>${row.cycles||0}</td><td>${row.wins||0}</td><td>${row.losses||0}</td><td>${row.cycles ? pct(row.win_rate) : '--'}</td><td class="pos">${row.strategy === 'A' || row.strategy === 'C' ? row.lowered||0 : '--'}</td><td class="neg">${row.strategy === 'A' || row.strategy === 'C' ? row.raised||0 : '--'}</td><td class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</td></tr>`).join('')}</tbody>`;
-      document.getElementById('tCycleDetailTable').innerHTML = `<thead><tr>${['完成时间','策略','代码','方向','数量','第一腿','第二腿','收益','收益率','结果','原因'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${tRows.length ? tRows.map(row => {
+      document.getElementById('tCycleDetailTable').innerHTML = `<thead><tr>${['完成时间','策略','代码','方向','数量','第一腿','第二腿','收益','收益率','结果','原因','详情'].map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${tRows.length ? tRows.map((row, index) => {
         const group = String(row.strategy_group||'').toUpperCase();
         const lowered = String(row.cost_effect) === 'LOWERED';
         const direction = row.direction === 'BUY_THEN_SELL' ? '先买后卖' : row.direction === 'SELL_THEN_BUYBACK' ? '先卖后买回' : row.direction === 'GRID_CYCLE' ? '日内循环' : String(row.direction||'期权组合');
         const result = group === 'A' || group === 'C' ? (lowered ? '成本做低' : Number(row.realized_pnl||0) < 0 ? '成本做高' : '持平') : (Number(row.realized_pnl||0) > 0 ? '盈利' : Number(row.realized_pnl||0) < 0 ? '亏损' : '持平');
-        return `<tr><td>${esc(String(row.completed_at||'').slice(0,19))}</td><td>${esc(group)}</td><td><b>${esc(row.symbol)}</b></td><td>${esc(direction)}</td><td>${shareQty(row.qty)}</td><td>${money(row.entry_price)}</td><td>${money(row.exit_price)}</td><td class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</td><td class="${cls(row.return_pct)}">${pct(row.return_pct)}</td><td class="${cls(row.realized_pnl)}">${result}</td><td>${esc(row.exit_reason||'--')}</td></tr>`;
-      }).join('') : '<tr><td colspan="11" class="small-muted">策略完成一轮真实闭环后会自动记录在这里</td></tr>'}</tbody>`;
+        return `<tr class="cycle-click-row" onclick="toggleCycleDetails(${index})" style="cursor:pointer"><td>${esc(String(row.completed_at||'').slice(0,19))}</td><td>${esc(group)}</td><td><b>${esc(row.symbol)}</b></td><td>${esc(direction)}</td><td>${shareQty(row.qty)}</td><td>${money(row.entry_price)}</td><td>${money(row.exit_price)}</td><td class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</td><td class="${cls(row.return_pct)}">${pct(row.return_pct)}</td><td class="${cls(row.realized_pnl)}">${result}</td><td>${esc(row.exit_reason||'--')}</td><td><button id="cycleDetailButton-${index}" aria-expanded="false" aria-controls="cycleDetail-${index}" onclick="event.stopPropagation();toggleCycleDetails(${index})">查看详情</button></td></tr><tr id="cycleDetail-${index}" hidden><td colspan="12">${cycleTradeDetails(row)}</td></tr>`;
+      }).join('') : '<tr><td colspan="12" class="small-muted">策略完成一轮真实闭环后会自动记录在这里</td></tr>'}</tbody>`;
       document.getElementById('statsMethod').textContent = `统计口径：${payload.methodology || '--'} · 取消 ${x.canceled_orders||0} 笔 · 失败 ${x.failed_orders||0} 笔。`;
       requestAnimationFrame(() => drawPerformanceChart(e.points || []));
+    }
+    function cycleTradeDetails(row) {
+      const option = row.strategy_group === 'Q';
+      const firstSell = row.direction === 'SELL_THEN_BUYBACK';
+      const sideLabel = side => ({buy:'买入',sell:'卖出'})[String(side || '').toLowerCase()] || side;
+      const first = option ? '组合开仓' : sideLabel(row.entry_side) || (firstSell ? '卖出' : '买入');
+      const second = option ? '组合平仓' : sideLabel(row.exit_side) || (firstSell ? '买回' : '卖出');
+      const leg = (label,side,price,time,order) => `<tr><td>${label} · ${esc(side)}</td><td>${shareQty(row.qty)}</td><td>${money(price)}</td><td>${esc(time || '未记录')}</td><td style="overflow-wrap:anywhere">${esc(order || '未记录')}</td></tr>`;
+      return `<div style="padding:12px;background:#f8fbff;border:1px solid #d8e4f0;border-radius:8px;white-space:normal">
+        <b>${esc(row.strategy_group)} / ${esc(row.symbol)} · 买卖详情</b>
+        <table class="stats-table" style="margin-top:8px"><thead><tr><th>交易</th><th>${option ? '合约数' : '闭环数量'}</th><th>价格</th><th>系统记录时间</th><th>订单编号</th></tr></thead><tbody>
+        ${leg('第一笔',first,row.entry_price,row.started_at,row.entry_order_id)}
+        ${leg('第二笔',second,row.exit_price,row.completed_at,row.exit_order_id)}
+        </tbody></table>
+        <p>本轮收益：<strong class="${cls(row.realized_pnl)}">${money(row.realized_pnl)}</strong> · 收益率 ${pct(row.return_pct)} · 退出原因：${esc(row.exit_reason || '未记录')}</p>
+        <div class="small-muted">${esc(row.price_note || (option ? '价格为组合价格，不代表每条期权腿的成交明细。' : '按已保存的闭环记录展示，时间不等同于券商逐笔成交时间；未记录的信息不推算。'))}</div>
+      </div>`;
+    }
+    function toggleCycleDetails(index) {
+      const detail = document.getElementById('cycleDetail-' + index);
+      const button = document.getElementById('cycleDetailButton-' + index);
+      if (!detail || !button) return;
+      detail.hidden = !detail.hidden;
+      button.setAttribute('aria-expanded', String(!detail.hidden));
+      button.textContent = detail.hidden ? '查看详情' : '收起详情';
     }
     let dailyPnlRequest = 0;
     async function loadDailyPnl(day='') {
