@@ -83,10 +83,9 @@ B_TRAIL_LOCK_SL_MULT = float(os.getenv("B_TRAIL_LOCK_SL_MULT", "1.00"))
 B_INITIAL_STOP_GRACE_SECONDS = int(os.getenv("B_INITIAL_STOP_GRACE_SECONDS", "180"))
 B_CATASTROPHIC_STOP_LOSS_PCT = float(os.getenv("B_CATASTROPHIC_STOP_LOSS_PCT", "-0.08"))
 B_PEAK_GIVEBACK_RULES = (
-    (0.50, 0.10),
-    (0.30, 0.07),
-    (0.15, 0.05),
-    (0.08, 0.035),
+    (0.15, 0.04),
+    (0.10, 0.03),
+    (0.05, 0.02),
 )
 B_STAGE_SELL_RULES = (
     (1, 0.20, None, None, 0.20),

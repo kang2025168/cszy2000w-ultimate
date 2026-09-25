@@ -618,6 +618,25 @@ def _ensure_monster_watchlist_table(conn):
         cur.execute(sql)
 
 
+def _peak_giveback_trigger(cost: float, peak: float) -> float | None:
+    """Monotone protection across tiers, reconstructed from the stored peak.
+
+    Retain the preceding tier's boundary price when a new tier widens the
+    drawdown allowance. No extra state or reset is needed between holdings.
+    """
+    if cost <= 0 or peak <= 0:
+        return None
+    rules = sorted(B_PEAK_GIVEBACK_RULES)
+    protection = None
+    for i, (gain, pullback) in enumerate(rules):
+        if peak + 1e-9 < cost * (1 + gain):
+            break
+        tier_peak = min(peak, cost * (1 + rules[i + 1][0])) if i + 1 < len(rules) else peak
+        candidate = tier_peak * (1 - pullback)
+        protection = max(protection or 0, candidate)
+    return round(protection, 2) if protection is not None else None
+
+
 def _write_monster_watchlist(conn, code: str, reason: str, sell_price, row: dict):
     """
     把“B 策略最终清仓卖出”的股票放入妖股观察池。
@@ -641,7 +660,7 @@ def _write_monster_watchlist(conn, code: str, reason: str, sell_price, row: dict
 
         # 只把“曾经涨起来过”的 B 放进妖股观察池。
         # 如果买入后没涨过 3% 就止损，大概率只是买错，不值得让 F 二次追踪。
-        if peak_gain_pct < float(B_MONSTER_MIN_PEAK_GAIN_PCT):
+        if not str(reason or "").startswith("PEAK_GIVEBACK") and peak_gain_pct < float(B_MONSTER_MIN_PEAK_GAIN_PCT):
             print(
                 f"[B MONSTER] {code} skip watchlist: peak_gain={peak_gain_pct:.2%} "
                 f"< min={B_MONSTER_MIN_PEAK_GAIN_PCT:.2%} reason={reason}",
@@ -667,6 +686,8 @@ def _write_monster_watchlist(conn, code: str, reason: str, sell_price, row: dict
         )
         VALUES (%s, 'B', %s, %s, NOW(), %s, %s, 'WATCHING', NOW(), NULL, %s)
         ON DUPLICATE KEY UPDATE
+            watch_status='WATCHING',
+            watch_since=NOW(),
             source_reason=VALUES(source_reason),
             last_sell_price=VALUES(last_sell_price),
             last_sell_time=VALUES(last_sell_time),
@@ -3382,7 +3403,7 @@ def strategy_B_sell(code: str) -> bool:
     1) 不加仓 —— 初始仓位即最终仓位,简化心智
     2) Stage 仅作"分层落袋的触发器",不再控 SL
     3) 普通B给动量波动空间：初始 -5%，涨 5% 后抬到成本线
-    4) 涨 8% 后启用“最高价回撤保护”，防止利润大幅回吐
+    4) 涨 5% 后启用“最高价回撤保护”，防止利润大幅回吐
     5) 保留 Stage 分层止盈 / 闪崩 pending stop / 结构退出；不再限制买入当天卖出
 
     搭配建议：
@@ -3752,7 +3773,7 @@ def strategy_B_sell(code: str) -> bool:
         # 它不取消分层止盈；如果价格一路涨，不触发回撤，后面仍然会执行 Stage 分层卖出。
         giveback_pct = _giveback_pct_for_peak(peak_gain_pct)
         if giveback_pct is not None:
-            giveback_trigger = round(float(peak_price) * (1.0 - float(giveback_pct)), 2)
+            giveback_trigger = _peak_giveback_trigger(cost, peak_price)
             print(
                 f"[B SELL] {code} giveback watch: peak={peak_price:.2f} "
                 f"allow_pullback={giveback_pct:.2%} trigger={giveback_trigger:.2f}",
