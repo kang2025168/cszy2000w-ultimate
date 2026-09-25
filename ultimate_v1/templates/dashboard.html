@@ -1650,6 +1650,17 @@
           <button class="stats-period" data-stats-period="all" onclick="loadPerformance('all')">全部</button>
         </div>
       </div>
+      <div class="stats-card" style="margin-bottom:16px;padding:14px">
+        <div class="stats-card-head" style="gap:10px;flex-wrap:wrap">
+          <span class="stats-card-title">每日盈亏分析</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="dailyPnlDate" aria-label="盈亏分析日期" onchange="loadDailyPnl(this.value)"></select>
+            <button onclick="loadDailyPnl(document.getElementById('dailyPnlDate').value)">刷新报告</button>
+          </div>
+        </div>
+        <div class="small-muted" id="dailyPnlStatus" role="status">加载中</div>
+        <div id="dailyPnlContent"></div>
+      </div>
       <div class="stats-kpis" id="statsKpis"><div class="stats-kpi"><span class="stats-kpi-label">正在计算</span><b class="stats-kpi-value">--</b></div></div>
       <div class="stats-main-grid">
         <div class="stats-card">
@@ -2358,6 +2369,7 @@
     }
     function toggleStatsFocus() {
       setFocusMode('stats');
+      loadDailyPnl();
       if (manualQuoteInterval) {
         clearInterval(manualQuoteInterval);
         manualQuoteInterval = null;
@@ -4052,6 +4064,35 @@
       document.getElementById('statsMethod').textContent = `统计口径：${payload.methodology || '--'} · 取消 ${x.canceled_orders||0} 笔 · 失败 ${x.failed_orders||0} 笔。`;
       requestAnimationFrame(() => drawPerformanceChart(e.points || []));
     }
+    let dailyPnlRequest = 0;
+    async function loadDailyPnl(day='') {
+      const request = ++dailyPnlRequest;
+      const status = document.getElementById('dailyPnlStatus');
+      const content = document.getElementById('dailyPnlContent');
+      status.textContent = '正在读取保存的日报…';
+      content.innerHTML = '';
+      try {
+        const data = await api('/api/daily_pnl' + (day ? '?date=' + encodeURIComponent(day) : ''));
+        if (request !== dailyPnlRequest) return;
+        if (!data.ok) throw new Error(data.error || '读取失败');
+        const dates = [...new Set([data.today, data.date, ...data.dates])].sort().reverse();
+        document.getElementById('dailyPnlDate').innerHTML = dates.map(d => `<option value="${esc(d)}" ${d === data.date ? 'selected' : ''}>${esc(d)}${d === data.today ? '（今天）' : ''}</option>`).join('');
+        const r = data.report;
+        if (!r) { status.textContent = '该日暂无保存数据。部署后自动采集，美东 04:00–20:00 每5分钟更新；历史数据不倒推。'; return; }
+        status.textContent = `美东日期 ${r.date} · 数据截至 ${new Date(r.as_of).toLocaleString()}（本地时间） · 历史保留当日最后一次成功采集`;
+        content.innerHTML = `<div class="stats-kpis" style="margin-top:12px">
+          ${[['账户净值',r.equity],['净值变化（含资金变动）',r.equity_change],['股票当日估算合计',r.estimated_total]].map(([label,value]) => `<div class="stats-kpi"><span class="stats-kpi-label">${label}</span><b class="stats-kpi-value">${money(value)}</b></div>`).join('')}
+          </div>
+          <div class="stats-insights">${(r.notes || []).map(n => `<div class="stats-insight"><span>${esc(n)}</span></div>`).join('')}</div>
+          <div class="stats-table-wrap" style="max-height:320px;overflow:auto"><table class="stats-table"><thead><tr><th>股票</th><th>当前策略标签</th><th>当日盈亏估算</th><th>累计持仓浮盈亏</th><th>持股</th><th>市值／净值</th></tr></thead><tbody>
+          ${r.rows.map(x => `<tr><td>${esc(x.symbol)}</td><td>${esc(x.strategy_hint)}</td><td class="${cls(x.daily_pnl)}">${x.daily_pnl == null ? '待核对' : money(x.daily_pnl)}</td><td>${money(x.unrealized_pnl)}</td><td>${esc(x.qty)}</td><td>${x.equity_weight == null ? '--' : pct(x.equity_weight)}</td></tr>`).join('')}
+          </tbody></table></div>
+          <details style="margin-top:10px"><summary>当天实际成交（${r.fills.length} 笔成交记录）</summary><div class="stats-table-wrap" style="max-height:260px;overflow:auto"><table class="stats-table"><thead><tr><th>时间</th><th>股票</th><th>方向</th><th>股数／合约数</th><th>成交价</th></tr></thead><tbody>${r.fills.map(f => `<tr><td>${esc(f.transaction_time)}</td><td>${esc(f.symbol)}</td><td>${f.side === 'buy' ? '买' : '卖'}</td><td>${esc(f.qty)}</td><td>${money(f.price)}</td></tr>`).join('')}</tbody></table></div></details>
+          <div class="stats-method">${esc(r.methodology)}</div>`;
+      } catch (e) {
+        if (request === dailyPnlRequest) status.textContent = '日报读取失败：' + (e.message || e);
+      }
+    }
     async function loadPerformance(period='90d') {
       window.performancePeriod = period;
       document.querySelectorAll('[data-stats-period]').forEach(button => button.classList.toggle('active', button.dataset.statsPeriod === period));
@@ -5240,7 +5281,10 @@
         await Promise.all([loadStrategy2Config(), loadSchedules(), loadStrategyBConfig(), loadAccountConfig(), loadDGridConfig()]);
       }
       if (document.body.classList.contains('stock-focus')) await loadStockSelection();
-      if (document.body.classList.contains('stats-focus')) await loadPerformance(window.performancePeriod || '90d');
+      if (document.body.classList.contains('stats-focus')) {
+        await loadPerformance(window.performancePeriod || '90d');
+        await loadDailyPnl(document.getElementById('dailyPnlDate').value);
+      }
       if (document.body.classList.contains('log-focus')) {
         if (logView === 'trades') await loadTradeRecords();
         else await loadBotLogs();

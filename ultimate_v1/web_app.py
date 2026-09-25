@@ -2741,6 +2741,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_curve_payload(period))
             elif path == "/api/trade_records":
                 self._send_json(_trade_records_payload())
+            elif path == "/api/daily_pnl":
+                from .daily_pnl import report_payload
+                selected = parse_qs(parsed.query).get("date", [None])[0]
+                try:
+                    self._send_json(report_payload(selected))
+                except ValueError:
+                    self._send_json({"ok": False, "error": "日期格式应为 YYYY-MM-DD"})
             elif path == "/api/performance":
                 period = parse_qs(parsed.query).get("period", ["90d"])[0]
                 self._send_json(performance_payload(period))
@@ -2977,11 +2984,14 @@ def run() -> None:
     server = DashboardServer((s.web_host, s.web_port), Handler)
     server.snapshots = DashboardCache({"capital": _allocation_payload, "risk": _risk_payload, "holdings": _holdings_payload})
     server.snapshots.start()
+    from .daily_pnl import start_collector
+    daily_pnl_stop = start_collector()
     print(f"[WEB] http://127.0.0.1:{s.web_port}", flush=True)
     try:
         server.serve_forever()
     finally:
         stop_reconcile.set()
+        daily_pnl_stop.set()
         server.snapshots.close()
         server.server_close()
         shutdown_supervisor()
