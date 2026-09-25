@@ -40,7 +40,7 @@ from .performance_analytics import performance_payload
 from .rebalance_monthly import generate_rebalance_report
 from .risk_controller import CAPITAL_MODE_LABELS, get_risk_state
 from .schema import ensure_schema
-from .state_store import bot_controls, bot_heartbeats, capital_state_rows, equity_curve, get_app_setting, latest_risk_state, set_app_setting, write_risk_state
+from .state_store import bot_controls, bot_heartbeats, capital_state_rows, equity_curve, equity_curve_bounds, get_app_setting, latest_risk_state, set_app_setting, write_risk_state
 from .sync_positions import last_sync_error, sync_all_positions
 
 try:
@@ -205,9 +205,26 @@ def _reset_stock_growth(equity: float) -> None:
                 cur.execute("INSERT INTO app_settings (setting_key,setting_value,updated_at) VALUES (%s,%s,NOW()) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_at=NOW()", (key,value))
 
 
+def _weekly_stock_completions(profile: str, week: str, achieved: bool) -> tuple[int, bool]:
+    prefix = f"WEEKLY_STOCK_DONE:{profile}:"
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            if achieved:
+                cur.execute(
+                    "INSERT IGNORE INTO app_settings (setting_key,setting_value,updated_at) "
+                    "VALUES (%s,'1',NOW())", (prefix + week,),
+                )
+            cur.execute(
+                "SELECT setting_key FROM app_settings WHERE LEFT(setting_key,%s)=%s",
+                (len(prefix), prefix),
+            )
+            keys = {row['setting_key'] for row in cur.fetchall()}
+    return len(keys), prefix + week in keys
+
+
 def _weekly_stock_goal(allocation) -> dict:
-    today = _now_market_tz().date()
-    monday = today - timedelta(days=today.weekday())
+    period_start, period_end = equity_curve_bounds("week")
+    monday = period_end - timedelta(days=4)
     equity = _goal_account_equity(allocation, "B")
     profile = allocation.pool_brokers.get("B", "trading")
     key = f"WEEKLY_STOCK_BASE:{profile}:{monday.isoformat()}"
@@ -230,14 +247,17 @@ def _weekly_stock_goal(allocation) -> dict:
         set_app_setting(key, json.dumps(baseline))
     available = start > 0 and math.isfinite(equity) and equity > 0
     current = equity / start - 1 if available else None
-    period = f"{monday:%m/%d}–{monday + timedelta(days=6):%m/%d}"
+    completed_count, completed_this_week = _weekly_stock_completions(
+        profile, monday.isoformat(), available and current >= 0.05 - 1e-10,
+    )
+    period = f"{period_start:%m/%d}–{period_end:%m/%d}"
     return {
         "key": "weekly_stock", "name": "周收益目标", "unit": "percent",
-        "target": 0.05, "current": current,
-        "desc": f"{period} · 股票账户净值目标 5% · 不含 A，入出金会影响净值",
+        "target": 0.05, "current": current, "completed_count": completed_count,
+        "desc": f"{period} · 股票账户净值目标 5% · 已完成 {completed_count} 次 · 不含 A，入出金会影响净值",
         "status_label": ("等待账户数据" if not available else
                          ("从首次记录起 · " if baseline.get("partial") else "") +
-                         ("已达成" if current >= 0.05 - 1e-10 else "推进中")),
+                         ("本周已达成" if completed_this_week else "推进中")),
     }
 
 
@@ -278,6 +298,7 @@ def _annual_goals_payload(allocation) -> list[dict]:
     weekly_words_current = _setting_float("WEEKLY_WORDS_CURRENT", 0.0)
 
     return [
+        _weekly_stock_goal(allocation),
         {
             "key": "stock_growth",
             "name": "股票账户跃迁",
@@ -292,7 +313,6 @@ def _annual_goals_payload(allocation) -> list[dict]:
             "completed_count": stock_completions,
             "status_label": f"第 {stock_completions + 1} 轮",
         },
-        _weekly_stock_goal(allocation),
         {
             "key": "cash_guard",
             "name": "现金安全垫",
