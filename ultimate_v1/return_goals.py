@@ -14,7 +14,7 @@ def curve_return(rows):
 
 
 def settle_goals(period, curve, target):
-    prefix = f'RETURN_GOAL_V2:{period}:'
+    prefix = f'RETURN_GOAL_V3:{period}:'
     key = prefix + curve['start_date']
     record = dict(start=curve['start_date'], end=curve['end_date'], target=target, status='pending')
     with db_conn() as conn:
@@ -26,14 +26,12 @@ def settle_goals(period, curve, target):
             for row in records:
                 item = json.loads(row['setting_value'])
                 if item['status'] == 'pending' and item['end'] < date.today().isoformat():
-                    cur.execute("""SELECT equity,portfolio_value FROM account_equity_snapshots s
-                        WHERE broker_profile IN ('legacy','combined')
-                        AND DATE(created_at) BETWEEN %s AND %s
-                        AND created_at=(SELECT MAX(t.created_at) FROM account_equity_snapshots t
-                            WHERE t.broker_profile IN ('legacy','combined') AND DATE(t.created_at)=DATE(s.created_at))
-                        ORDER BY created_at,id""", (item['start'],item['end']))
-                    snapshots = cur.fetchall()
-                    result = curve_return(snapshots) if len(snapshots) >= 2 else None
+                    from .adjusted_returns import curve as adjusted_curve
+                    history = adjusted_curve(period, (date.fromisoformat(item['start']), date.fromisoformat(item['end'])), refresh=False)
+                    snapshots = history['rows']
+                    # Require a recent endpoint; stale data cannot settle a period.
+                    from datetime import timedelta
+                    result = history['return_fraction'] if len(snapshots) >= 2 and snapshots[-1]['created_at'].date() >= date.fromisoformat(item['end']) - timedelta(days=3) else None
                     # Missing history is not a trading failure; leave it pending.
                     if result is not None:
                         item.update(status='success' if result >= item['target']-1e-10 else 'failure', result=result)

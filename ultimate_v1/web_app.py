@@ -207,9 +207,10 @@ def _reset_stock_growth(equity: float) -> None:
 
 def _period_return_goal(period: str) -> dict:
     from .return_goals import curve_return, settle_goals
-    curve = equity_curve(period)
+    from .adjusted_returns import curve as adjusted_curve
+    curve = adjusted_curve(period)
     target = 0.05 if period == 'week' else 0.20
-    current = curve_return(curve.get('rows') or [])
+    current = curve.get('return_fraction')
     success, failure = settle_goals(period, curve, target)
     start = date.fromisoformat(curve['start_date'])
     end = date.fromisoformat(curve['end_date'])
@@ -218,8 +219,8 @@ def _period_return_goal(period: str) -> dict:
         'name': '周收益目标' if period == 'week' else '月度收益目标',
         'unit': 'percent', 'decimals': 2, 'target': target, 'current': current,
         'completed_count': success, 'failed_count': failure,
-        'desc': f'{start:%m/%d}–{end:%m/%d} · 含 A · 目标 {target:.0%} · 成功 {success} 次 / 失败 {failure} 次 · 入出金影响净值',
-        'status_label': '等待曲线数据' if current is None else '期末结算',
+        'desc': f'{start:%m/%d}–{end:%m/%d} · 含 A · 目标 {target:.0%} · 成功 {success} 次 / 失败 {failure} 次 · 已剔除入出金',
+        'status_label': curve.get('warning') or ('等待有效本金数据' if current is None else '期末结算'),
     }
 
 
@@ -1457,7 +1458,8 @@ def _exposure_payload() -> dict:
 
 def _curve_payload(period: str) -> dict:
     """读取账户收益曲线数据。"""
-    payload = equity_curve(period)
+    from .adjusted_returns import curve
+    payload = curve(period)
     payload["ok"] = True
     return payload
 
@@ -2971,6 +2973,8 @@ def run() -> None:
     server.snapshots.start()
     from .daily_pnl import start_collector
     daily_pnl_stop = start_collector()
+    from .adjusted_returns import start_collector as start_return_collector
+    start_return_collector()
     print(f"[WEB] http://127.0.0.1:{s.web_port}", flush=True)
     try:
         server.serve_forever()

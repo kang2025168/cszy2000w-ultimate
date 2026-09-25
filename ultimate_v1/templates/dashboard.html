@@ -3845,18 +3845,22 @@
         return {
         d: parseDateOnly(rawDate),
         t: String(rawDate || ''),
-        y: equity
+        y: curve.adjusted ? equity - (Number(r.net_flow || 0) - Number(rows[0].net_flow || 0)) : equity
         };
-        }).filter(p => p.d && p.y > 0);
+        }).filter(p => p.d && Number.isFinite(p.y));
         
         if (points.length === 0) {
         ctx.fillStyle = '#667085';
         ctx.font = '14px system-ui';
         ctx.textAlign = 'center';
-        ctx.fillText('暂无收益曲线数据，等待 dashboard_bot 记录账户快照', w / 2, h / 2);
+        ctx.fillText('暂无收益曲线数据，等待账户及入出金同步', w / 2, h / 2);
         return;
         }
         
+        if (curve.warning) {
+          ctx.fillStyle = '#b45309'; ctx.font = '11px system-ui';
+          ctx.fillText(curve.warning, padLeft, 38);
+        }
         const startDate = points[0].d;
         const endDate = points[points.length - 1].d;
         const totalDays = Math.max(1, dayDiff(startDate, endDate));
@@ -3898,9 +3902,9 @@
         });
         
         const first = points[0].y;
-        const last = points[points.length - 1].y;
-        const diff = last - first;
-        const diffPct = first > 0 ? diff / first * 100 : 0;
+        const last = curve.adjusted ? Number(rows[rows.length-1].equity) : points[points.length - 1].y;
+        const diff = curve.adjusted ? Number(curve.profit || 0) : last - first;
+        const diffPct = curve.adjusted ? (curve.return_fraction == null ? null : Number(curve.return_fraction) * 100) : (first > 0 ? diff / first * 100 : 0);
         
         ctx.strokeStyle = diff >= 0 ? '#15936a' : '#c62828';
         ctx.lineWidth = 3;
@@ -3913,7 +3917,7 @@
         
         const sign = diff >= 0 ? '+' : '';
         ctx.fillText(
-        `${money(last)}  ${sign}${money(diff)} (${sign}${diffPct.toFixed(2)}%)`,
+        `${money(last)}  ${sign}${money(diff)} (${diffPct == null ? '--' : sign + diffPct.toFixed(2)}%)`,
         padLeft,
         24
         );
@@ -3950,8 +3954,9 @@
       if (!source.length) { el.textContent = '今日收益 --'; el.className = 'today-pnl'; return; }
       const first = Number(source[0].equity || source[0].portfolio_value || 0);
       const last = Number(source[source.length-1].equity || source[source.length-1].portfolio_value || 0);
-      const diff = last - first;
-      const diffPct = first > 0 ? diff / first * 100 : 0;
+      const basis = first + (curve.adjusted ? Number(source[source.length-1].net_flow || 0) - Number(source[0].net_flow || 0) : 0);
+      const diff = last - basis;
+      const diffPct = basis > 0 ? diff / basis * 100 : 0;
       el.textContent = `今日收益 ${diff >= 0 ? '+' : ''}${money(diff)} (${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%)`;
       el.className = `today-pnl ${diff < 0 ? 'neg' : 'pos'}`;
     }
