@@ -1989,7 +1989,7 @@
     }
     function metric(label, value) { return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`; }
     function goalValue(goal, value) {
-      if (goal.unit === 'percent') return `${(Number(value || 0) * 100).toFixed(1)}%`;
+      if (goal.unit === 'percent') return `${(Number(value || 0) * 100).toFixed(goal.decimals ?? 1)}%`;
       if (goal.unit === 'count') return `${Number(value || 0).toFixed(0)}${goal.suffix || ''}`;
       return money(value);
     }

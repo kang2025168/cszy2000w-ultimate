@@ -1,62 +1,34 @@
 import unittest
-from datetime import date
-from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from ultimate_v1 import web_app as web
+from ultimate_v1 import return_goals as goals
 
+class ReturnGoalTests(unittest.TestCase):
+    def test_week_and_month_use_curve_and_distinct_targets(self):
+        curve={'start_date':'2026-09-01','end_date':'2026-09-30','rows':[{'equity':1000},{'equity':1200}]}
+        with patch.object(web,'equity_curve',return_value=curve), patch.object(goals,'settle_goals',return_value=(2,1)) as settle:
+            for period,target in [('week',.05),('month',.20)]:
+                result=web._period_return_goal(period)
+                self.assertEqual(result['target'],target)
+                self.assertEqual(result['current'],.20)
+                self.assertEqual(result['failed_count'],1)
+                self.assertNotIn('step',result)
+                settle.assert_called_with(period,curve,target)
 
-class WeeklyStockGoalTests(unittest.TestCase):
-    def test_baseline_persists_and_new_week_rolls_over(self):
-        settings = {}
-        allocation = SimpleNamespace(pool_brokers={'B': 'trading'}, broker_snapshots={
-            'trading': {'equity': 1050}, 'retirement': {'equity': 90000}})
-        with patch.object(web, 'equity_curve_bounds', return_value=(date(2026,9,18),date(2026,9,25))) as now, \
-             patch.object(web, '_weekly_stock_completions', return_value=(1,True)), \
-             patch.object(web, 'get_app_setting', side_effect=lambda k,d: settings.get(k,d)), \
-             patch.object(web, 'set_app_setting', side_effect=lambda k,v: settings.update({k:v})), \
-             patch.object(web, 'fetch_all', return_value=[{'equity':1000}]) as fetch:
-            goal = web._weekly_stock_goal(allocation)
-            self.assertAlmostEqual(goal['current'], .05)
-            self.assertIn('09/18–09/25', goal['desc'])
-            self.assertEqual(goal['completed_count'], 1)
-            self.assertEqual(goal['status_label'], '本周已达成')
-            web._weekly_stock_goal(allocation)
-            self.assertEqual(fetch.call_count, 1)
-            self.assertEqual(fetch.call_args.args[1][0], 'trading')
-            now.return_value = (date(2026,9,25),date(2026,10,2))
-            web._weekly_stock_goal(allocation)
-            self.assertEqual(fetch.call_count, 2)
-            self.assertEqual(len(settings), 2)
-
-    def test_missing_history_and_missing_account_are_explicit(self):
-        allocation = SimpleNamespace(pool_brokers={}, broker_snapshots={'trading': {'equity':1000}})
-        with patch.object(web, '_weekly_stock_completions', return_value=(0,False)), \
-             patch.object(web, 'get_app_setting', return_value=''), \
-             patch.object(web, 'set_app_setting') as save, \
-             patch.object(web, 'fetch_all', return_value=[]):
-            goal = web._weekly_stock_goal(allocation)
-            self.assertEqual(goal['current'], 0)
-            self.assertIn('首次记录', goal['status_label'])
-            allocation.broker_snapshots = {}
-            goal = web._weekly_stock_goal(allocation)
-            self.assertIsNone(goal['current'])
-            self.assertEqual(save.call_count, 1)
-
-    def test_completion_is_saved_once_per_week_and_survives_pullback(self):
-        from unittest.mock import MagicMock
-        keys = set()
-        cursor = MagicMock()
-        def execute(sql, args):
-            if sql.startswith('INSERT IGNORE'):
-                keys.add(args[0])
-        cursor.execute.side_effect = execute
-        cursor.fetchall.side_effect = lambda: [{'setting_key': k} for k in keys]
-        connection = MagicMock()
-        connection.cursor.return_value.__enter__.return_value = cursor
-        with patch.object(web, 'db_conn') as db:
-            db.return_value.__enter__.return_value = connection
-            self.assertEqual(web._weekly_stock_completions('trading', '2026-09-21', True), (1, True))
-            self.assertEqual(web._weekly_stock_completions('trading', '2026-09-21', True), (1, True))
-            self.assertEqual(web._weekly_stock_completions('trading', '2026-09-21', False), (1, True))
-            self.assertEqual(web._weekly_stock_completions('trading', '2026-09-28', False), (1, False))
-            self.assertEqual(web._weekly_stock_completions('trading', '2026-09-28', True), (2, True))
+    def test_settles_success_failure_once_and_leaves_active_pending(self):
+        import json
+        cursor=MagicMock()
+        records=[{'setting_key':str(i),'setting_value':json.dumps(dict(start='2020-01-01',end=end,target=.05,status='pending'))}
+                 for i,end in enumerate(['2020-01-31','2020-02-29','2099-01-01'])]
+        cursor.fetchall.side_effect=[records,[{'equity':100},{'equity':106}],[{'equity':100},{'equity':101}]]
+        with patch.object(goals,'db_conn') as db:
+            db.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value=cursor
+            self.assertEqual(goals.settle_goals('month',{'start_date':'2099-01-01','end_date':'2099-01-31'},.2),(1,1))
+            updates=[c for c in cursor.execute.call_args_list if c.args[0].startswith('UPDATE')]
+            self.assertEqual(len(updates),2)
+            for c in updates:
+                records[int(c.args[1][1])]['setting_value']=c.args[1][0]
+            cursor.fetchall.side_effect=[records]
+            cursor.execute.reset_mock()
+            self.assertEqual(goals.settle_goals('month',{'start_date':'2099-01-01','end_date':'2099-01-31'},.2),(1,1))
+            self.assertFalse(any(c.args[0].startswith('UPDATE') for c in cursor.execute.call_args_list))

@@ -205,60 +205,26 @@ def _reset_stock_growth(equity: float) -> None:
                 cur.execute("INSERT INTO app_settings (setting_key,setting_value,updated_at) VALUES (%s,%s,NOW()) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_at=NOW()", (key,value))
 
 
-def _weekly_stock_completions(profile: str, week: str, achieved: bool) -> tuple[int, bool]:
-    prefix = f"WEEKLY_STOCK_DONE:{profile}:"
-    with db_conn() as conn:
-        with conn.cursor() as cur:
-            if achieved:
-                cur.execute(
-                    "INSERT IGNORE INTO app_settings (setting_key,setting_value,updated_at) "
-                    "VALUES (%s,'1',NOW())", (prefix + week,),
-                )
-            cur.execute(
-                "SELECT setting_key FROM app_settings WHERE LEFT(setting_key,%s)=%s",
-                (len(prefix), prefix),
-            )
-            keys = {row['setting_key'] for row in cur.fetchall()}
-    return len(keys), prefix + week in keys
+def _period_return_goal(period: str) -> dict:
+    from .return_goals import curve_return, settle_goals
+    curve = equity_curve(period)
+    target = 0.05 if period == 'week' else 0.20
+    current = curve_return(curve.get('rows') or [])
+    success, failure = settle_goals(period, curve, target)
+    start = date.fromisoformat(curve['start_date'])
+    end = date.fromisoformat(curve['end_date'])
+    return {
+        'key': 'weekly_stock' if period == 'week' else 'stock_growth',
+        'name': '周收益目标' if period == 'week' else '月度收益目标',
+        'unit': 'percent', 'decimals': 2, 'target': target, 'current': current,
+        'completed_count': success, 'failed_count': failure,
+        'desc': f'{start:%m/%d}–{end:%m/%d} · 含 A · 目标 {target:.0%} · 成功 {success} 次 / 失败 {failure} 次 · 入出金影响净值',
+        'status_label': '等待曲线数据' if current is None else '期末结算',
+    }
 
 
 def _weekly_stock_goal(allocation) -> dict:
-    period_start, period_end = equity_curve_bounds("week")
-    monday = period_end - timedelta(days=4)
-    equity = _goal_account_equity(allocation, "B")
-    profile = allocation.pool_brokers.get("B", "trading")
-    key = f"WEEKLY_STOCK_BASE:{profile}:{monday.isoformat()}"
-    raw = get_app_setting(key, "")
-    try:
-        baseline = json.loads(raw) if raw else {}
-    except (ValueError, TypeError):
-        baseline = {}
-    start = float(baseline.get("equity") or 0)
-    if start <= 0 and math.isfinite(equity) and equity > 0:
-        # Snapshots use the same database dates as the existing equity curve.
-        rows = fetch_all(
-            "SELECT equity FROM account_equity_snapshots "
-            "WHERE broker_profile=%s AND created_at >= %s AND created_at < %s "
-            "AND equity > 0 ORDER BY created_at DESC,id DESC LIMIT 1",
-            (profile, monday - timedelta(days=7), monday),
-        )
-        start = float(rows[0]["equity"]) if rows else equity
-        baseline = {"equity": start, "partial": not bool(rows)}
-        set_app_setting(key, json.dumps(baseline))
-    available = start > 0 and math.isfinite(equity) and equity > 0
-    current = equity / start - 1 if available else None
-    completed_count, completed_this_week = _weekly_stock_completions(
-        profile, monday.isoformat(), available and current >= 0.05 - 1e-10,
-    )
-    period = f"{period_start:%m/%d}–{period_end:%m/%d}"
-    return {
-        "key": "weekly_stock", "name": "周收益目标", "unit": "percent",
-        "target": 0.05, "current": current, "completed_count": completed_count,
-        "desc": f"{period} · 股票账户净值目标 5% · 已完成 {completed_count} 次 · 不含 A，入出金会影响净值",
-        "status_label": ("等待账户数据" if not available else
-                         ("从首次记录起 · " if baseline.get("partial") else "") +
-                         ("本周已达成" if completed_this_week else "推进中")),
-    }
+    return _period_return_goal('week')
 
 
 def _annual_goals_payload(allocation) -> list[dict]:
@@ -271,27 +237,6 @@ def _annual_goals_payload(allocation) -> list[dict]:
     cash_target = _setting_float("ANNUAL_CASH_MIN_TARGET", 12500.0)
     cash_current = _setting_float("ANNUAL_CASH_CURRENT", 0.0)
 
-    return_target = _setting_float("ANNUAL_STOCK_RETURN_TARGET", 0.30)
-    start_equity = _setting_float("ANNUAL_STOCK_START_EQUITY", 0.0)
-    equity = _goal_account_equity(allocation, "B")
-    # One-time reset requested when switching from combined equity to the stock account.
-    if equity > 0 and get_app_setting('ANNUAL_STOCK_BASIS', '') != 'trading-v2':
-        _reset_stock_growth(equity)
-        start_equity = equity
-    if start_equity <= 0 and equity > 0:
-        start_equity = equity
-        set_app_setting("ANNUAL_STOCK_START_EQUITY", f"{start_equity:.2f}")
-    return_current = ((equity - start_equity) / start_equity) if start_equity > 0 else 0.0
-    stock_completions = int(_setting_float("ANNUAL_STOCK_COMPLETIONS", 0.0))
-    if return_target > 0 and return_current >= return_target and equity > 0 and start_equity > 0:
-        stock_completions += 1
-        set_app_setting("ANNUAL_STOCK_COMPLETIONS", str(stock_completions))
-        set_app_setting("ANNUAL_STOCK_LAST_COMPLETED_AT", _now_market_tz().date().isoformat())
-        set_app_setting("ANNUAL_STOCK_LAST_COMPLETED_EQUITY", f"{equity:.2f}")
-        set_app_setting("ANNUAL_STOCK_START_EQUITY", f"{equity:.2f}")
-        start_equity = equity
-        return_current = 0.0
-
     weekly_fitness_target = _setting_float("WEEKLY_FITNESS_TARGET", 4.0)
     weekly_fitness_current = _setting_float("WEEKLY_FITNESS_CURRENT", 0.0)
     weekly_words_target = _setting_float("WEEKLY_WORDS_TARGET", 50.0)
@@ -299,20 +244,7 @@ def _annual_goals_payload(allocation) -> list[dict]:
 
     return [
         _weekly_stock_goal(allocation),
-        {
-            "key": "stock_growth",
-            "name": "股票账户跃迁",
-            "desc": f"股票账户净值目标 {return_target:.0%} · 已完成 {stock_completions} 次",
-            "step": 1,
-            "action_label": "重置",
-            "current": return_current,
-            "target": return_target,
-            "unit": "percent",
-            "start_equity": start_equity,
-            "equity": equity,
-            "completed_count": stock_completions,
-            "status_label": f"第 {stock_completions + 1} 轮",
-        },
+        _period_return_goal('month'),
         {
             "key": "cash_guard",
             "name": "现金安全垫",
@@ -361,12 +293,8 @@ def _advance_annual_goal(goal_key: str) -> dict:
     _ensure_weekly_goal_reset()
 
     if goal_key == 'stock_growth':
-        from .alpaca_gateway import get_account_snapshot
-        snap = get_account_snapshot(profile='trading')
-        if snap is None or float(snap.equity or 0) <= 0:
-            return {'ok':False,'error':'股票账户净资产不可用，未重置'}
-        _reset_stock_growth(float(snap.equity))
-        return {'ok':True,'message':'已从当前股票账户净资产重新计起，完成次数已清零'}
+        return {'ok': False, 'error': '月度收益目标按月自动结算，不支持手动重置'}
+
     specs = {
         "cash_guard": ("ANNUAL_CASH_CURRENT", "ANNUAL_CASH_MIN_TARGET", 500.0),
         "fitness": ("WEEKLY_FITNESS_CURRENT", "WEEKLY_FITNESS_TARGET", 1.0),
