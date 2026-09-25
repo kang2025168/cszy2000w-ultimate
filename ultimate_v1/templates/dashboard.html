@@ -4641,6 +4641,7 @@
           <div class="b-config-list">
             ${bConfigRow('卖出订单', '实时价限价卖出，不走市价', 'good')}
             ${bConfigRow('初始止损', bCfgPct(sell.initial_stop_pct), 'warn')}
+            ${bConfigRow('提前锁盈', `涨幅 > ${bCfgPct(sell.early_lock_start_pct ?? 0.03)}，止损抬到成本 ${bCfgPct(sell.early_lock_profit_pct ?? 0.01)}`, 'good')}
             ${bConfigRow('锁盈启动', `${bCfgPct(sell.trail_lock_start_pct)} 后止损抬到 ${bCfgPct(sell.trail_lock_profit_pct)}`, 'good')}
             ${bConfigRow('买入后宽限', `${Number(sell.initial_stop_grace_seconds || 0)} 秒`)}
             ${bConfigRow('灾难止损', bCfgPct(sell.catastrophic_stop_loss_pct), 'warn')}

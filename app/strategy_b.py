@@ -134,6 +134,8 @@ def get_strategy_b_runtime_config() -> dict:
         "sell": {
             "order_type": "limit_at_realtime_price",
             "initial_stop_pct": B_INITIAL_STOP_MULT - 1.0,
+            "early_lock_start_pct": 0.03,
+            "early_lock_profit_pct": 0.01,
             "trail_lock_start_pct": B_TRAIL_LOCK_START_PCT,
             "trail_lock_profit_pct": B_TRAIL_LOCK_SL_MULT - 1.0,
             "initial_stop_grace_seconds": B_INITIAL_STOP_GRACE_SECONDS,
@@ -3059,7 +3061,7 @@ def strategy_B_buy(code: str) -> bool:
 #                     print(f"[B SELL] {code} init_sl write failed: {e}", flush=True)
 #
 #         if price > cost:
-#             dyn_sl = _calc_dynamic_trail_sl(cost, price, sl)
+#             dyn_sl = _calc_dynamic_trail_sl(cost, max(price, peak_price), sl)
 #             if dyn_sl > sl + 0.01:
 #                 old_sl = sl
 #                 sl = dyn_sl
@@ -3573,7 +3575,7 @@ def strategy_B_sell(code: str) -> bool:
         """
         普通B动态止损：
           1) 初始 SL = cost*0.95，由买入落库；这里兜底补齐。
-          2) 当前涨幅 >= 5% 后，SL 抬到 cost*1.00，保护本金。
+          2) 涨幅严格超过 3% 后，SL 至少为 cost*1.01；已有止损不下调。
           3) 更高涨幅不在这里继续抬 SL，交给“最高价回撤保护”处理。
         """
         cost_ = _safe_float(cost_, 0.0)
@@ -3585,6 +3587,10 @@ def strategy_B_sell(code: str) -> bool:
 
         up_pct_ = (price_ - cost_) / cost_
         new_sl = sl_old_
+
+        # Early profit lock: strictly above +3%, protect +1% of entry cost.
+        if price_ > cost_ * 1.03:
+            new_sl = max(new_sl, cost_ * 1.01)
 
         if up_pct_ >= TRAIL_LOCK_START_PCT:
             new_sl = max(new_sl, cost_ * TRAIL_LOCK_SL_MULT)
