@@ -55,3 +55,21 @@ class DailyPnlTests(unittest.TestCase):
     def test_invalid_date_rejected(self):
         with self.assertRaises(ValueError):
             d.report_payload('2026-09-24 OR 1=1')
+
+    def test_collect_includes_a_and_deduplicates_account_ids(self):
+        from types import SimpleNamespace
+        trading=SimpleNamespace(get_account=lambda:SimpleNamespace(id='trading-id'))
+        retirement=SimpleNamespace(get_account=lambda:SimpleNamespace(id='a-id'))
+        def report(now,profile,client,account,groups):
+            equity=100 if profile=='retirement' else 3000
+            return dict(equity=equity,previous_equity=equity-1,rows=[dict(symbol='SAME',qty=1,market_value=50,daily_pnl=1,account_profile=profile)],fills=[],notes=[],estimated_total=1,equity_change=1)
+        with patch('ultimate_v1.account_config.profile_for_pool',side_effect=lambda g:'retirement' if g=='A' else 'trading'), patch('ultimate_v1.alpaca_gateway.trading_client',side_effect=lambda profile:retirement if profile=='retirement' else trading), patch.object(d,'_collect_profile',side_effect=report) as collect:
+            result=d.collect_report()
+        self.assertEqual(result['equity'],3100)
+        self.assertEqual(len(result['rows']),2)
+        self.assertEqual(collect.call_count,2)
+        self.assertEqual(result['equity_change'],2)
+        self.assertAlmostEqual(result['rows'][0]['equity_weight'],50/3100)
+        with patch('ultimate_v1.account_config.profile_for_pool',side_effect=lambda g:g), patch('ultimate_v1.alpaca_gateway.trading_client',return_value=trading), patch.object(d,'_collect_profile',side_effect=report) as collect:
+            d.collect_report()
+        self.assertEqual(collect.call_count,1)

@@ -62,14 +62,14 @@ def attribute(positions, fills, closes):
     return sorted(rows.values(), key=lambda r: (r['daily_pnl'] is None, r['daily_pnl'] or 0))
 
 
-def collect_report(now=None):
+def _collect_profile(now=None, profile="trading", client=None, account=None, allowed_groups=None):
     from .alpaca_gateway import trading_client, stock_data_client
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
     now = now or datetime.now(NY)
     day = now.date().isoformat()
-    client = trading_client(profile='trading')
-    account = client.get_account()
+    client = client or trading_client(profile=profile)
+    account = account or client.get_account()
     positions = [{k: str(getattr(p, k)) for k in
                   ('symbol', 'qty', 'market_value', 'unrealized_pl', 'current_price')}
                  for p in client.get_all_positions()]
@@ -99,7 +99,7 @@ def collect_report(now=None):
     if symbols:
         try:
             midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            bars = stock_data_client(profile='trading').get_stock_bars(StockBarsRequest(
+            bars = stock_data_client(profile=profile).get_stock_bars(StockBarsRequest(
                 symbol_or_symbols=symbols, timeframe=TimeFrame.Day,
                 start=midnight - timedelta(days=10), end=midnight - timedelta(microseconds=1), feed='iex'))
             for symbol, values in bars.data.items():
@@ -111,12 +111,15 @@ def collect_report(now=None):
     rows = attribute(positions, fills, closes)
     ops = fetch_all('''SELECT stock_code,stock_type,cost_price,b_peak_price
                        FROM stock_operations WHERE is_bought=1''')
+    if allowed_groups is not None:
+        ops = [op for op in ops if op['stock_type'] in allowed_groups]
     groups = {}
     for op in ops:
         groups.setdefault(op['stock_code'], set()).add(op['stock_type'])
     equity, previous = float(account.equity), float(account.last_equity)
     for row in rows:
-        row['strategy_hint'] = '/'.join(sorted(groups.get(row['symbol'], []))) or '未归类'
+        row['strategy_hint'] = 'A' if allowed_groups == {'A'} else '/'.join(sorted(groups.get(row['symbol'], []))) or '未归类'
+        row['account_profile'] = profile
         row['equity_weight'] = abs(row['market_value']) / equity if equity > 0 else None
     if rows:
         known = [r for r in rows if r['daily_pnl'] is not None]
@@ -143,6 +146,40 @@ def collect_report(now=None):
             'rows': rows, 'fills': fills, 'notes': notes,
             'estimated_total': round(sum(r['daily_pnl'] or 0 for r in rows), 2),
             'methodology': '保证金交易账户（B/C/D/F及期权），不含A养老金。净值变化未剔除出入金；逐股当日盈亏按IEX昨收、当前持仓和券商实际成交估算，非已实现盈亏。期权不套用股票计算，缺失项显示待核对。累计浮盈亏单列；策略归属仅为当前数据库标签，同名跨策略可能不准确。行情口径、费用及资金变动会造成与净值变化的差额。'}
+
+
+def collect_report(now=None):
+    from .account_config import profile_for_pool
+    from .alpaca_gateway import trading_client
+    now = now or datetime.now(NY)
+    profiles = {}
+    for group in ('A','B','C','D','F'):
+        profiles.setdefault(profile_for_pool(group), set()).add(group)
+    accounts = {}
+    for profile, groups in profiles.items():
+        client = trading_client(profile=profile)
+        account = client.get_account()
+        identity = str(account.id)
+        if identity in accounts:
+            accounts[identity]['groups'].update(groups)
+        else:
+            accounts[identity] = dict(profile=profile,groups=set(groups),client=client,account=account)
+    reports = [_collect_profile(now, x['profile'],x['client'],x['account'],x['groups']) for x in accounts.values()]
+    if not reports:
+        raise ValueError('No account reports')
+    equity = sum(r['equity'] for r in reports)
+    previous = sum(r['previous_equity'] for r in reports)
+    rows = [row for r in reports for row in r['rows']]
+    for row in rows:
+        row['equity_weight'] = abs(row['market_value']) / equity if equity > 0 else None
+    return dict(date=now.date().isoformat(),as_of=now.isoformat(),equity=equity,
+                previous_equity=previous,equity_change=round(equity-previous,2),
+                rows=sorted(rows,key=lambda r:(r['daily_pnl'] is None,r['daily_pnl'] or 0)),
+                fills=[dict(f,account_profile=x['profile']) for x,r in zip(accounts.values(),reports) for f in r['fills']],
+                accounts=[dict(profile=x['profile'],groups=sorted(x['groups']),equity=r['equity'],equity_change=r['equity_change']) for x,r in zip(accounts.values(),reports)],
+                notes=[x['profile']+'：'+n for x,r in zip(accounts.values(),reports) for n in r['notes'] if not n.startswith('仓位集中')],
+                estimated_total=round(sum(r['estimated_total'] for r in reports),2),
+                methodology='账户合计包含 A 养老金，按券商账户去重；同名股票按账户分开。净值变化含入出金；股票当日估算按昨收、持仓和实际成交计算，非已实现收益。期权、缺行情项待核对，估算合计仅包含可估值股票；未扣费用。旧日报保留原采集口径。')
 
 
 def save_report(report):
