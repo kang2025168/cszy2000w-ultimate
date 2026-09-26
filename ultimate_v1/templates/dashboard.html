@@ -568,6 +568,8 @@
     .manual-buy-entry.open { display:grid; }
     .manual-buy-top { display:flex; align-items:center; justify-content:space-between; gap:12px; }
     .manual-buy-copy { min-width:0; display:grid; gap:3px; }
+    .option-view-tabs { display:flex; gap:6px; align-items:center; }
+    .option-view-tabs[hidden], #optionHistoryPanel[hidden] { display:none !important; }
     .manual-buy-title { color:var(--ink); font-size:15px; font-weight:950; }
     .manual-trade-panel[hidden] { display:none !important; }
     .manual-buy-form { display:grid; gap:10px; }
@@ -1288,7 +1290,11 @@
       <div class="manual-buy-entry open" id="manualBuyEntry">
         <div class="manual-buy-top">
           <div class="manual-buy-copy">
-            <div class="manual-buy-title">交易</div>
+            <div class="manual-buy-title" id="manualTradingTitle">交易</div>
+            <div class="option-view-tabs" id="optionViewTabs" role="tablist" aria-label="期权交易页面" hidden>
+              <button class="trade-subtab active" id="optionTradingTab" role="tab" aria-selected="true" aria-controls="dOptionPanel" onclick="setOptionView(false)">交易</button>
+              <button class="trade-subtab" id="optionHistoryTab" role="tab" aria-selected="false" aria-controls="optionHistoryPanel" onclick="setOptionView(true)">交易记录</button>
+            </div>
           </div>
           <div class="trade-subtabs">
             <button class="trade-subtab active" id="manualStockTradeTab" onclick="setManualTradeTab('stock')">股票交易</button>
@@ -1443,10 +1449,6 @@
           </div>
         </div>
         <div class="manual-trade-panel" id="manualOptionPanel" hidden>
-          <div class="trade-subtabs" style="margin-bottom:12px">
-            <button class="trade-subtab active" id="optionTradingTab" onclick="setOptionView(false)">交易</button>
-            <button class="trade-subtab" id="optionHistoryTab" onclick="setOptionView(true)">收益记录</button>
-          </div>
           <div id="optionHistoryPanel" hidden>
             <p class="small-muted">模拟与实际成交分别标记。每5分钟记录平仓报价估值，收益未扣费用；采集时间不代表报价时间。到期需核对结算。</p>
             <button onclick="loadOptionHistory()">刷新记录</button>
@@ -4387,6 +4389,8 @@
     let optionHistoryVisible = false;
     function setOptionView(history) {
       optionHistoryVisible = history;
+      document.getElementById('optionTradingTab').setAttribute('aria-selected', String(!history));
+      document.getElementById('optionHistoryTab').setAttribute('aria-selected', String(history));
       document.getElementById('optionHistoryPanel').hidden = !history;
       document.getElementById('dOptionPanel').hidden = history;
       document.getElementById('optionTradingTab').classList.toggle('active', !history);
@@ -4562,6 +4566,8 @@
     }
     function renderManualTradeTabs() {
       const stock = manualTradeTab !== 'option';
+      document.getElementById('optionViewTabs').hidden = stock;
+      document.getElementById('manualTradingTitle').hidden = !stock;
       document.getElementById('manualStockPanel')?.toggleAttribute('hidden', !stock);
       document.getElementById('manualOptionPanel')?.toggleAttribute('hidden', stock);
       document.getElementById('manualStockTradeTab')?.classList.toggle('active', stock);
