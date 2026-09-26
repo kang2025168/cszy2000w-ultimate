@@ -576,6 +576,17 @@
     .manual-buy-entry.open { display:grid; }
     .manual-buy-top { display:flex; align-items:center; justify-content:space-between; gap:12px; }
     .manual-buy-copy { min-width:0; display:grid; gap:3px; }
+    .option-history-filters { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
+    .option-history-layout { display:grid; grid-template-columns:minmax(230px, 310px) minmax(0,1fr); gap:14px; align-items:start; }
+    .option-history-list { max-height:460px; overflow:auto; display:grid; gap:6px; align-content:start; }
+    .option-history-item { display:grid; gap:6px; width:100%; padding:12px; text-align:left; background:#fff; color:var(--ink); border:1px solid #dce5ef; border-radius:8px; cursor:pointer; }
+    .option-history-item.active { border-color:var(--blue); background:#eff6ff; box-shadow:inset 3px 0 var(--blue); }
+    .option-history-item > span:last-child { display:flex; justify-content:space-between; gap:8px; }
+    .option-history-item small { color:var(--muted); font-size:11px; }
+    .option-history-detail { padding:16px; border:1px solid #dce5ef; border-radius:10px; background:#fff; color:var(--ink); font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+    .option-history-detail p { margin:8px 0; }
+    .option-history-detail svg { display:block; height:170px; margin-top:10px; }
+    @media(max-width:760px) { .option-history-layout { grid-template-columns:1fr; } .option-history-list { max-height:210px; } }
     .option-view-tabs { display:flex; gap:6px; align-items:center; }
     .option-view-tabs[hidden], #optionHistoryPanel[hidden] { display:none !important; }
     .manual-buy-title { color:var(--ink); font-size:15px; font-weight:950; }
@@ -4413,9 +4424,62 @@
         const result = await postJson('/api/option_simulate', {...selectedDCombo, qty:dOptionQty});
         if (!result.ok) { alert(result.error || '模拟记录失败'); return; }
         delete selectedDCombo.request_id;
+        optionHistorySource = 'SIM';
+        optionHistorySelected.SIM = result.id;
         setOptionView(true);
       } catch (e) { alert('模拟记录请求失败，请检查收益记录后再试'); }
       finally { button.disabled = false; optionSimulationBusy = false; }
+    }
+    let optionHistoryRecords = [];
+    let optionHistorySource = 'REAL';
+    const optionHistorySelected = {REAL:null, SIM:null};
+    function selectOptionSource(source) {
+      optionHistorySource = source;
+      renderOptionHistory();
+    }
+    function selectOptionRecord(index) {
+      const record = optionHistoryRecords[index];
+      if (!record) return;
+      optionHistorySelected[optionHistorySource] = record.id;
+      renderOptionHistory();
+    }
+    function optionRecordDetail(record) {
+          const c = record.combo, pts = record.points || [], last = pts[pts.length-1];
+          const values = pts.map(p => Number(p.pnl));
+          const lo = Math.min(0,...values), hi = Math.max(0,...values), span = Math.max(1,hi-lo);
+          const path = values.map((v,i) => `${i ? 'L' : 'M'}${10+i/Math.max(1,values.length-1)*580},${110-(v-lo)/span*90}`).join(' ');
+          const gain = last ? Number(last.pnl) : null;
+          return `<article class="option-history-detail">
+            <b>${record.source === 'SIM' ? '模拟' : '实际成交'} · ${esc(c.symbol)} · ${esc(c.mode)} · ${esc(c.expiry)} × ${Number(c.qty)}</b>
+            <p>${(c.legs || []).map(l => `${esc(l.side)} ${esc(l.option_symbol)}`).join(' ／ ')}</p>
+            <p>开仓净价 ${money(c.entry)} · ${c.entry < 0 ? '收取' : '支付'}权利金 ${money(Math.abs(c.entry)*100*c.qty)} · ${esc(record.state)}</p>
+            <p>记录于 ${esc(c.filled_at || record.created_at)} ${c.order_id ? '· 订单 '+esc(c.order_id) : ''}</p>
+            <strong class="${gain < 0 ? 'neg' : 'pos'}">${record.state === 'CLOSED' ? '成交收益' : '估算收益'} ${gain == null ? '--' : money(gain)} ${gain != null && Number(c.risk)>0 ? '('+(gain/Number(c.risk)*100).toFixed(2)+'% / 风险资金)' : ''}</strong>
+            <svg viewBox="0 0 600 130" role="img" aria-label="组合收益曲线" style="width:100%;max-height:180px"><path d="${path}" fill="none" stroke="#15936a" stroke-width="2"/>${values.length === 1 ? `<circle cx="10" cy="${110-(values[0]-lo)/span*90}" r="3" fill="#15936a"/>` : ''}<text x="10" y="12" font-size="11">${esc(money(hi))}</text><text x="10" y="127" font-size="11">${esc(money(lo))}</text></svg>
+            <div class="small-muted">${pts.length ? esc(pts[0].created_at)+' → '+esc(last.created_at) : '等待首次估值'} · ${pts.length} 个记录点</div>
+            ${record.error ? '<p class="neg">'+esc(record.error)+'</p>' : ''}
+          </article>`;
+
+    }
+    function renderOptionHistory() {
+      const box = document.getElementById('optionHistoryRows');
+      const scroll = box.querySelector('.option-history-list')?.scrollTop || 0;
+      const records = optionHistoryRecords.filter(r => r.source === optionHistorySource);
+      let selected = records.find(r => r.id === optionHistorySelected[optionHistorySource]) || records[0];
+      if (selected) optionHistorySelected[optionHistorySource] = selected.id;
+      box.innerHTML = `<div class="option-history-filters">
+        ${[['REAL','真实交易记录'],['SIM','模拟交易记录']].map(([source,label]) => `<button class="trade-subtab ${source === optionHistorySource ? 'active' : ''}" aria-pressed="${source === optionHistorySource}" onclick="selectOptionSource('${source}')">${label} · ${optionHistoryRecords.filter(r=>r.source===source).length}</button>`).join('')}
+        </div><div class="option-history-layout"><div class="option-history-list" aria-label="组合记录列表">
+        ${records.map(record => {
+          const c = record.combo, last = (record.points || []).slice(-1)[0];
+          return `<button class="option-history-item ${record.id === selected?.id ? 'active' : ''}" aria-pressed="${record.id === selected?.id}" onclick="selectOptionRecord(${optionHistoryRecords.indexOf(record)})">
+            <span><b>${esc(c.symbol)}</b> · ${esc(c.mode)} × ${Number(c.qty)}</span>
+            <span class="small-muted">到期 ${esc(c.expiry)} · ${esc(record.state)}</span>
+            <span><small>${esc(record.created_at)}</small><b class="${last && Number(last.pnl)<0 ? 'neg' : 'pos'}">${last ? money(last.pnl) : '--'}</b></span>
+          </button>`;
+        }).join('') || '<p class="small-muted">暂无此类交易记录</p>'}
+        </div><div class="option-history-content">${selected ? optionRecordDetail(selected) : '<p class="small-muted">选中记录后查看组合详情与收益曲线。</p>'}</div></div>`;
+      box.querySelector('.option-history-list').scrollTop = scroll;
     }
     async function loadOptionHistory() {
       const box = document.getElementById('optionHistoryRows');
@@ -4423,24 +4487,9 @@
         const response = await fetch('/api/option_tracking');
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || '读取失败');
-        box.innerHTML = (data.records || []).map(record => {
-          const c = record.combo, pts = record.points || [], last = pts[pts.length-1];
-          const values = pts.map(p => Number(p.pnl));
-          const lo = Math.min(0,...values), hi = Math.max(0,...values), span = Math.max(1,hi-lo);
-          const path = values.map((v,i) => `${i ? 'L' : 'M'}${10+i/Math.max(1,values.length-1)*580},${110-(v-lo)/span*90}`).join(' ');
-          const gain = last ? Number(last.pnl) : null;
-          return `<article class="d-preview-card" style="margin-top:12px">
-            <b>${record.source === 'SIM' ? '模拟' : '实际成交'} · ${esc(c.symbol)} · ${esc(c.mode)} · ${esc(c.expiry)} × ${Number(c.qty)}</b>
-            <p>${(c.legs || []).map(l => `${esc(l.side)} ${esc(l.option_symbol)}`).join(' ／ ')}</p>
-            <p>开仓净价 ${money(c.entry)} · ${c.entry < 0 ? '收取' : '支付'}权利金 ${money(Math.abs(c.entry)*100*c.qty)} · ${esc(record.state)}</p>
-            <p>记录于 ${esc(c.filled_at || record.created_at)} ${c.order_id ? '· 订单 '+esc(c.order_id) : ''}</p>
-            <strong class="${gain < 0 ? 'neg' : 'pos'}">${record.state === 'CLOSED' ? '成交收益' : '估算收益'} ${gain == null ? '--' : money(gain)} ${gain != null && Number(c.risk)>0 ? '('+(gain/Number(c.risk)*100).toFixed(2)+'% / 风险资金)' : ''}</strong>
-            <svg viewBox="0 0 600 130" role="img" aria-label="组合收益曲线" style="width:100%;max-height:180px"><path d="${path}" fill="none" stroke="#15936a" stroke-width="2"/><text x="10" y="12" font-size="11">${esc(money(hi))}</text><text x="10" y="127" font-size="11">${esc(money(lo))}</text></svg>
-            <div class="small-muted">${pts.length ? esc(pts[0].created_at)+' → '+esc(last.created_at) : '等待首次估值'} · ${pts.length} 个记录点</div>
-            ${record.error ? '<p class="neg">'+esc(record.error)+'</p>' : ''}
-          </article>`;
-        }).join('') || '<p>暂无记录。选中组合后点击“模拟买入”，或等待实际订单成交。</p>';
-      } catch (e) { box.textContent = '读取收益记录失败，请重试。'; }
+        optionHistoryRecords = data.records || [];
+        renderOptionHistory();
+      } catch (e) { if (!optionHistoryRecords.length) box.textContent = '读取收益记录失败，请重试。'; }
     }
     async function confirmDOptionBuy() {
       if (!selectedDCombo) { alert('请先选择一组期权组合'); return; }
