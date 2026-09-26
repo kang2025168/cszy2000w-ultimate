@@ -578,12 +578,21 @@
     .manual-buy-copy { min-width:0; display:grid; gap:3px; }
     .option-history-filters { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
     .option-history-layout { display:grid; grid-template-columns:minmax(230px, 310px) minmax(0,1fr); gap:14px; align-items:start; }
-    .option-history-list { max-height:460px; overflow:auto; display:grid; gap:6px; align-content:start; }
-    .option-history-item { display:grid; gap:6px; width:100%; padding:12px; text-align:left; background:#fff; color:var(--ink); border:1px solid #dce5ef; border-radius:8px; cursor:pointer; }
+    .option-history-list { grid-auto-rows:max-content; padding:2px; max-height:460px; overflow:auto; display:grid; gap:6px; align-content:start; }
+    .option-history-item { height:auto; min-height:112px; line-height:1.45; white-space:normal; font-size:13px; display:grid; gap:6px; width:100%; padding:12px; text-align:left; background:#fff; color:var(--ink); border:1px solid #dce5ef; border-radius:8px; cursor:pointer; }
     .option-history-item.active { border-color:var(--blue); background:#eff6ff; box-shadow:inset 3px 0 var(--blue); }
     .option-history-item > span:last-child { display:flex; justify-content:space-between; gap:8px; }
     .option-history-item small { color:var(--muted); font-size:11px; }
     .option-history-detail { padding:16px; border:1px solid #dce5ef; border-radius:10px; background:#fff; color:var(--ink); font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+    .option-history-item:focus-visible { outline:2px solid var(--blue); outline-offset:-2px; }
+    .option-record-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px; }
+    .option-record-badge { border-radius:5px; padding:3px 8px; background:#eef3f8; color:var(--muted); font-size:11px; }
+    .option-record-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:12px 0; }
+    .option-record-metrics > div { background:#f6f8fb; padding:10px; border-radius:8px; }
+    .option-record-metrics small { display:block; color:var(--muted); font-size:11px; }
+    .option-record-metrics strong { font-size:16px; }
+    .option-record-legs { display:grid; gap:4px; font-size:12px; }
+    .option-record-legs span { padding:5px 8px; background:#f8fafc; border-radius:5px; }
     .option-history-detail p { margin:8px 0; }
     .option-history-detail svg { display:block; height:170px; margin-top:10px; }
     @media(max-width:760px) { .option-history-layout { grid-template-columns:1fr; } .option-history-list { max-height:210px; } }
@@ -4443,6 +4452,10 @@
       optionHistorySelected[optionHistorySource] = record.id;
       renderOptionHistory();
     }
+    function optionModeName(mode) {
+      return ({BULL_CALL:'看涨进攻',BEAR_PUT:'看跌进攻',BULL_PUT:'看涨收租',BEAR_CALL:'看跌收租'})[mode] || mode;
+    }
+    function optionStateName(state) { return ({OPEN:'持有中',CLOSED:'已平仓'})[state] || state; }
     function optionRecordDetail(record) {
           const c = record.combo, pts = record.points || [], last = pts[pts.length-1];
           const values = pts.map(p => Number(p.pnl));
@@ -4450,12 +4463,16 @@
           const path = values.map((v,i) => `${i ? 'L' : 'M'}${10+i/Math.max(1,values.length-1)*580},${110-(v-lo)/span*90}`).join(' ');
           const gain = last ? Number(last.pnl) : null;
           return `<article class="option-history-detail">
-            <b>${record.source === 'SIM' ? '模拟' : '实际成交'} · ${esc(c.symbol)} · ${esc(c.mode)} · ${esc(c.expiry)} × ${Number(c.qty)}</b>
-            <p>${(c.legs || []).map(l => `${esc(l.side)} ${esc(l.option_symbol)}`).join(' ／ ')}</p>
-            <p>开仓净价 ${money(c.entry)} · ${c.entry < 0 ? '收取' : '支付'}权利金 ${money(Math.abs(c.entry)*100*c.qty)} · ${esc(record.state)}</p>
-            <p>记录于 ${esc(c.filled_at || record.created_at)} ${c.order_id ? '· 订单 '+esc(c.order_id) : ''}</p>
-            <strong class="${gain < 0 ? 'neg' : 'pos'}">${record.state === 'CLOSED' ? '成交收益' : '估算收益'} ${gain == null ? '--' : money(gain)} ${gain != null && Number(c.risk)>0 ? '('+(gain/Number(c.risk)*100).toFixed(2)+'% / 风险资金)' : ''}</strong>
-            <svg viewBox="0 0 600 130" role="img" aria-label="组合收益曲线" style="width:100%;max-height:180px"><path d="${path}" fill="none" stroke="#15936a" stroke-width="2"/>${values.length === 1 ? `<circle cx="10" cy="${110-(values[0]-lo)/span*90}" r="3" fill="#15936a"/>` : ''}<text x="10" y="12" font-size="11">${esc(money(hi))}</text><text x="10" y="127" font-size="11">${esc(money(lo))}</text></svg>
+            <div class="option-record-head"><b>${esc(c.symbol)} · ${esc(optionModeName(c.mode))} × ${Number(c.qty)}</b><span class="option-record-badge">${record.source === 'SIM' ? '模拟' : '实际成交'} · ${esc(optionStateName(record.state))}</span></div>
+            <div class="small-muted">到期 ${esc(c.expiry)} · 开仓 ${esc(c.filled_at || record.created_at)}</div>
+            <div class="option-record-metrics">
+              <div><small>开仓净价</small><strong>${money(c.entry)}</strong></div>
+              <div><small>${c.entry < 0 ? '收取' : '支付'}权利金</small><strong>${money(Math.abs(c.entry)*100*c.qty)}</strong></div>
+              <div><small>${record.state === 'CLOSED' ? '成交收益' : '估算收益'}</small><strong class="${gain < 0 ? 'neg' : 'pos'}">${gain == null ? '--' : money(gain)}</strong><small>${gain != null && Number(c.risk)>0 ? (gain/Number(c.risk)*100).toFixed(2)+'% / 风险资金' : '--'}</small></div>
+            </div>
+            <div class="option-record-legs">${(c.legs || []).map(l => `<span>${l.side === 'BUY' ? '买入' : '卖出'} · ${esc(l.option_symbol)}</span>`).join('')}</div>
+            ${c.order_id ? '<p class="small-muted">订单 '+esc(c.order_id)+'</p>' : ''}
+            <svg viewBox="0 0 600 130" role="img" aria-label="组合收益曲线" style="width:100%;max-height:180px"><path d="${path}" fill="none" stroke="${gain < 0 ? '#dc2626' : '#15936a'}" stroke-width="2"/>${values.length === 1 ? `<circle cx="10" cy="${110-(values[0]-lo)/span*90}" r="3" fill="#15936a"/>` : ''}<text x="10" y="12" font-size="11">${esc(money(hi))}</text><text x="10" y="127" font-size="11">${esc(money(lo))}</text></svg>
             <div class="small-muted">${pts.length ? esc(pts[0].created_at)+' → '+esc(last.created_at) : '等待首次估值'} · ${pts.length} 个记录点</div>
             ${record.error ? '<p class="neg">'+esc(record.error)+'</p>' : ''}
           </article>`;
@@ -4473,8 +4490,8 @@
         ${records.map(record => {
           const c = record.combo, last = (record.points || []).slice(-1)[0];
           return `<button class="option-history-item ${record.id === selected?.id ? 'active' : ''}" aria-pressed="${record.id === selected?.id}" onclick="selectOptionRecord(${optionHistoryRecords.indexOf(record)})">
-            <span><b>${esc(c.symbol)}</b> · ${esc(c.mode)} × ${Number(c.qty)}</span>
-            <span class="small-muted">到期 ${esc(c.expiry)} · ${esc(record.state)}</span>
+            <span><b>${esc(c.symbol)}</b> · ${esc(optionModeName(c.mode))} × ${Number(c.qty)}</span>
+            <span class="small-muted">${(c.legs || []).map(l => `${l.side === 'BUY' ? '买' : '卖'} ${esc(l.strike ?? '--')}`).join(' / ')} · ${esc(c.expiry)}</span>
             <span><small>${esc(record.created_at)}</small><b class="${last && Number(last.pnl)<0 ? 'neg' : 'pos'}">${last ? money(last.pnl) : '--'}</b></span>
           </button>`;
         }).join('') || '<p class="small-muted">暂无此类交易记录</p>'}
