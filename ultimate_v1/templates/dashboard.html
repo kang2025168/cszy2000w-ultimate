@@ -106,7 +106,7 @@
     .amount-eye-btn svg { width:20px; height:20px; }
     .amount-eye-btn .eye-slash { display:none; }
     .amount-eye-btn[aria-pressed="true"] .eye-slash { display:block; }
-    .hero-donut-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:4px; }
+    .hero-donut-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin-bottom:4px; }
     .mode-pill { display:inline-flex; align-items:center; justify-content:center; min-width:48px; height:26px; padding:0 10px; border-radius:999px; background:#101828; color:#fff; font-size:12px; font-weight:900; }
     .hero-carousel-viewport { overflow:hidden; width:100%; }
     .hero-carousel-track { width:300%; display:flex; transition:transform .28s ease; }
@@ -251,8 +251,8 @@
     .event-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .event-impact { color:var(--muted); text-align:right; font-size:11px; font-weight:850; }
     .carousel-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-    .carousel-actions { display:flex; align-items:center; gap:7px; }
-    .carousel-tab { height:28px; min-width:36px; padding:0 10px; border:1px solid #cfd9e6; border-radius:7px; background:#fff; color:var(--muted); font-weight:850; }
+    .carousel-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+    .carousel-tab { white-space:nowrap; flex-shrink:0; height:28px; min-width:36px; padding:0 10px; border:1px solid #cfd9e6; border-radius:7px; background:#fff; color:var(--muted); font-weight:850; }
     .carousel-tab.active { background:#101828; color:#fff; border-color:#101828; box-shadow:0 8px 18px rgba(16,24,40,.18); }
     .donut-wrap { flex:1; display:flex; align-items:center; justify-content:center; gap:18px; min-height:160px; }
     canvas { max-width:100%; }
@@ -1113,7 +1113,6 @@
                     <div class="carousel-actions">
                       <span class="mode-pill" id="modeValue">--</span>
                       <button class="carousel-tab active" id="toolTabDonut" onclick="setToolsPage('donut')">资金</button>
-                      <button class="carousel-tab" id="toolTabAllocation" onclick="setToolsPage('allocation')">分配</button>
                       <button class="carousel-tab" id="toolTabBots" onclick="setToolsPage('bots')">机器人</button>
                     </div>
                   </div>
@@ -2349,17 +2348,16 @@
       renderBots(latestBotHeartbeats, latestBotControls);
     }
     function setToolsPage(page) {
-      toolsPage = ['donut','allocation','bots'].includes(page) ? page : 'donut';
+      toolsPage = ['donut','bots'].includes(page) ? page : 'donut';
       const track = document.getElementById('toolsTrack');
       if (track) {
         track.classList.toggle('allocation', toolsPage === 'allocation');
         track.classList.toggle('bots', toolsPage === 'bots');
       }
       document.getElementById('toolTabDonut')?.classList.toggle('active', toolsPage === 'donut');
-      document.getElementById('toolTabAllocation')?.classList.toggle('active', toolsPage === 'allocation');
       document.getElementById('toolTabBots')?.classList.toggle('active', toolsPage === 'bots');
       const title = document.getElementById('toolsPanelTitle');
-      if (title) title.textContent = toolsPage === 'bots' ? '机器人' : (toolsPage === 'allocation' ? '资金分配' : '资金比例');
+      if (title) title.textContent = toolsPage === 'bots' ? '机器人' : '资金比例';
       if (toolsPage === 'donut' && window.latestCapitalPayload) setTimeout(() => drawDonut(window.latestCapitalPayload), 50);
       if (toolsPage === 'allocation' && window.latestCapitalPayload) renderCapitalAllocation(window.latestCapitalPayload);
     }
