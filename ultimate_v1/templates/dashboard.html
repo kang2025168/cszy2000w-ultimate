@@ -98,6 +98,14 @@
     .hero-top:before { content:""; grid-column:1 / -1; height:3px; border-radius:999px; background:linear-gradient(90deg,#15936a,#2563eb,#d97706); opacity:.72; margin:-2px 0 0; }
     .hero-main-column { display:grid; gap:12px; min-width:0; }
     .hero-donut { border:1px solid #cbd8e6; border-radius:8px; min-height:164px; padding:14px; overflow:hidden; background:linear-gradient(135deg,#f0f7ff 0%,#f8fbff 58%,#eef6fb 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.82), 0 12px 28px rgba(15,23,42,.07); }
+    .capital-title-with-eye { display:flex; align-items:center; gap:5px; flex-shrink:0; }
+    .amount-eye-btn { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; padding:4px; border:0; border-radius:6px; background:transparent; color:var(--muted); cursor:pointer; }
+    .amount-eye-btn:hover { background:#e8eef6; color:var(--ink); }
+    .amount-eye-btn:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+    .amount-eye-btn[hidden] { display:none; }
+    .amount-eye-btn svg { width:20px; height:20px; }
+    .amount-eye-btn .eye-slash { display:none; }
+    .amount-eye-btn[aria-pressed="true"] .eye-slash { display:block; }
     .hero-donut-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:4px; }
     .mode-pill { display:inline-flex; align-items:center; justify-content:center; min-width:48px; height:26px; padding:0 10px; border-radius:999px; background:#101828; color:#fff; font-size:12px; font-weight:900; }
     .hero-carousel-viewport { overflow:hidden; width:100%; }
@@ -1089,7 +1097,6 @@
           <button class="trade-focus-btn" id="statsFocusBtn" onclick="toggleStatsFocus()">统计</button>
           <button class="trade-focus-btn" id="lifeFocusBtn" onclick="toggleLifeFocus()">生活</button>
           <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
-          <button id="amountPrivacyBtn" class="trade-focus-btn" onclick="toggleAmountPrivacy()" aria-pressed="false">隐藏金额</button>
           <button class="refresh-btn" onclick="loadAll()">刷新</button>
         </div>
       </div>
@@ -1102,7 +1109,7 @@
               <div class="hero-main-column">
                 <div class="hero-donut">
                   <div class="hero-donut-head">
-                    <h2 id="toolsPanelTitle">资金比例</h2>
+                    <div class="capital-title-with-eye"><h2 id="toolsPanelTitle">资金比例</h2><button id="amountPrivacyBtn" class="amount-eye-btn" onclick="toggleAmountPrivacy()" aria-label="隐藏金额" title="隐藏金额" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="eye-slash" d="m3 3 18 18"/></svg></button></div>
                     <div class="carousel-actions">
                       <span class="mode-pill" id="modeValue">--</span>
                       <button class="carousel-tab active" id="toolTabDonut" onclick="setToolsPage('donut')">资金</button>
@@ -1880,7 +1887,8 @@
       document.body.classList.toggle('amounts-private', hidden);
       const button = document.getElementById('amountPrivacyBtn');
       button.hidden = !privacyOverview;
-      button.textContent = amountsHidden ? '显示金额' : '隐藏金额';
+      button.title = amountsHidden ? '显示金额' : '隐藏金额';
+      button.setAttribute('aria-label', button.title);
       button.setAttribute('aria-pressed', String(amountsHidden));
       maskMoneyNodes();
       document.querySelectorAll('.private-money').forEach(el => {
