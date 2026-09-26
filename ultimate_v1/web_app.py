@@ -2704,6 +2704,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_major_events_payload())
             elif path == "/api/d_tactical":
                 self._send_json(d_tactical_payload())
+            elif path == "/api/option_tracking":
+                from .option_tracking import history
+                self._send_json(history())
             elif path == "/api/d_option_preview":
                 qs = parse_qs(parsed.query)
                 symbol = qs.get("symbol", [""])[0]
@@ -2816,6 +2819,9 @@ class Handler(BaseHTTPRequestHandler):
                 result["ok"] = True
                 result["message"] = f"清仓实时价限价卖单{action}完成：成功={result.get('ok_count', 0)} 失败={result.get('error_count', 0)} 总数={result.get('count', 0)}"
                 self._send_json(result)
+            elif path == "/api/option_simulate":
+                from .option_tracking import simulate
+                self._send_json(simulate(payload))
             elif path == "/api/d_option_buy":
                 self._send_json(submit_option_combo(payload))
             elif path == "/api/manual_stock_order":
@@ -2977,6 +2983,8 @@ def run() -> None:
     daily_pnl_stop = start_collector()
     from .adjusted_returns import start_collector as start_return_collector
     start_return_collector()
+    from .option_tracking import start_collector as start_option_collector
+    start_option_collector()
     print(f"[WEB] http://127.0.0.1:{s.web_port}", flush=True)
     try:
         server.serve_forever()

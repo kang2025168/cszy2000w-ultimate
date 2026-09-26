@@ -1443,6 +1443,15 @@
           </div>
         </div>
         <div class="manual-trade-panel" id="manualOptionPanel" hidden>
+          <div class="trade-subtabs" style="margin-bottom:12px">
+            <button class="trade-subtab active" id="optionTradingTab" onclick="setOptionView(false)">交易</button>
+            <button class="trade-subtab" id="optionHistoryTab" onclick="setOptionView(true)">收益记录</button>
+          </div>
+          <div id="optionHistoryPanel" hidden>
+            <p class="small-muted">模拟与实际成交分别标记。每5分钟记录平仓报价估值，收益未扣费用；采集时间不代表报价时间。到期需核对结算。</p>
+            <button onclick="loadOptionHistory()">刷新记录</button>
+            <div id="optionHistoryRows"></div>
+          </div>
           <div class="d-subpanel" id="dOptionPanel">
             <div class="d-subhead">
               <div>
@@ -4286,7 +4295,7 @@
         const priceLine = p.error
           ? `<div class="d-error">${p.error}</div>`
           : modeHelpHtml(payload.mode);
-        return `<div class="d-preview-card"><div class="d-preview-top"><div><div class="d-preview-title">${idx === 0 ? '下周五' : '下下周五'} ${p.expiry}</div><div class="small-muted">${p.mode} · width ${Number(payload.width || p.width || 0).toFixed(2)}</div></div><div class="d-preview-actions"><label class="d-qty-control">× <input type="number" min="1" max="99" step="1" value="${dOptionQty}" onchange="changeDOptionQty(this.value)" oninput="changeDOptionQty(this.value)"></label><button class="d-confirm-btn" onclick="confirmDOptionBuy()" disabled>确认买入</button></div></div>${priceLine}${legs}</div>`;
+        return `<div class="d-preview-card"><div class="d-preview-top"><div><div class="d-preview-title">${idx === 0 ? '下周五' : '下下周五'} ${p.expiry}</div><div class="small-muted">${p.mode} · width ${Number(payload.width || p.width || 0).toFixed(2)}</div></div><div class="d-preview-actions"><label class="d-qty-control">× <input type="number" min="1" max="99" step="1" value="${dOptionQty}" onchange="changeDOptionQty(this.value)" oninput="changeDOptionQty(this.value)"></label><button onclick="simulateOptionBuy(this)">模拟买入</button><button class="d-confirm-btn" onclick="confirmDOptionBuy()" disabled>确认买入</button></div></div>${priceLine}${legs}</div>`;
       }).join('') || `<div class="d-note">暂无预览</div>`;
       updateDOptionSelectionSummary();
       if (dOptionScrollMode === 'center') {
@@ -4374,6 +4383,54 @@
         if (Number(input.value || 0) !== qty) input.value = qty;
       });
       updateDOptionSelectionSummary();
+    }
+    let optionHistoryVisible = false;
+    function setOptionView(history) {
+      optionHistoryVisible = history;
+      document.getElementById('optionHistoryPanel').hidden = !history;
+      document.getElementById('dOptionPanel').hidden = history;
+      document.getElementById('optionTradingTab').classList.toggle('active', !history);
+      document.getElementById('optionHistoryTab').classList.toggle('active', history);
+      if (history) loadOptionHistory();
+    }
+    let optionSimulationBusy = false;
+    async function simulateOptionBuy(button) {
+      if (optionSimulationBusy) return;
+      if (!selectedDCombo) { alert('请先点选一组组合'); return; }
+      button.disabled = true; optionSimulationBusy = true;
+      selectedDCombo.request_id ||= ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c => (Number(c) ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> Number(c) / 4).toString(16));
+      try {
+        const result = await postJson('/api/option_simulate', {...selectedDCombo, qty:dOptionQty});
+        if (!result.ok) { alert(result.error || '模拟记录失败'); return; }
+        delete selectedDCombo.request_id;
+        setOptionView(true);
+      } catch (e) { alert('模拟记录请求失败，请检查收益记录后再试'); }
+      finally { button.disabled = false; optionSimulationBusy = false; }
+    }
+    async function loadOptionHistory() {
+      const box = document.getElementById('optionHistoryRows');
+      try {
+        const response = await fetch('/api/option_tracking');
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || '读取失败');
+        box.innerHTML = (data.records || []).map(record => {
+          const c = record.combo, pts = record.points || [], last = pts[pts.length-1];
+          const values = pts.map(p => Number(p.pnl));
+          const lo = Math.min(0,...values), hi = Math.max(0,...values), span = Math.max(1,hi-lo);
+          const path = values.map((v,i) => `${i ? 'L' : 'M'}${10+i/Math.max(1,values.length-1)*580},${110-(v-lo)/span*90}`).join(' ');
+          const gain = last ? Number(last.pnl) : null;
+          return `<article class="d-preview-card" style="margin-top:12px">
+            <b>${record.source === 'SIM' ? '模拟' : '实际成交'} · ${esc(c.symbol)} · ${esc(c.mode)} · ${esc(c.expiry)} × ${Number(c.qty)}</b>
+            <p>${(c.legs || []).map(l => `${esc(l.side)} ${esc(l.option_symbol)}`).join(' ／ ')}</p>
+            <p>开仓净价 ${money(c.entry)} · ${c.entry < 0 ? '收取' : '支付'}权利金 ${money(Math.abs(c.entry)*100*c.qty)} · ${esc(record.state)}</p>
+            <p>记录于 ${esc(c.filled_at || record.created_at)} ${c.order_id ? '· 订单 '+esc(c.order_id) : ''}</p>
+            <strong class="${gain < 0 ? 'neg' : 'pos'}">${record.state === 'CLOSED' ? '成交收益' : '估算收益'} ${gain == null ? '--' : money(gain)} ${gain != null && Number(c.risk)>0 ? '('+(gain/Number(c.risk)*100).toFixed(2)+'% / 风险资金)' : ''}</strong>
+            <svg viewBox="0 0 600 130" role="img" aria-label="组合收益曲线" style="width:100%;max-height:180px"><path d="${path}" fill="none" stroke="#15936a" stroke-width="2"/><text x="10" y="12" font-size="11">${esc(money(hi))}</text><text x="10" y="127" font-size="11">${esc(money(lo))}</text></svg>
+            <div class="small-muted">${pts.length ? esc(pts[0].created_at)+' → '+esc(last.created_at) : '等待首次估值'} · ${pts.length} 个记录点</div>
+            ${record.error ? '<p class="neg">'+esc(record.error)+'</p>' : ''}
+          </article>`;
+        }).join('') || '<p>暂无记录。选中组合后点击“模拟买入”，或等待实际订单成交。</p>';
+      } catch (e) { box.textContent = '读取收益记录失败，请重试。'; }
     }
     async function confirmDOptionBuy() {
       if (!selectedDCombo) { alert('请先选择一组期权组合'); return; }
@@ -5486,6 +5543,7 @@
     new MutationObserver(maskMoneyNodes).observe(document.querySelector('main'), {childList:true, subtree:true, characterData:true});
     loadAll();
     setInterval(loadAll, 30000);
+    setInterval(() => { if (optionHistoryVisible && manualTradeTab === 'option') loadOptionHistory(); }, 60000);
   </script>
 </body>
 </html>
