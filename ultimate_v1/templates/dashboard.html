@@ -525,6 +525,8 @@
     .side-pill { border-radius:999px; padding:3px 7px; font-weight:850; font-size:11px; }
     .side-pill.buy { background:#e7f6ef; color:#08734f; }
     .side-pill.sell { background:#fee2e2; color:#b42318; }
+    body.amounts-private .private-money { font-size:0; }
+    body.amounts-private .private-money::after { content:"****"; font-size:14px; }
     #equityChart { width:100%; height:260px; flex:0 0 260px; min-height:0; }
     .section-head { display:flex; align-items:center; justify-content:space-between; margin:18px 0 10px; }
     table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
@@ -1085,6 +1087,7 @@
           <button class="trade-focus-btn" id="statsFocusBtn" onclick="toggleStatsFocus()">统计</button>
           <button class="trade-focus-btn" id="lifeFocusBtn" onclick="toggleLifeFocus()">生活</button>
           <button class="phase-chip sleep" id="phaseChip" onclick="togglePhasePopover()"><span class="phase-dot"></span><span id="phaseChipText">阶段 --</span></button>
+          <button id="amountPrivacyBtn" class="trade-focus-btn" onclick="toggleAmountPrivacy()" aria-pressed="false">隐藏金额</button>
           <button class="refresh-btn" onclick="loadAll()">刷新</button>
         </div>
       </div>
@@ -1826,6 +1829,61 @@
     </div>
   </div>
   <script>
+    let amountsHidden = false;
+    try { amountsHidden = localStorage.getItem('overviewAmountsHidden') === '1'; } catch (_) {}
+    let privacyOverview = true;
+    let privacyCurve = null;
+    let privacyCapital = null;
+    function maskMoneyNodes() {
+      const root = document.querySelector('main');
+      if (!root) return;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (!node.parentElement.closest('.private-money,script,style,textarea,input,select') && /\$[\d,]+/.test(node.nodeValue)) nodes.push(node);
+      }
+      for (const node of nodes) {
+        const fragment = document.createDocumentFragment();
+        const parts = node.nodeValue.split(/([+-]?\$[\d,]+(?:\.\d+)?)/g);
+        for (const part of parts) {
+          if (/^[+-]?\$[\d,]+/.test(part)) {
+            const span = document.createElement('span'); span.className = 'private-money';
+            span.textContent = part;
+            if (amountsHidden && privacyOverview) span.setAttribute('aria-label', '金额已隐藏');
+            fragment.appendChild(span);
+          } else fragment.appendChild(document.createTextNode(part));
+        }
+        node.replaceWith(fragment);
+      }
+      root.querySelectorAll('[title], [data-money-title]').forEach(el => {
+        if (amountsHidden && privacyOverview && /\$[\d,]+/.test(el.title)) {
+          el.dataset.moneyTitle = el.title; el.removeAttribute('title');
+        } else if (!(amountsHidden && privacyOverview) && el.dataset.moneyTitle) {
+          el.title = el.dataset.moneyTitle; delete el.dataset.moneyTitle;
+        }
+      });
+    }
+    function applyAmountPrivacy() {
+      const hidden = amountsHidden && privacyOverview;
+      document.body.classList.toggle('amounts-private', hidden);
+      const button = document.getElementById('amountPrivacyBtn');
+      button.hidden = !privacyOverview;
+      button.textContent = amountsHidden ? '显示金额' : '隐藏金额';
+      button.setAttribute('aria-pressed', String(amountsHidden));
+      maskMoneyNodes();
+      document.querySelectorAll('.private-money').forEach(el => {
+        if (hidden) el.setAttribute('aria-label', '金额已隐藏'); else el.removeAttribute('aria-label');
+      });
+      if (privacyCurve) drawChart(privacyCurve);
+      if (privacyCapital) drawDonut(privacyCapital);
+    }
+    function toggleAmountPrivacy() {
+      amountsHidden = !amountsHidden;
+      try { localStorage.setItem('overviewAmountsHidden', amountsHidden ? '1' : '0'); } catch (_) {}
+      applyAmountPrivacy();
+    }
+    const canvasMoney = value => amountsHidden && privacyOverview ? '****' : money(value);
     const money = v => {
       const n = Number(v || 0);
       const sign = n < 0 ? '-' : '';
@@ -2189,13 +2247,14 @@
         ctx.beginPath(); ctx.moveTo(110,110); ctx.arc(110,110,92,start,start+a); ctx.closePath(); ctx.fillStyle = colors[colorKey || g]; ctx.fill(); start += a;
       });
       ctx.beginPath(); ctx.arc(110,110,58,0,Math.PI*2); ctx.fillStyle = '#fff'; ctx.fill();
-      ctx.fillStyle = '#17202a'; ctx.font = '700 20px system-ui'; ctx.textAlign='center'; ctx.fillText(money(cap.equity || 0).replace('.00',''),110,106);
+      ctx.fillStyle = '#17202a'; ctx.font = '700 20px system-ui'; ctx.textAlign='center'; ctx.fillText(canvasMoney(cap.equity || 0).replace('.00',''),110,106);
       ctx.fillStyle = '#667085'; ctx.font = '12px system-ui'; ctx.fillText('equity',110,126);
       legend.innerHTML = entries.length
         ? entries.map(([g,v,colorKey]) => `<div class="legend-row"><span class="swatch" style="background:${colors[colorKey || g]}"></span><span>${g}</span><span>${((v/total)*100).toFixed(1)}%</span><span class="legend-amount">${money(v)}</span></div>`).join('')
         : `<div class="legend-row"><span class="small-muted">暂无持仓占用</span></div>`;
     }
     function drawDonut(cap) {
+      privacyCapital = cap;
       drawDonutOn('capitalDonut', 'donutLegend', cap);
     }
     function renderBots(bots, controls) {
@@ -2296,6 +2355,8 @@
       document.getElementById('phasePopover').classList.toggle('show');
     }
     function setFocusMode(mode) {
+      privacyOverview = mode === 'overview';
+      applyAmountPrivacy();
       const trade = mode === 'trade';
       const config = mode === 'config';
       const holdings = mode === 'holdings';
@@ -3814,8 +3875,9 @@
     }
     function dayDiff(a,b) { return Math.round((b-a)/86400000); }
     function mmdd(d) { return `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
-    function axisMoney(v) { return `$${Number(v || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`; }
+    function axisMoney(v) { if (amountsHidden && privacyOverview) return '****'; return `$${Number(v || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`; }
     function drawChart(curve) {
+        privacyCurve = curve;
         const canvas = document.getElementById('equityChart');
         const ctx = canvas.getContext('2d');
         const rect = canvas.getBoundingClientRect();
@@ -3917,7 +3979,7 @@
         
         const sign = diff >= 0 ? '+' : '';
         ctx.fillText(
-        `${money(last)}  ${sign}${money(diff)} (${diffPct == null ? '--' : sign + diffPct.toFixed(2)}%)`,
+        `${canvasMoney(last)}  ${sign}${canvasMoney(diff)} (${diffPct == null ? '--' : sign + diffPct.toFixed(2)}%)`,
         padLeft,
         24
         );
@@ -5420,6 +5482,8 @@
     });
     restoreManualSymbolLock();
     ['buy', 'sell', 'short'].forEach(updateManualOrderType);
+    applyAmountPrivacy();
+    new MutationObserver(maskMoneyNodes).observe(document.querySelector('main'), {childList:true, subtree:true, characterData:true});
     loadAll();
     setInterval(loadAll, 30000);
   </script>
