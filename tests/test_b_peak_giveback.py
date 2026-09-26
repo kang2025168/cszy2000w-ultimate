@@ -20,7 +20,7 @@ class PeakGivebackTests(unittest.TestCase):
                 conn = MagicMock()
                 client = MagicMock()
                 client.get_order_by_id.return_value = SimpleNamespace(filled_avg_price=102.9, status='filled')
-                row = {'cost_price':100, 'b_peak_price':105, 'b_peak_profit':50}
+                row = {'qty':10, 'cost_price':100, 'b_peak_price':105, 'b_peak_profit':50}
                 mocks = {
                     '_get_trading_client': client,
                     '_get_real_position_qty':10,

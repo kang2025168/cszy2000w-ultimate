@@ -3923,8 +3923,8 @@
           ctx.fillStyle = '#b45309'; ctx.font = '11px system-ui';
           ctx.fillText(curve.warning, padLeft, 38);
         }
-        const startDate = points[0].d;
-        const endDate = points[points.length - 1].d;
+        const startDate = parseDateOnly(curve.start_date) || points[0].d;
+        const endDate = parseDateOnly(curve.end_date) || points[points.length - 1].d;
         const totalDays = Math.max(1, dayDiff(startDate, endDate));
         
         const ys = points.map(p => p.y);
@@ -4779,8 +4779,8 @@
         <div class="d-grid-field"><label>开始交易</label><input id="dGridOpenTime" type="time" value="${esc(payload.open_time || '06:35')}"></div>
         <div class="d-grid-field"><label>停止开仓</label><input id="dGridLastEntry" type="time" value="${esc(payload.last_entry_time || '12:30')}"></div>
         <div class="d-grid-field"><label>极端止损</label><strong>买入均价下跌 ${(Number(payload.stop_loss_pct ?? 0.05) * 100).toFixed(0)}%</strong><span class="small-muted">撤单确认后市价卖出剩余数量；触发后不因反弹取消</span></div>
-        <div class="d-grid-field"><label>收盘限价退出</label><strong>提前 ${Number(payload.flatten_minutes_before_close ?? 10)} 分钟</strong><span class="small-muted">按最新现价限价，每30秒撤单确认后重新报价</span></div>
-        <div class="d-grid-field"><label>收盘市价兜底</label><strong>提前 ${Number(payload.market_exit_minutes_before_close ?? 1)} 分钟</strong><span class="small-muted">撤单确认后市价退出；按券商实际收盘时间，支持提前收盘</span></div>
+        <div class="d-grid-field"><label>D 全部平仓</label><strong>提前 ${Number(payload.flatten_minutes_before_close ?? 10)} 分钟</strong><span class="small-muted">撤销 D 自己的挂单，确认后按剩余股数市价平仓</span></div>
+        <div class="d-grid-field"><label>独立份额管理</label><strong>提前 ${Number(payload.market_exit_minutes_before_close ?? 10)} 分钟</strong><span class="small-muted">只卖 D 买入减去已卖出的数量，不动 B/C；支持提前收盘</span></div>
         <div class="d-grid-field"><label>买单等待秒数</label><input id="dGridBuyTimeout" type="number" min="5" step="1" value="${Number(payload.buy_timeout_seconds || 45)}"></div>
         <div class="d-grid-field"><label>每轮冷却秒数</label><input id="dGridCooldown" type="number" min="1" step="1" value="${Number(payload.cooldown_seconds || 5)}"></div>
         <div class="d-grid-field"><label>机器人状态</label><div class="d-grid-symbol-state ${payload.bot_enabled ? 'active' : ''}">${payload.bot_enabled ? '运行开关已开启' : '机器人关闭，保存配置不会自动启动'}</div></div>`;

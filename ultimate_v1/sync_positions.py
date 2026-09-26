@@ -510,8 +510,10 @@ def _repair_verified_d_ownership(positions, profile, managed_groups):
                     continue
                 _, bought, _ = _order_snapshot(buy)
                 sold, _ = _cycle_sell_totals(cur, cycle, client)
-                if broker_qty <= 0 or abs(bought - sold - broker_qty) > .000001:
-                    raise RuntimeError(f'{symbol}: D lot differs from broker quantity; manual allocation review required')
+                if broker_qty <= 0 or bought - sold > broker_qty + .000001:
+                    raise RuntimeError(f'{symbol}: D lot exceeds broker quantity; manual allocation review required')
+                if abs(bought - sold - broker_qty) > .000001:
+                    continue  # Mixed position: partition by verified fills below, never relabel B/C.
                 cur.execute("SELECT id,strategy_group,stock_type FROM position_holdings WHERE symbol=%s AND status='open'", (symbol,))
                 lots = cur.fetchall() or []
                 if len(lots) > 1 or any(r.get('stock_type') == 'A' or r.get('strategy_group') == 'A' for r in lots):
@@ -526,6 +528,46 @@ def _repair_verified_d_ownership(positions, profile, managed_groups):
             sync_open_holding_from_position(pos, 'D', allowed_groups=managed_groups)
 
 
+def _partition_d_positions(positions, profile, managed_groups):
+    """Split verified D fills out of the shared brokerage aggregate."""
+    from types import SimpleNamespace
+    from .d_grid import _cycle_sell_totals, _order_snapshot
+    if 'D' not in managed_groups or profile != profile_for_pool('D'):
+        return [], positions
+    client = alpaca_gateway.trading_client(profile=profile)
+    d_positions, others = [], []
+    for pos in positions:
+        symbol = _position_symbol(pos)
+        with db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM d_grid_cycles WHERE symbol=%s AND state IN ('BUY_WORKING','SELL_WORKING','CLOSING','ERROR','SELL_SUBMITTING')", (symbol,))
+                cycle = cur.fetchone()
+                if not cycle or not cycle.get('buy_order_id'):
+                    others.append(pos)
+                    continue
+                buy = client.get_order_by_id(str(cycle['buy_order_id']))
+                if str(getattr(buy, 'client_order_id', '')) != f"dgrid-{symbol}-{cycle['cycle_no']}-b":
+                    raise ValueError(f'{symbol}: cannot verify D buy ownership')
+                _, bought, cost = _order_snapshot(buy)
+                sold, _ = _cycle_sell_totals(cur, cycle, client)
+                remaining = max(0., bought - sold)
+        total = _position_qty(pos)
+        if remaining > total + 1e-6:
+            raise ValueError(f'{symbol}: D remaining lot exceeds account holding')
+        def portion(qty, avg):
+            price = float(getattr(pos, 'current_price', 0) or 0)
+            return SimpleNamespace(symbol=symbol, qty=qty, avg_entry_price=avg,
+                current_price=price, market_value=qty*price, cost_basis=qty*avg,
+                unrealized_pl=qty*(price-avg), unrealized_plpc=(price/avg-1 if avg else 0))
+        if remaining > 1e-6:
+            d_positions.append(portion(remaining, cost))
+        residual = total - remaining
+        if residual > 1e-6:
+            avg = (_position_avg(pos)*total - cost*remaining)/residual
+            others.append(portion(residual, avg))
+    return d_positions, others
+
+
 def _sync_profile_snapshot(profile, default_group, managed_groups, *, include_ops=False):
     from .manual_ledger import reconcile_manual_orders
     from .order_journal import execution_lock
@@ -538,6 +580,13 @@ def _sync_profile_snapshot(profile, default_group, managed_groups, *, include_op
             return None
         positions = alpaca_gateway.list_positions(profile=profile)
         _repair_verified_d_ownership(positions, profile, managed_groups)
+        d_positions, others = _partition_d_positions(positions, profile, managed_groups)
+        if 'D' in managed_groups and profile == profile_for_pool('D'):
+            _sync_position_holdings_from_positions(d_positions, default_group='D', managed_groups={'D'})
+            if include_ops:
+                _sync_stock_operations_from_positions(d_positions, default_group='D', managed_groups={'D'})
+            positions = others
+            managed_groups = managed_groups - {'D'}
         holdings = _sync_position_holdings_from_positions(positions, default_group=default_group, managed_groups=managed_groups)
         operations = _sync_stock_operations_from_positions(positions, default_group=default_group, managed_groups=managed_groups) if include_ops else {}
         return holdings, operations

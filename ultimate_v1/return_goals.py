@@ -14,7 +14,10 @@ def curve_return(rows):
 
 
 def settle_goals(period, curve, target):
-    prefix = f'RETURN_GOAL_V3:{period}:'
+    prefix = f'RETURN_GOAL_20260928:{period}:'
+    from .adjusted_returns import tracking_today, TRACKING_START
+    if tracking_today() < TRACKING_START:
+        return 0, 0
     key = prefix + curve['start_date']
     record = dict(start=curve['start_date'], end=curve['end_date'], target=target, status='pending')
     with db_conn() as conn:
@@ -25,7 +28,7 @@ def settle_goals(period, curve, target):
             success = failure = 0
             for row in records:
                 item = json.loads(row['setting_value'])
-                if item['status'] == 'pending' and item['end'] < date.today().isoformat():
+                if item['status'] == 'pending' and item['end'] < tracking_today().isoformat():
                     from .adjusted_returns import curve as adjusted_curve
                     history = adjusted_curve(period, (date.fromisoformat(item['start']), date.fromisoformat(item['end'])), refresh=False)
                     snapshots = history['rows']

@@ -6,6 +6,26 @@ import time
 from datetime import datetime, date, timedelta
 from .db import db_conn
 from .state_store import equity_curve_bounds
+from zoneinfo import ZoneInfo
+
+RESET_DAY = date(2026, 9, 26)
+TRACKING_START = date(2026, 9, 28)
+RESET_KEY = "RETURN_BASELINE_20260928"
+
+def tracking_today():
+    return datetime.now(ZoneInfo("America/Los_Angeles")).date()
+
+def tracking_bounds(period):
+    from calendar import monthrange
+    today = max(tracking_today(), TRACKING_START)
+    if period == "week":
+        monday = today - timedelta(days=today.weekday())
+        return monday, monday + timedelta(days=4)
+    if period == "month":
+        return today.replace(day=1), today.replace(day=monthrange(today.year,today.month)[1])
+    if period == "year":
+        return date(today.year,1,1), date(today.year,12,31)
+    return RESET_DAY, max(tracking_today(), RESET_DAY)
 
 _lock = threading.Lock()
 _last_attempt = 0
@@ -97,14 +117,28 @@ def _collect():
 def curve(period, bounds=None, refresh=True):
     if refresh:
         collect()
-    start, end = bounds or equity_curve_bounds(period)
+    start, end = bounds or tracking_bounds(period)
     try:
         with db_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute('SELECT * FROM adjusted_return_points ORDER BY created_at,id')
                 points = cur.fetchall()
+                cur.execute("SELECT setting_value FROM app_settings WHERE setting_key=%s", (RESET_KEY,))
+                saved = cur.fetchone()
+                if not saved and points:
+                    candidates = [p for p in points if p['created_at'].date() <= RESET_DAY]
+                    anchor = candidates[-1] if candidates else points[0]
+                    cur.execute("INSERT IGNORE INTO app_settings (setting_key,setting_value,updated_at) VALUES (%s,%s,NOW())", (RESET_KEY,str(anchor['id'])))
+                    cur.execute("SELECT setting_value FROM app_settings WHERE setting_key=%s", (RESET_KEY,))
+                    saved = cur.fetchone()
+                if saved:
+                    anchor_id = int(saved['setting_value'])
+                    points = [p for p in points if p['id'] >= anchor_id]
     except Exception:
         points = []
+    # Preserve the reset baseline, then start measuring on the requested Monday.
+    if period != 'all' and points:
+        points = [points[0]] + [p for p in points[1:] if p['created_at'].date() >= TRACKING_START]
     eligible = [p for p in points if end is None or p['created_at'].date() <= end]
     if start and eligible:
         prior = [p for p in eligible if p['created_at'].date() < start]
@@ -116,7 +150,8 @@ def curve(period, bounds=None, refresh=True):
         for p in eligible[1:]:
             by_day[p['created_at'].date()] = p
         rows = [eligible[0]] + list(by_day.values())
-    payload = {'period':period,'start_date':start.isoformat() if start else (rows[0]['created_at'].date().isoformat() if rows else None),
+    rows = [dict(p, snapshot_date=max(start, min(end, p['created_at'].date())).isoformat()) for p in rows]
+    payload = {'tracking_start':TRACKING_START.isoformat(), 'period':period,'start_date':start.isoformat() if start else (rows[0]['created_at'].date().isoformat() if rows else None),
                'end_date':end.isoformat() if end else date.today().isoformat(), 'rows':rows,
                'adjusted':True,'warning':_error,'profit':None,'return_fraction':None}
     if rows:

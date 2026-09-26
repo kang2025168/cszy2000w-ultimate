@@ -7,7 +7,7 @@ class LastMinuteTests(unittest.TestCase):
     def run_case(self,status,cid='limit'):
         client=MagicMock()
         client.get_order_by_id.return_value=SimpleNamespace(status=status,filled_qty=2,filled_avg_price=100,client_order_id=cid)
-        client.get_open_position.return_value=SimpleNamespace(qty=8)
+        client.get_open_position.return_value=SimpleNamespace(qty=28)
         cycle={'sell_order_id':'old','buy_filled_qty':10,'buy_filled_price':99}
         with patch.object(d,'_cycle_sell_totals',return_value=(2,200)),patch.object(d,'_submit_sell',return_value='submitted') as submit:
             result=d._last_minute_exit(MagicMock(),{'symbol':'META'},cycle,client)

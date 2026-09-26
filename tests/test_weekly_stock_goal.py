@@ -21,7 +21,7 @@ class ReturnGoalTests(unittest.TestCase):
         records=[{'setting_key':str(i),'setting_value':json.dumps(dict(start='2020-01-01',end=end,target=.05,status='pending'))}
                  for i,end in enumerate(['2020-01-31','2020-02-29','2099-01-01'])]
         cursor.fetchall.side_effect=[records]
-        with patch('ultimate_v1.adjusted_returns.curve',side_effect=lambda period,bounds,refresh: {'rows':[{}, {'created_at':__import__('datetime').datetime.combine(bounds[1], __import__('datetime').time())}], 'return_fraction': .06 if bounds[1].month == 1 else .01}), patch.object(goals,'db_conn') as db:
+        with patch('ultimate_v1.adjusted_returns.tracking_today',return_value=__import__('datetime').date(2026,9,28)), patch('ultimate_v1.adjusted_returns.curve',side_effect=lambda period,bounds,refresh: {'rows':[{}, {'created_at':__import__('datetime').datetime.combine(bounds[1], __import__('datetime').time())}], 'return_fraction': .06 if bounds[1].month == 1 else .01}), patch.object(goals,'db_conn') as db:
             db.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value=cursor
             self.assertEqual(goals.settle_goals('month',{'start_date':'2099-01-01','end_date':'2099-01-31'},.2),(1,1))
             updates=[c for c in cursor.execute.call_args_list if c.args[0].startswith('UPDATE')]

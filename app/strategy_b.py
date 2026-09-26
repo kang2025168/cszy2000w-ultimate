@@ -804,8 +804,10 @@ def _get_extended_quote_realtime(code: str):
         "feed": data.get("feed") or f"alpaca:{B_DATA_FEED}",
     }
 
-def _cancel_open_buy_orders(tc, code: str) -> int:
-    """提交新买单前，取消该 symbol 下所有 open 的 buy 单。返回取消数量。"""
+def _cancel_open_buy_orders(tc, code: str, owned_order_id=None) -> int:
+    """Only cancel the order explicitly recorded by B; never another strategy."""
+    if not owned_order_id:
+        return 0
     try:
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus, OrderSide
@@ -818,6 +820,8 @@ def _cancel_open_buy_orders(tc, code: str) -> int:
 
         n = 0
         for o in open_orders:
+            if str(o.id) != str(owned_order_id):
+                continue
             try:
                 tc.cancel_order_by_id(str(o.id))
                 n += 1
@@ -989,7 +993,7 @@ def strategy_B_afterhours_add(code: str) -> bool:
         regular_close = float(q["regular_close"])
         after_gain = (price - regular_close) / regular_close if regular_close > 0 else 0.0
         limit_price = round(price, 2)
-        add_qty = max(int(math.floor(real_qty * 0.50)), 1)
+        add_qty = max(int(math.floor(float(row.get("qty") or 0) * 0.50)), 1)
 
         print(
             f"[B AH ADD] {code} price={price:.2f} regular_close={regular_close:.2f} "
@@ -1000,7 +1004,7 @@ def strategy_B_afterhours_add(code: str) -> bool:
         if after_gain < 0.05:
             return False
 
-        _cancel_open_buy_orders(tc, code)
+        _cancel_open_buy_orders(tc, code, (_load_one_b_row(conn, code) or {}).get("last_order_id"))
         order = _submit_limit_qty_ext(tc, code, add_qty, side="buy", limit_price=limit_price)
         order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
         status = str(getattr(order, "status", "") or "")
@@ -1019,15 +1023,10 @@ def strategy_B_afterhours_add(code: str) -> bool:
             _write_buy_cooldown(conn, code, order_id, f"AH_ADD_NO_FILL limit={limit_price:.2f}")
             return False
 
-        try:
-            pos = tc.get_open_position(code)
-            new_qty = int(float(getattr(pos, "qty", 0) or 0))
-            new_cost = float(getattr(pos, "avg_entry_price", 0) or 0)
-        except Exception:
-            old_qty = int(float(row.get("qty") or real_qty))
-            old_cost = float(row.get("cost_price") or filled_avg)
-            new_qty = old_qty + int(filled_qty)
-            new_cost = (old_qty * old_cost + int(filled_qty) * float(filled_avg)) / float(new_qty)
+        old_qty = int(float(row.get("qty") or 0))
+        old_cost = float(row.get("cost_price") or filled_avg)
+        new_qty = old_qty + int(filled_qty)
+        new_cost = (old_qty * old_cost + int(filled_qty) * float(filled_avg)) / float(new_qty)
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         _update_ops_fields(
@@ -1101,6 +1100,9 @@ def _sell_qty(conn, code: str, qty: int, reason: str, limit_price: float | None 
         qty = real_qty
 
     row = _load_one_b_row(conn, code) or {}
+    qty = min(qty, int(float(row.get('qty') or 0)))
+    if qty <= 0:
+        return False
     old_sl = row.get("stop_loss_price")
     old_tp = row.get("take_profit_price")
     old_b_stage = int(row.get("b_stage") or 0)
@@ -1191,7 +1193,7 @@ def _sell_qty(conn, code: str, qty: int, reason: str, limit_price: float | None 
     # ============================================================
     # 5) 按真实成交量更新 DB
     # ============================================================
-    remaining_qty = max(real_qty - sold_qty, 0)
+    remaining_qty = max(float(row.get("qty") or 0) - sold_qty, 0)
     new_is_bought = 1 if remaining_qty > 0 else 0
     new_can_sell = 1 if remaining_qty > 0 else 0
     new_can_buy = 0
@@ -1297,6 +1299,9 @@ def _sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason: s
     qty = min(qty, real_qty)
 
     row = _load_one_b_row(conn, code) or {}
+    qty = min(qty, int(float(row.get('qty') or 0)))
+    if qty <= 0:
+        return False
     old_sl = row.get("stop_loss_price")
     old_tp = row.get("take_profit_price")
     old_b_stage = int(row.get("b_stage") or 0)
@@ -1330,7 +1335,7 @@ def _sell_qty_limit_ext(conn, code: str, qty: int, limit_price: float, reason: s
         return False
 
     sold_qty = min(sold_qty, qty)
-    remaining_qty = max(real_qty - sold_qty, 0)
+    remaining_qty = max(float(row.get("qty") or 0) - sold_qty, 0)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _update_ops_fields(
         conn, code,
@@ -1429,32 +1434,12 @@ def _buy_add_qty(conn, code: str, add_qty: int, reason: str, snap_price: float) 
     # ============================================================
     # 4) 优先用 Alpaca position avg(最准),失败再手动算
     # ============================================================
-    pos_avg = None
-    pos_total_qty = None
-    try:
-        pos = tc.get_open_position(code)
-        pos_avg = float(getattr(pos, "avg_entry_price", 0) or 0)
-        pos_total_qty = int(float(getattr(pos, "qty", 0) or 0))
-    except Exception:
-        pass
-
     row = _load_one_b_row(conn, code) or {}
     old_qty = int(row.get("qty") or 0)
-    old_cost = float(row.get("cost_price") or 0.0)
-
-    if pos_avg and pos_avg > 0 and pos_total_qty and pos_total_qty > 0:
-        # ✅ 优先用 Alpaca 的真实持仓均价
-        new_qty = pos_total_qty
-        new_cost = pos_avg
-        cost_source = "alpaca_pos"
-    else:
-        # 回退:用订单 filled_avg + 旧 cost 加权
-        new_qty = old_qty + filled_qty
-        if old_qty > 0 and old_cost > 0:
-            new_cost = (old_qty * old_cost + filled_qty * filled_avg) / float(new_qty)
-        else:
-            new_cost = filled_avg
-        cost_source = "manual_calc"
+    old_cost = float(row.get("cost_price") or 0)
+    new_qty = old_qty + filled_qty
+    new_cost = (old_qty * old_cost + filled_qty * filled_avg) / new_qty
+    cost_source = "B_own_fills"
 
     # ============================================================
     # 5) 落库
@@ -2614,7 +2599,7 @@ def strategy_B_buy(code: str) -> bool:
         )
 
         # 防御：先取消同 symbol 下任何残留的 open 买单
-        _cancel_open_buy_orders(tc, code)
+        _cancel_open_buy_orders(tc, code, (_load_one_b_row(conn, code) or {}).get("last_order_id"))
 
         order = _submit_limit_buy_qty(tc, code, qty, limit_price=limit_price)
         order_id = getattr(order, "id", None) or getattr(order, "order_id", None)

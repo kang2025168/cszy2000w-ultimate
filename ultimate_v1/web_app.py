@@ -212,6 +212,8 @@ def _period_return_goal(period: str) -> dict:
     target = 0.05 if period == 'week' else 0.20
     current = curve.get('return_fraction')
     success, failure = settle_goals(period, curve, target)
+    from .adjusted_returns import tracking_today, TRACKING_START
+    waiting_start = tracking_today() < TRACKING_START
     start = date.fromisoformat(curve['start_date'])
     end = date.fromisoformat(curve['end_date'])
     return {
@@ -220,7 +222,7 @@ def _period_return_goal(period: str) -> dict:
         'unit': 'percent', 'decimals': 2, 'target': target, 'current': current,
         'completed_count': success, 'failed_count': failure,
         'desc': f'{start:%m/%d}–{end:%m/%d} · 含 A · 目标 {target:.0%} · 成功 {success} 次 / 失败 {failure} 次 · 已剔除入出金',
-        'status_label': curve.get('warning') or ('等待有效本金数据' if current is None else '期末结算'),
+        'status_label': curve.get('warning') or ('9月28日开始统计' if waiting_start else ('等待有效本金数据' if current is None else '期末结算')),
     }
 
 

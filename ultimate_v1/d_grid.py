@@ -25,7 +25,7 @@ from .yahoo_market_data import get_yahoo_stock_quote
 
 D_STOP_LOSS_PCT = 0.05
 
-ACTIVE_STATES = {"BUY_WORKING", "SELL_WORKING", "CLOSING", "BUY_SUBMITTING", "SELL_SUBMITTING"}
+ACTIVE_STATES = {"BUY_WORKING", "SELL_WORKING", "CLOSING", "BUY_SUBMITTING", "SELL_SUBMITTING", "ERROR"}
 TERMINAL_ORDER_STATES = {"filled", "canceled", "cancelled", "expired", "rejected"}
 D_AUTO_EXCLUDED_SYMBOLS = {
     "TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UPRO", "UVXY", "VXX",
@@ -181,7 +181,7 @@ def config_payload() -> dict:
         "last_entry_time": _runtime_text("D_GRID_LAST_ENTRY_TIME_LA", "D_GRID_LAST_ENTRY_TIME_LA", "12:30"),
         "flatten_time": "12:50",
         "flatten_minutes_before_close": 10,
-        "market_exit_minutes_before_close": 1,
+        "market_exit_minutes_before_close": 10,
         "stop_loss_pct": D_STOP_LOSS_PCT,
         "cooldown_seconds": int(float(_runtime_text("D_GRID_COOLDOWN_SEC", "D_GRID_COOLDOWN_SEC", "5"))),
         "buy_timeout_seconds": _buy_timeout_seconds(),
@@ -752,12 +752,12 @@ def _run_symbol_locked(symbol: str, *, now: datetime | None = None) -> str:
                 if not dry_run and cycle.get('sell_order_id') and state in {'SELL_WORKING','CLOSING','ERROR'}:
                     close_clock = client.get_clock()
                     seconds_left = (close_clock.next_close - close_clock.timestamp).total_seconds()
-                    if close_clock.is_open and 0 < seconds_left <= 60:
+                    if close_clock.is_open and 0 < seconds_left <= 600:
                         return _last_minute_exit(cur, config, cycle, client)
                 if state == 'ERROR' and str(cycle.get('last_error') or '').startswith('sell_') and cycle.get('sell_order_id'):
                     if dry_run or not bool(client.get_clock().is_open):
                         return 'close_recovery_waiting_market'
-                    return _advance_sell(cur, config, cycle, get_latest_stock_quote(symbol, pool='D'), False, client, closing=True)
+                    return _last_minute_exit(cur, config, cycle, client)
                 if state == "COOLDOWN":
                     until = cycle.get("cooldown_until")
                     if until and naive_now < until:
@@ -800,7 +800,8 @@ def _run_symbol_locked(symbol: str, *, now: datetime | None = None) -> str:
                                 False,
                                 client,
                                 closing=now.time() >= flatten_at,
-                                quote=get_latest_stock_quote(symbol, pool="D"),
+                                force_market=now.time() >= flatten_at,
+                                quote=None,
                             )
                         if status in TERMINAL_ORDER_STATES:
                             from .order_journal import update
@@ -849,10 +850,8 @@ def _run_symbol_locked(symbol: str, *, now: datetime | None = None) -> str:
 def run_all() -> list[dict]:
     ensure_schema()
     from .d_entry_filter import sample_tick
-    sample_tick()
-    selection = _auto_select_candidate()
-    rows = fetch_all("SELECT s.symbol FROM d_grid_symbols s LEFT JOIN d_grid_cycles c ON c.symbol=s.symbol WHERE s.enabled=1 OR c.state IN ('BUY_WORKING','SELL_WORKING','CLOSING','BUY_SUBMITTING','SELL_SUBMITTING') ORDER BY s.sort_order, s.symbol")
-    results = [{"symbol": "AUTO", "ok": True, "message": str(selection)}] if selection else []
+    rows = fetch_all("SELECT s.symbol FROM d_grid_symbols s LEFT JOIN d_grid_cycles c ON c.symbol=s.symbol WHERE s.enabled=1 OR c.state IN ('BUY_WORKING','SELL_WORKING','CLOSING','BUY_SUBMITTING','SELL_SUBMITTING','ERROR') ORDER BY s.sort_order, s.symbol")
+    results = []
     for row in rows:
         symbol = str(row["symbol"])
         try:
@@ -860,6 +859,15 @@ def run_all() -> list[dict]:
             results.append({"symbol": symbol, "ok": True, "message": message})
         except Exception as exc:
             results.append({"symbol": symbol, "ok": False, "message": str(exc)})
+    selection = None
+    # Entry sampling failures must never interrupt management of existing lots.
+    try:
+        sample_tick()
+        selection = _auto_select_candidate()
+    except Exception as exc:
+        selection = {'entry_error': str(exc)}
+    if selection:
+        results.append({'symbol':'AUTO', 'ok':True, 'message':str(selection)})
     rejected = {r['symbol'] for r in results if str(r.get('message', '')).startswith('entry_filter:') and r.get('message') != 'entry_filter:collecting_prices'}
     if rejected:
         # Do not wait for the hourly rotation after a failed pre-buy check.
