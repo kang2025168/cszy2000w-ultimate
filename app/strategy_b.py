@@ -463,6 +463,8 @@ def _submit_market_qty(trading_client, code: str, qty: int, side: str):
         limit_price=limit_price,
         time_in_force=TimeInForce.DAY,
     )
+    import uuid
+    req.client_order_id = 'pool-B-' + uuid.uuid4().hex
     return trading_client.submit_order(order_data=req)
 
 
@@ -482,6 +484,8 @@ def _submit_limit_sell_qty(trading_client, code: str, qty: int, limit_price: flo
         time_in_force=tif,
         extended_hours=bool(B_ALLOW_EXTENDED),
     )
+    import uuid
+    req.client_order_id = 'pool-B-' + uuid.uuid4().hex
     return trading_client.submit_order(order_data=req)
 
 
@@ -762,6 +766,8 @@ def _submit_limit_buy_qty(trading_client, code: str, qty: int, limit_price: floa
         time_in_force=tif,
         extended_hours=bool(B_ALLOW_EXTENDED),
     )
+    import uuid
+    req.client_order_id = 'pool-B-' + uuid.uuid4().hex
     return trading_client.submit_order(order_data=req)
 
 
@@ -778,6 +784,8 @@ def _submit_limit_qty_ext(trading_client, code: str, qty: int, side: str, limit_
         time_in_force=TimeInForce.DAY,
         extended_hours=True,
     )
+    import uuid
+    req.client_order_id = 'pool-B-' + uuid.uuid4().hex
     return trading_client.submit_order(order_data=req)
 
 

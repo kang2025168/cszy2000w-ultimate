@@ -3,7 +3,7 @@ from __future__ import annotations
 """多策略资金池管理：计算 A/B/C/D 目标资金、已用资金和开仓许可。"""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from . import alpaca_gateway
@@ -41,6 +41,8 @@ class CapitalAllocation:
     available: dict[str, float]
     pool_brokers: dict[str, str]
     broker_snapshots: dict[str, dict]
+
+    weekly: dict = field(default_factory=dict)
 
     def target_for(self, strategy_group: str) -> float:
         return float(getattr(self, f"{strategy_group.upper()}_target", 0.0))
@@ -306,8 +308,8 @@ def _pool_base_percents() -> dict[str, float]:
     return adjusted
 
 
-def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpaca_gateway.AccountSnapshot]) -> date:
-    """当月没有资金池记录时，按当月账户资金和模式比例写入一次。"""
+def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpaca_gateway.AccountSnapshot]) -> tuple[date, dict]:
+    """更新额度缓存；B/C/D 本金由持久化周账本提供。"""
     month = _month_start()
     weights, _allow_d = _mode_weights(mode)
     pool_base_percents = _pool_base_percents()
@@ -322,6 +324,23 @@ def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpac
         "C": pool_snapshot("C").equity * pool_base_percents["C"],
         "D": pool_snapshot("D").equity * pool_base_percents["D"],
     }
+    from .weekly_pools import refresh
+    try:
+        weekly = refresh(broker_snaps)
+    except Exception:
+        # Never fall back to a live redistribution when the weekly ledger fails.
+        weekly = dict(error='周资金账本同步失败，暂停新增额度', groups={
+            g:dict(initial=base_targets[g],equity=base_targets[g],pnl=0,net_flow=0,return_pct=None)
+            for g in ('B','C','D')})
+    for group in ('B', 'C', 'D'):
+        base_targets[group] = max(0.0, weekly['groups'][group]['equity'])
+        pool_base_percents[group] = {'B': .4, 'C': .4, 'D': .2}[group]
+    # Unallocated account costs must not create extra aggregate buying capacity.
+    margin_equity = max(0.0, float(pool_snapshot('B').equity))
+    ledger_total = sum(base_targets[g] for g in ('B','C','D'))
+    if ledger_total > margin_equity and ledger_total > 0:
+        for group in ('B','C','D'):
+            base_targets[group] *= margin_equity / ledger_total
     total_pct, pool_pct = _risk_percents()
     with db_conn() as conn:
         with conn.cursor() as cur:
@@ -377,7 +396,7 @@ def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpac
                         group,
                     ),
                 )
-    return month
+    return month, weekly
 
 
 def _capital_pool_rows(month: date) -> list[dict]:
@@ -442,7 +461,7 @@ def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
     if mode is None:
         mode = get_risk_state().mode
     mode = (mode or s.capital_mode or "NORMAL").upper()
-    month = _ensure_monthly_capital_pools(mode, snap, broker_snaps)
+    month, weekly = _ensure_monthly_capital_pools(mode, snap, broker_snaps)
     rows = refresh_capital_pool_usage(month)
     by_group = {str(row["strategy_group"]).upper(): row for row in rows}
     targets = {group: float((by_group.get(group) or {}).get("risk_target_capital") or 0) for group in ("A", "B", "C", "D")}
@@ -453,9 +472,14 @@ def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
     margin_mode, margin_usage, margin_reason = resolve_margin_usage_pct()
     used = {group: float((by_group.get(group) or {}).get("used_capital") or 0) for group in ("A", "B", "C", "D")}
     available = {group: float((by_group.get(group) or {}).get("available_capital") or 0) for group in ("A", "B", "C", "D")}
+    if weekly.get('error'):
+        for group in ('B', 'C', 'D'):
+            available[group] = 0.0
+            targets[group] = min(targets[group], used[group])
     total_risk_percent = max((float(row.get("total_risk_percent") or 0) for row in rows), default=0.0)
     return CapitalAllocation(
         mode=mode,
+        weekly=weekly,
         allocation_month=month,
         equity=snap.equity,
         buying_power=snap.buying_power,

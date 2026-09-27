@@ -229,7 +229,7 @@ def _has_buying_power(client, qty: int, price: float) -> bool:
     return True
 
 
-def _submit_limit_and_wait(client, symbol: str, qty: int, side: str, price: float) -> FillResult:
+def _submit_limit_and_wait(client, symbol: str, qty: int, side: str, price: float, group: str = "C") -> FillResult:
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest
 
@@ -249,6 +249,8 @@ def _submit_limit_and_wait(client, symbol: str, qty: int, side: str, price: floa
             time_in_force=TimeInForce.DAY,
             limit_price=limit_price,
         )
+        import uuid
+        order_data.client_order_id = 'pool-' + group + '-' + uuid.uuid4().hex
         order = client.submit_order(
             order_data=order_data
         )
@@ -624,7 +626,7 @@ def _buy_t_qty(conn, client, row: dict, qty: int, current_price: float, intent: 
         return FillResult(False, error="buying_power")
     if not _acquire_intent_lock(conn, client, row, intent, "buy"):
         return FillResult(False, error="intent_lock_busy")
-    fill = _submit_limit_and_wait(client, row["stock_code"], qty, "BUY", current_price)
+    fill = _submit_limit_and_wait(client, row["stock_code"], qty, "BUY", current_price, group=_ac_type(row))
     _write_last_order(conn, row, fill, "buy", intent)
     return fill
 
@@ -632,7 +634,7 @@ def _buy_t_qty(conn, client, row: dict, qty: int, current_price: float, intent: 
 def _sell_t_qty(conn, client, row: dict, qty: int, current_price: float, intent: str) -> FillResult:
     if not _acquire_intent_lock(conn, client, row, intent, "sell"):
         return FillResult(False, error="intent_lock_busy")
-    fill = _submit_limit_and_wait(client, row["stock_code"], qty, "SELL", current_price)
+    fill = _submit_limit_and_wait(client, row["stock_code"], qty, "SELL", current_price, group=_ac_type(row))
     _write_last_order(conn, row, fill, "sell", intent)
     return fill
 

@@ -1181,7 +1181,7 @@
                           <option value="1.5">固定 150%</option>
                         </select>
                       </div>
-                      <div class="pool-switches" id="poolSwitches"></div>
+
                     </div>
                   </div>
                   <div class="rebalance-card"><div class="rebalance-advice" id="rebalanceAdvice"></div></div>
@@ -2211,6 +2211,21 @@
       const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
       const riskPct = poolRiskPct(g, cap);
+      const weekly = cap.weekly_pools;
+      const ledger = weekly?.groups?.[g];
+      if (ledger && g !== 'A') {
+        const pnl = Number(ledger.pnl || 0);
+        const pct = ledger.return_pct == null ? '--' : (ledger.return_pct * 100).toFixed(2) + '%';
+        const note = weekly.error ? '数据待核对 · 暂停新增额度' : weekly.preview ? '周一开始分配 · 当前为预估' : `${weekly.week_start} 本周分配 · 收益为税费前估算`;
+        const unallocated = Number(weekly.unallocated || 0);
+        return `<div class="hero-pool-row"><div class="hero-pool-title"><span class="hero-pool-name">${poolName(g)}</span><span class="hero-pool-total">周初本金 ${money(ledger.initial)}</span></div>
+          <div class="hero-pool-meta">${note}</div>
+          <div class="hero-pool-mid"><div><div class="small-muted">当前策略净资产</div><span class="hero-pool-used">${money(ledger.equity)}</span></div><div style="text-align:right"><div class="small-muted">本周盈亏</div><strong style="color:${pnl < 0 ? '#dc2626' : '#15936a'}">${weekly.error ? '待核对' : money(pnl) + ' (' + pct + ')'}</strong></div></div>
+          <div class="pool-amounts"><span>持仓占用 ${money(used)}</span><span>可开仓 ${money(av)}</span></div>
+          <div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div>
+          <div class="hero-pool-meta">开仓预算 ${money(displayTarget)} · ${poolRiskLabel(g, riskPct)}${ledger.net_flow ? ' · 净转入 ' + money(ledger.net_flow) : ''}</div>
+          ${g === 'D' && Math.abs(unallocated) >= .01 ? `<div class="small-muted">账户待归属差额 ${money(unallocated)}（含费用、期权等）</div>` : ''}</div>`;
+      }
       const totalLabel = g === 'A' ? '现金预算' : '资金池预算';
       return `<div class="hero-pool-row"><div class="hero-pool-top"><div><div class="hero-pool-title"><span class="hero-pool-name">${poolName(g)}</span><span class="hero-pool-total">${totalLabel} ${money(displayTarget)}</span></div><div class="hero-pool-meta">${poolBaseLabel(g, basePct)} · ${poolRiskLabel(g, riskPct)}</div></div><span class="small-muted">${w.toFixed(1)}%</span></div><div class="hero-pool-mid"><span class="hero-pool-used">${money(used)}</span><span class="hero-pool-available">${poolAvailableLabel(g)} ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
@@ -2223,9 +2238,9 @@
       const basePercents = cap.base_percents || {};
       const amounts = {
         A: equityFor('A'),
-        B: equityFor('B') * Number(basePercents.B ?? 0.40),
-        C: equityFor('C') * Number(basePercents.C ?? 0.40),
-        D: equityFor('D') * Number(basePercents.D ?? 0.20),
+        B: cap.weekly_pools?.groups?.B?.equity ?? equityFor('B') * Number(basePercents.B ?? 0.40),
+        C: cap.weekly_pools?.groups?.C?.equity ?? equityFor('C') * Number(basePercents.C ?? 0.40),
+        D: cap.weekly_pools?.groups?.D?.equity ?? equityFor('D') * Number(basePercents.D ?? 0.20),
       };
       const uniqueProfiles = [...new Set(Object.values(profiles).filter(Boolean))];
       const total = uniqueProfiles.reduce((sum, profile) => sum + Math.max(0, Number(snapshots[profile]?.equity || 0)), 0);

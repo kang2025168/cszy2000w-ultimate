@@ -145,6 +145,7 @@ def _allocation_payload() -> dict:
             "C": allocation.C_target,
             "D": allocation.D_target,
         },
+        "weekly_pools": allocation.weekly,
         "base_targets": allocation.base_targets,
         "base_percents": allocation.base_percents,
         "pool_risk_percents": allocation.pool_risk_percents,
