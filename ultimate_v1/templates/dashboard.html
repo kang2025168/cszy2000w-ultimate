@@ -261,7 +261,7 @@
     #capitalDonut { width:176px; height:176px; }
     .legend { display:grid; gap:8px; min-width:120px; }
     .legend-row { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); }
-    .legend-amount { display:none; }
+    .legend-amount { display:inline; color:var(--ink); font-weight:750; white-space:nowrap; }
     .swatch { width:9px; height:9px; border-radius:2px; }
     .bot-grid { flex:1; min-height:174px; display:flex; flex-direction:column; gap:9px; padding:12px 2px 4px; }
     .bot-row { display:grid; grid-template-columns:minmax(90px,1fr) 18px 42px; align-items:center; gap:10px; min-height:28px; font-size:12px; color:var(--ink); padding:2px 6px; border-radius:7px; background:rgba(255,255,255,.62); }
@@ -935,8 +935,10 @@
       .hero-top { padding:8px; gap:8px; }
       .hero-donut { padding:9px; }
       .hero-donut-head { gap:6px; }
-      .hero-carousel-page .donut-wrap { min-height:138px; gap:12px; }
-      #capitalDonut { width:138px; height:138px; }
+      .hero-carousel-page .donut-wrap { min-height:172px; gap:10px; justify-content:flex-start; }
+      #capitalDonut { width:180px; height:auto; aspect-ratio:1; flex:0 1 180px; min-width:130px; }
+      #donutLegend { min-width:0; flex:1 0 auto; }
+      #donutLegend .legend-row { gap:6px; font-size:11px; white-space:nowrap; }
       .hero-side-column { padding:6px; }
       .hero-pools-list { gap:6px; }
       .hero-pools-list .hero-pool-row { padding:8px; gap:4px; align-content:start; }
