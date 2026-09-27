@@ -241,6 +241,8 @@
     .annual-goal.stock_growth .annual-fill { background:var(--gold); }
     .annual-goal.fitness .annual-fill { background:var(--blue); }
     .annual-goal.vocabulary .annual-fill { background:var(--cyan); }
+    .annual-progress-amount { display:flex; align-items:center; flex-wrap:wrap; gap:6px 16px; min-width:0; }
+    .annual-target-amount { color:var(--ink); }
     .annual-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--muted); font-size:11px; font-weight:800; }
     .annual-foot span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .event-date { color:var(--muted); font-weight:850; }
@@ -2103,6 +2105,7 @@
         const currentLabel = goal.current == null ? '--' : goalValue(goal, current);
         const targetLabel = goalValue(goal, target);
         const extra = `${currentLabel} / ${targetLabel}`;
+        const targetAmount = Object.hasOwn(goal, 'target_profit') ? `<span class="annual-target-amount">目标收益 ${goal.target_profit == null ? '--' : money(goal.target_profit)}</span>` : '';
         const statusLabel = goal.status_label || (rawPct >= 100 ? '已达成' : '推进中');
         return `
           <div class="annual-goal ${goal.key || ''}">
@@ -2111,7 +2114,7 @@
               <div class="annual-actions">${goal.step ? `<button class="annual-step-btn" onclick="advanceAnnualGoal('${goal.key}')">${goal.action_label || '+'}</button>` : ''}<span class="annual-pct">${pctText}</span></div>
             </div>
             <div class="annual-bar"><div class="annual-fill" style="width:${donePct}%"></div></div>
-            <div class="annual-foot"><span>${extra}</span><span>${statusLabel}</span></div>
+            <div class="annual-foot"><div class="annual-progress-amount"><span>${extra}</span>${targetAmount}</div><span>${statusLabel}</span></div>
           </div>`;
       }).join('') : '<div class="small-muted">暂无年度任务数据</div>';
     }

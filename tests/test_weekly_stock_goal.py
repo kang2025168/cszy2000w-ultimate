@@ -5,11 +5,12 @@ from ultimate_v1 import return_goals as goals
 
 class ReturnGoalTests(unittest.TestCase):
     def test_week_and_month_use_curve_and_distinct_targets(self):
-        curve={'start_date':'2026-09-01','end_date':'2026-09-30','rows':[{'equity':1000},{'equity':1200}], 'return_fraction':.2}
+        curve={'start_date':'2026-09-01','end_date':'2026-09-30','rows':[{'equity':1000},{'equity':1200}], 'return_fraction':.2, 'basis':3173.16}
         with patch('ultimate_v1.adjusted_returns.curve',return_value=curve), patch.object(goals,'settle_goals',return_value=(2,1)) as settle:
             for period,target in [('week',.05),('month',.20)]:
                 result=web._period_return_goal(period)
                 self.assertEqual(result['target'],target)
+                self.assertEqual(result['target_profit'],round(3173.16*target,2))
                 self.assertEqual(result['current'],.20)
                 self.assertEqual(result['failed_count'],1)
                 self.assertNotIn('step',result)

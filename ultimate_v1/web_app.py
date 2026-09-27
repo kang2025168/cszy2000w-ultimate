@@ -211,6 +211,8 @@ def _period_return_goal(period: str) -> dict:
     curve = adjusted_curve(period)
     target = 0.05 if period == 'week' else 0.20
     current = curve.get('return_fraction')
+    basis = float(curve.get('basis') or 0)
+    target_profit = round(basis * target, 2) if math.isfinite(basis) and basis > 0 else None
     success, failure = settle_goals(period, curve, target)
     from .adjusted_returns import tracking_today, TRACKING_START
     waiting_start = tracking_today() < TRACKING_START
@@ -220,7 +222,7 @@ def _period_return_goal(period: str) -> dict:
         'key': 'weekly_stock' if period == 'week' else 'stock_growth',
         'name': '周收益目标' if period == 'week' else '月度收益目标',
         'unit': 'percent', 'decimals': 2, 'target': target, 'current': current,
-        'completed_count': success, 'failed_count': failure,
+        'completed_count': success, 'failed_count': failure, 'target_profit': target_profit,
         'desc': f'{start:%m/%d}–{end:%m/%d} · 含 A · 目标 {target:.0%} · 成功 {success} 次 / 失败 {failure} 次 · 已剔除入出金',
         'status_label': curve.get('warning') or ('9月28日开始统计' if waiting_start else ('等待有效本金数据' if current is None else '期末结算')),
     }
