@@ -897,6 +897,26 @@
     .modal input { width:100%; height:38px; border:1px solid var(--line); border-radius:7px; padding:0 10px; }
     .modal-actions { margin-top:14px; display:flex; justify-content:flex-end; gap:8px; }
     .danger-action { border:0; background:#b42318; color:#fff; font-weight:800; }
+    /* Keep the overview compact: action summary fills the space below risk controls. */
+    @media (min-width: 761px) {
+      .dash { align-items:start; }
+      .hero-top { grid-template-columns:minmax(300px,1.1fr) minmax(290px,1fr); gap:12px; }
+      .hero-main-column { display:contents; }
+      .hero-donut { grid-column:1; grid-row:2; padding:12px; }
+      .capital-bottom-grid { grid-column:1; grid-row:3; }
+      .hero-side-column { grid-column:2; grid-row:2 / span 3; align-self:start; }
+      .hero-top > .daily-action-panel { grid-column:1; grid-row:4; grid-template-columns:1fr 1fr; padding:12px; }
+      .hero-top > .daily-action-panel .daily-action-section { min-height:0; padding:0 10px; gap:6px; }
+      .hero-top > .daily-action-panel .daily-action-section:first-child { padding-left:0; }
+      .hero-top > .daily-action-panel .daily-action-section:nth-child(2) { border-right:0; padding-right:0; }
+      .hero-top > .daily-action-panel .daily-action-section:last-child { grid-column:1 / -1; border-top:1px solid #e6edf5; border-right:0; padding:10px 0 0; margin-top:10px; }
+      .hero-pool-row { gap:7px; padding:10px; }
+      .hero-pool-mid { flex-wrap:wrap; row-gap:6px; }
+      .hero-pool-row .bar { margin-top:2px; }
+      .hero-pool-meta { line-height:1.45; }
+      .right-stack { gap:14px; }
+      #equityChart { height:230px; flex-basis:230px; }
+    }
     @media (max-width: 1180px) { .dash { grid-template-columns:1fr; } .capital-hero { flex:none; } .chart-panel { min-height:324px; } }
     @media (max-width: 760px) {
       body { background:#f7f9fc; }
