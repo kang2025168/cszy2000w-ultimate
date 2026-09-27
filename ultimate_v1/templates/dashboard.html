@@ -904,7 +904,9 @@
       .hero-main-column { display:contents; }
       .hero-donut { grid-column:1; grid-row:2; padding:12px; }
       .capital-bottom-grid { grid-column:1; grid-row:3; }
-      .hero-side-column { grid-column:2; grid-row:2 / span 3; align-self:start; }
+      .hero-side-column { grid-column:2; grid-row:2 / span 3; align-self:stretch; grid-template-rows:minmax(0,1fr); }
+      .hero-pools-list { grid-template-rows:repeat(4,minmax(min-content,1fr)); }
+      .hero-pools-list .hero-pool-row { align-content:space-between; }
       .hero-top > .daily-action-panel { grid-column:1; grid-row:4; grid-template-columns:1fr 1fr; padding:12px; }
       .hero-top > .daily-action-panel .daily-action-section { min-height:0; padding:0 10px; gap:6px; }
       .hero-top > .daily-action-panel .daily-action-section:first-child { padding-left:0; }
@@ -2245,6 +2247,16 @@
           <div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div>
           <div class="hero-pool-meta">开仓预算 ${money(displayTarget)} · ${poolRiskLabel(g, riskPct)}${ledger.net_flow ? ' · 净转入 ' + money(ledger.net_flow) : ''}</div>
           ${g === 'D' && Math.abs(unallocated) >= .01 ? `<div class="small-muted">账户待归属差额 ${money(unallocated)}（含费用、期权等）</div>` : ''}</div>`;
+      }
+      if (g === 'A') {
+        const equity = cap.broker_snapshots?.[cap.pool_brokers?.A]?.equity;
+        const equityLabel = equity == null ? '--' : money(Number(equity));
+        return `<div class="hero-pool-row"><div class="hero-pool-title"><span class="hero-pool-name">${poolName(g)}</span><span class="hero-pool-total">现金预算 ${money(displayTarget)}</span></div>
+          <div class="hero-pool-meta">养老金独立账户 · 不参与 B/C/D 分配</div>
+          <div class="hero-pool-mid"><div><div class="small-muted">当前账户净资产</div><span class="hero-pool-used">${equityLabel}</span></div><div style="text-align:right"><div class="small-muted">可用现金</div><strong style="color:#2563eb">${money(av)}</strong></div></div>
+          <div class="pool-amounts"><span>持仓占用 ${money(used)}</span><span>预算使用 ${w.toFixed(1)}%</span></div>
+          <div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div>
+          <div class="hero-pool-meta">现金预算 ${money(displayTarget)} · 无杠杆</div></div>`;
       }
       const totalLabel = g === 'A' ? '现金预算' : '资金池预算';
       return `<div class="hero-pool-row"><div class="hero-pool-top"><div><div class="hero-pool-title"><span class="hero-pool-name">${poolName(g)}</span><span class="hero-pool-total">${totalLabel} ${money(displayTarget)}</span></div><div class="hero-pool-meta">${poolBaseLabel(g, basePct)} · ${poolRiskLabel(g, riskPct)}</div></div><span class="small-muted">${w.toFixed(1)}%</span></div><div class="hero-pool-mid"><span class="hero-pool-used">${money(used)}</span><span class="hero-pool-available">${poolAvailableLabel(g)} ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
