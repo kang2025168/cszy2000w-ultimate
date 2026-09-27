@@ -938,7 +938,9 @@
       .hero-carousel-page .donut-wrap { min-height:172px; gap:10px; justify-content:flex-start; }
       #capitalDonut { width:180px; height:auto; aspect-ratio:1; flex:0 1 180px; min-width:130px; }
       #donutLegend { min-width:0; flex:1 0 auto; }
-      #donutLegend .legend-row { gap:6px; font-size:11px; white-space:nowrap; }
+      #donutLegend .legend-row { display:grid; grid-template-columns:9px max-content minmax(42px,max-content) minmax(0,1fr); gap:6px; font-size:11px; white-space:nowrap; }
+      #donutLegend .legend-amount { justify-self:end; text-align:right; font-variant-numeric:tabular-nums; }
+      #donutLegend .legend-row > span:nth-child(3) { text-align:right; font-variant-numeric:tabular-nums; }
       .hero-side-column { padding:6px; }
       .hero-pools-list { gap:6px; }
       .hero-pools-list .hero-pool-row { padding:8px; gap:4px; align-content:start; }
