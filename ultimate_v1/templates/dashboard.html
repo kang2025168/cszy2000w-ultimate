@@ -926,6 +926,48 @@
       .right-stack .chart-panel .mobile-collapse-body { flex:1 0 auto; }
       .right-stack #equityChart { height:0; min-height:230px; flex:1 0 230px; }
     }
+    /* Desktop overview: spend height on data rather than nested card padding. */
+    @media (min-width: 1181px) {
+      main { padding-top:8px; }
+      .dash { padding:10px; column-gap:12px; row-gap:6px; }
+      .left-titlebar { min-height:46px; }
+      .capital-hero, .annual-panel, .chart-panel { padding:10px; }
+      .hero-top { padding:8px; gap:8px; }
+      .hero-donut { padding:9px; }
+      .hero-donut-head { gap:6px; }
+      .hero-carousel-page .donut-wrap { min-height:138px; gap:12px; }
+      #capitalDonut { width:138px; height:138px; }
+      .hero-side-column { padding:6px; }
+      .hero-pools-list { gap:6px; }
+      .hero-pools-list .hero-pool-row { padding:8px; gap:4px; align-content:start; }
+      .hero-pool-row .hero-pool-meta { font-size:10px; line-height:1.3; }
+      .hero-pool-row .hero-pool-used { font-size:17px; }
+      .hero-pool-row .small-muted, .hero-pool-row .pool-amounts { font-size:11px; }
+      .hero-pool-row .bar { height:6px; margin-top:1px; }
+      .hero-pool-total { min-height:20px; padding:2px 6px; font-size:11px; }
+      .capital-bottom-grid { gap:8px; }
+      .risk-compact-card { padding:8px; }
+      .risk-topbar, .risk-head { gap:6px; }
+      .market-risk-inline .risk-chip { min-height:36px; padding:4px; gap:2px; }
+      .risk-actions > * { height:30px; }
+      .rebalance-advice { min-height:0; padding:7px 8px; font-size:11px; gap:4px 8px; }
+      .hero-top > .daily-action-panel { padding:8px; }
+      .hero-top > .daily-action-panel .daily-action-section { gap:4px; }
+      .hero-top > .daily-action-panel .daily-action-section:last-child { padding-top:6px; margin-top:6px; }
+      .daily-action-main { font-size:18px; }
+      .daily-action-note { font-size:11px; line-height:1.3; }
+      .daily-action-advice { font-size:12px; line-height:1.3; }
+      .right-stack { gap:8px; }
+      .annual-head { margin-bottom:8px; }
+      .annual-grid { gap:6px; }
+      .annual-grid .annual-goal { min-height:0; padding:8px 10px; gap:5px; }
+      .annual-grid .annual-bar { height:5px; }
+      .annual-grid .annual-desc { margin-top:2px; line-height:1.3; }
+      .annual-step-btn { height:24px; width:36px; }
+      .annual-progress-amount { gap:4px 10px; }
+      .chart-head { margin-bottom:4px; }
+      .right-stack #equityChart { min-height:180px; flex-basis:180px; }
+    }
     @media (max-width: 1180px) { .dash { grid-template-columns:1fr; } .capital-hero { flex:none; } .chart-panel { min-height:324px; } }
     @media (max-width: 760px) {
       body { background:#f7f9fc; }
