@@ -919,6 +919,13 @@
       .right-stack { gap:14px; }
       #equityChart { height:230px; flex-basis:230px; }
     }
+    @media (min-width: 1181px) {
+      .right-stack { align-self:stretch; }
+      .right-stack .annual-panel { flex:0 0 auto; }
+      .right-stack .chart-panel { flex:1 0 auto; }
+      .right-stack .chart-panel .mobile-collapse-body { flex:1 0 auto; }
+      .right-stack #equityChart { height:0; min-height:230px; flex:1 0 230px; }
+    }
     @media (max-width: 1180px) { .dash { grid-template-columns:1fr; } .capital-hero { flex:none; } .chart-panel { min-height:324px; } }
     @media (max-width: 760px) {
       body { background:#f7f9fc; }
@@ -1895,6 +1902,17 @@
     try { amountsHidden = localStorage.getItem('overviewAmountsHidden') === '1'; } catch (_) {}
     let privacyOverview = true;
     let privacyCurve = null;
+    // Redraw at the actual plot height after adjacent cards change size.
+    let equityChartSize = '';
+    const equityChartObserver = new ResizeObserver(entries => {
+      const {width, height} = entries[0].contentRect;
+      const size = `${width.toFixed(1)}:${height.toFixed(1)}`;
+      if (width <= 0 || height <= 0 || size === equityChartSize) return;
+      equityChartSize = size;
+      requestAnimationFrame(() => { if (privacyCurve) drawChart(privacyCurve); });
+    });
+    equityChartObserver.observe(document.getElementById('equityChart'));
+
     let privacyCapital = null;
     function maskMoneyNodes() {
       const root = document.querySelector('main');
