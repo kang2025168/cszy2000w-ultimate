@@ -3,8 +3,10 @@ from __future__ import annotations
 """中央状态读写：风险状态、资金状态、机器人心跳、机器人命令。"""
 
 import json
+import time
 from calendar import monthrange
 from datetime import date, datetime, timedelta
+from threading import Lock
 
 from .db import db_conn, fetch_all, fetch_one
 from .risk_controller import RiskState
@@ -66,11 +68,25 @@ def write_risk_state(state: RiskState) -> None:
             )
 
 
+_APP_SETTING_CACHE: dict[str, tuple[str, float]] = {}
+_APP_SETTING_CACHE_TTL = 60.0
+_APP_SETTING_LOCK = Lock()
+
+
 def get_app_setting(key: str, default: str = "") -> str:
+    now = time.monotonic()
+    with _APP_SETTING_LOCK:
+        hit = _APP_SETTING_CACHE.get(key)
+        if hit is not None and now - hit[1] < _APP_SETTING_CACHE_TTL:
+            return hit[0]
     row = fetch_one("SELECT setting_value FROM app_settings WHERE setting_key=%s LIMIT 1", (key,))
     if row and row.get("setting_value") is not None:
-        return str(row.get("setting_value") or "")
-    return default
+        value = str(row.get("setting_value") or "")
+    else:
+        value = default
+    with _APP_SETTING_LOCK:
+        _APP_SETTING_CACHE[key] = (value, now)
+    return value
 
 
 def set_app_setting(key: str, value: str) -> None:
@@ -84,6 +100,8 @@ def set_app_setting(key: str, value: str) -> None:
                 """,
                 (key, value),
             )
+    with _APP_SETTING_LOCK:
+        _APP_SETTING_CACHE.pop(key, None)
 
 
 def latest_risk_state() -> dict | None:

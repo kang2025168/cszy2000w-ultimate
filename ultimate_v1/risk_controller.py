@@ -13,6 +13,7 @@ D 是日内测试策略，单独使用保证金额度池，不参与 A/C/B 本�
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from urllib.parse import quote
@@ -667,8 +668,27 @@ def can_open(strategy_group: str) -> tuple[bool, str]:
         return True, "risk_advisory_unavailable"
 
 
+_RISK_LOG_LAST_TS = 0.0
+_RISK_LOG_LAST_SIG = None
+
+
 def log_risk_state() -> RiskState:
     state = get_risk_state()
+    global _RISK_LOG_LAST_TS, _RISK_LOG_LAST_SIG
+    sig = (
+        state.enabled, state.mode, state.reason,
+        round(state.daily_pnl_pct, 4), state.loss_days, round(state.max_drawdown, 4),
+        state.account_metrics_source, round(state.risk_multiplier, 4),
+        state.market_trend, round(state.qqq_change_pct, 4), round(state.vix, 2),
+        round(state.recommended_exposure, 4),
+        state.block_all_new, state.block_a, state.block_c, state.block_b, state.block_d,
+        state.suggest_mode,
+    )
+    now = time.monotonic()
+    if sig == _RISK_LOG_LAST_SIG and now - _RISK_LOG_LAST_TS < 600:
+        return state
+    _RISK_LOG_LAST_TS = now
+    _RISK_LOG_LAST_SIG = sig
     print(f"[RISK] enabled={1 if state.enabled else 0}", flush=True)
     print(f"[RISK] mode={state.mode}", flush=True)
     print(f"[RISK] mode_label={CAPITAL_MODE_LABELS.get(state.mode, state.mode)} reason={state.reason}", flush=True)

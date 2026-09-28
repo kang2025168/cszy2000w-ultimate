@@ -623,8 +623,14 @@ def _major_events_payload() -> dict:
     return {"ok": True, "rows": events[:10], "path": str(csv_path)}
 
 
+_STOCK_QUOTE_CACHE_TABLE_READY = False
+
+
 def _ensure_stock_quote_cache() -> None:
     """缓存本地日线缺失的观察票价格，主要补 ETF/ADR/OTC 代码。"""
+    global _STOCK_QUOTE_CACHE_TABLE_READY
+    if _STOCK_QUOTE_CACHE_TABLE_READY:
+        return
     with db_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -640,6 +646,7 @@ def _ensure_stock_quote_cache() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+    _STOCK_QUOTE_CACHE_TABLE_READY = True
 
 
 def _quote_cache(symbols: list[str]) -> dict[str, dict]:
@@ -721,10 +728,10 @@ def _latest_price_meta(symbols: list[str]) -> dict[str, dict]:
         f"""
         SELECT symbol, `date`, `close`, rn
         FROM (
-            SELECT UPPER(symbol) AS symbol, `date`, `close`,
-                   ROW_NUMBER() OVER (PARTITION BY UPPER(symbol) ORDER BY `date` DESC) AS rn
+            SELECT symbol, `date`, `close`,
+                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY `date` DESC) AS rn
             FROM stock_prices_pool
-            WHERE UPPER(symbol) IN ({placeholders})
+            WHERE symbol IN ({placeholders})
               AND `close` IS NOT NULL
         ) x
         WHERE rn <= 2
@@ -1292,7 +1299,7 @@ def _latest_table_date(table: str, column: str) -> dict:
     """读取定时任务产物表的最新日期和行数。"""
     rows = fetch_all(
         f"""
-        SELECT MAX(DATE(`{column}`)) AS latest_date, COUNT(*) AS total_rows
+        SELECT MAX(`{column}`) AS latest_date, COUNT(*) AS total_rows
         FROM `{table}`
         """
     )
@@ -1301,7 +1308,7 @@ def _latest_table_date(table: str, column: str) -> dict:
     latest_date = date_value.isoformat() if isinstance(date_value, date) else str(date_value or "")
     latest_count = 0
     if latest_date:
-        count_rows = fetch_all(f"SELECT COUNT(*) AS row_count FROM `{table}` WHERE DATE(`{column}`)=%s", (latest_date,))
+        count_rows = fetch_all(f"SELECT COUNT(*) AS row_count FROM `{table}` WHERE `{column}`=%s", (latest_date,))
         latest_count = int((count_rows[0] if count_rows else {}).get("row_count") or 0)
     return {
         "latest_date": latest_date,
@@ -1404,9 +1411,12 @@ def _schedules_payload() -> dict:
     return {"ok": True, "generated_at": _now_market_tz().isoformat(timespec="seconds"), "tasks": tasks, "bot_tasks": bot_tasks}
 
 
-def _sync_buy_bot_control(bot_name: str, enabled: bool) -> None:
-    """让网页机器人开关同步旧买入总控，避免进程开着但策略仍被 bot_control 挡住。"""
-    if bot_name not in {"b_buy_bot", "f_buy_bot"}:
+_BOT_CONTROL_TABLE_READY = False
+
+
+def _ensure_bot_control_table() -> None:
+    global _BOT_CONTROL_TABLE_READY
+    if _BOT_CONTROL_TABLE_READY:
         return
     with db_conn() as conn:
         with conn.cursor() as cur:
@@ -1424,6 +1434,16 @@ def _sync_buy_bot_control(bot_name: str, enabled: bool) -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+    _BOT_CONTROL_TABLE_READY = True
+
+
+def _sync_buy_bot_control(bot_name: str, enabled: bool) -> None:
+    """让网页机器人开关同步旧买入总控，避免进程开着但策略仍被 bot_control 挡住。"""
+    if bot_name not in {"b_buy_bot", "f_buy_bot"}:
+        return
+    _ensure_bot_control_table()
+    with db_conn() as conn:
+        with conn.cursor() as cur:
             cur.execute("INSERT IGNORE INTO bot_control (id) VALUES (1)")
             if bot_name == "b_buy_bot":
                 cur.execute("UPDATE bot_control SET strategy_b_enabled=%s WHERE id=1", (1 if enabled else 0,))
@@ -1737,15 +1757,15 @@ def _stock_selection_payload() -> dict:
         WHERE UPPER(stock_type)='B' AND COALESCE(is_bought,0)=0
         ORDER BY entry_date DESC, stock_code
     """) or []
-    latest = fetch_all("SELECT MAX(DATE(`date`)) AS d FROM stock_prices_pool")
+    latest = fetch_all("SELECT MAX(`date`) AS d FROM stock_prices_pool")
     snapshot_date = (latest[0] or {}).get("d") if latest else None
     if not snapshot_date:
         return {"ok": True, "snapshot_date": None, "min_up_pct": min_up_pct, "rows": [], "b_rows": [], "b_pool_rows": b_pool_rows}
     previous = fetch_all(
         """
-        SELECT MAX(DATE(`date`)) AS d
+        SELECT MAX(`date`) AS d
         FROM stock_prices_pool
-        WHERE DATE(`date`) < DATE(%s)
+        WHERE `date` < DATE(%s)
         """,
         (snapshot_date,),
     )
@@ -1754,8 +1774,8 @@ def _stock_selection_payload() -> dict:
     rows = fetch_all(
         """
         SELECT
-            UPPER(p.symbol) AS symbol,
-            DATE(p.`date`) AS snapshot_date,
+            p.symbol AS symbol,
+            p.`date` AS snapshot_date,
             p.`open`, p.high, p.low, p.`close`, p.volume,
             ((p.`close` - p.`open`) / p.`open`) AS intraday_change_pct,
             pp.`close` AS prev_close,
@@ -1772,7 +1792,7 @@ def _stock_selection_payload() -> dict:
             ,d.symbol AS d_candidate_symbol
         FROM stock_prices_pool p
         LEFT JOIN stock_prices_pool pp
-          ON DATE(pp.`date`) = DATE(%s)
+          ON pp.`date` = %s
          AND UPPER(CONVERT(pp.symbol USING utf8mb4)) COLLATE utf8mb4_unicode_ci = UPPER(CONVERT(p.symbol USING utf8mb4)) COLLATE utf8mb4_unicode_ci
         LEFT JOIN (
             SELECT so.*
@@ -1786,14 +1806,14 @@ def _stock_selection_payload() -> dict:
         ) b ON UPPER(CONVERT(b.stock_code USING utf8mb4)) COLLATE utf8mb4_unicode_ci = UPPER(CONVERT(p.symbol USING utf8mb4)) COLLATE utf8mb4_unicode_ci
         LEFT JOIN d_candidate_pool d
           ON UPPER(CONVERT(d.symbol USING utf8mb4)) COLLATE utf8mb4_unicode_ci = UPPER(CONVERT(p.symbol USING utf8mb4)) COLLATE utf8mb4_unicode_ci
-         AND d.enabled=1 AND DATE(d.signal_date)=DATE(p.`date`)
-        WHERE DATE(p.`date`) = DATE(%s)
+         AND d.enabled=1 AND d.signal_date=p.`date`
+        WHERE p.`date` = %s
           AND p.`open` > 0
           AND p.`close` >= %s
           AND COALESCE(p.volume, 0) >= %s
           AND (p.`close` * COALESCE(p.volume, 0)) >= %s
           AND ((p.`close` - p.`open`) / p.`open`) >= %s
-        ORDER BY ((p.`close` - p.`open`) / p.`open`) DESC, UPPER(p.symbol) ASC
+        ORDER BY ((p.`close` - p.`open`) / p.`open`) DESC, p.symbol ASC
         LIMIT 1000
         """,
         (previous_date or snapshot_date, snapshot_date, min_price, min_volume, min_dollar_volume, min_up_pct),
