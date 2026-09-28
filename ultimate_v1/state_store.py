@@ -68,25 +68,27 @@ def write_risk_state(state: RiskState) -> None:
             )
 
 
-_APP_SETTING_CACHE: dict[str, tuple[str, float]] = {}
+# Only presentation preferences may be stale. Trading/risk/account/state keys
+# must be read fresh across independent web and robot processes.
+_APP_SETTING_CACHE: dict[str, tuple[str | None, float]] = {}
 _APP_SETTING_CACHE_TTL = 60.0
 _APP_SETTING_LOCK = Lock()
+_APP_SETTING_CACHE_KEYS = frozenset({'ANNUAL_CASH_MIN_TARGET', 'ANNUAL_RETIREMENT_TARGET'})
 
 
 def get_app_setting(key: str, default: str = "") -> str:
-    now = time.monotonic()
+    if key not in _APP_SETTING_CACHE_KEYS:
+        row = fetch_one("SELECT setting_value FROM app_settings WHERE setting_key=%s LIMIT 1", (key,))
+        return str(row['setting_value'] or '') if row and row.get('setting_value') is not None else default
     with _APP_SETTING_LOCK:
+        now = time.monotonic()
         hit = _APP_SETTING_CACHE.get(key)
         if hit is not None and now - hit[1] < _APP_SETTING_CACHE_TTL:
-            return hit[0]
-    row = fetch_one("SELECT setting_value FROM app_settings WHERE setting_key=%s LIMIT 1", (key,))
-    if row and row.get("setting_value") is not None:
-        value = str(row.get("setting_value") or "")
-    else:
-        value = default
-    with _APP_SETTING_LOCK:
+            return default if hit[0] is None else hit[0]
+        row = fetch_one("SELECT setting_value FROM app_settings WHERE setting_key=%s LIMIT 1", (key,))
+        value = str(row['setting_value'] or '') if row and row.get('setting_value') is not None else None
         _APP_SETTING_CACHE[key] = (value, now)
-    return value
+        return default if value is None else value
 
 
 def set_app_setting(key: str, value: str) -> None:
