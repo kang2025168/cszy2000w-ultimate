@@ -526,6 +526,18 @@ def _finish_cycle(cur, config: dict, cycle: dict, sell_price: float) -> str:
     _set_cycle(cur, config["symbol"], state="COOLDOWN", sell_filled_price=sell_price, realized_pnl=pnl, cooldown_until=cooldown, last_error=None)
     from .order_journal import update
     update(f"dgrid-{config['symbol']}-{cycle['cycle_no']}-b", reserved_notional=0, state="closed")
+    # Sell legs were never journaled closed (stale pending_new rows). Close them all:
+    # "-s" normal sell, "-c-" legacy close, "-cm-"/"-cl-" market/limit close.
+    # Skip already-terminal rows so backfilled broker states are preserved.
+    _sell_base = f"dgrid-{config['symbol']}-{cycle['cycle_no']}"
+    cur.execute(
+        """UPDATE execution_orders SET reserved_notional=0, state='closed'
+           WHERE (client_order_id=%s OR client_order_id LIKE %s
+                  OR client_order_id LIKE %s OR client_order_id LIKE %s)
+             AND state NOT IN
+                 ('filled','canceled','cancelled','expired','rejected','replaced','closed')""",
+        (_sell_base + "-s", _sell_base + "-c-%", _sell_base + "-cm-%", _sell_base + "-cl-%"),
+    )
     _event(cur, config["symbol"], int(cycle["cycle_no"]), "CYCLE_FILLED", "COOLDOWN", order_id=str(cycle.get("sell_order_id") or ""), qty=qty, price=sell_price, message=f"gross_pnl={pnl:.2f}" + (" exit_reason=STOP_LOSS_5PCT" if _stop_pending(cycle) else ""))
     return f"cycle_filled gross_pnl={pnl:.2f}"
 
