@@ -1207,6 +1207,9 @@
     #positionPlanDialog { width:min(480px,90vw); max-height:80vh; overflow:auto; border:1px solid var(--line); border-radius:12px; padding:18px; color:var(--ink); }
     #positionPlanDialog::backdrop { background:rgba(15,23,42,.3); }
     #positionPlanDialog p { font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+    #riskPreferenceStatus { grid-column:1 / -1; grid-row:2; height:auto; font-size:11px; color:#075985; overflow-wrap:anywhere; }
+    #riskPreferenceStatus:empty { display:none; }
+    #riskPreferenceSelect:disabled { opacity:.65; cursor:wait; }
     </style>
 </head>
 <body>
@@ -1284,6 +1287,7 @@
                           <option value="激进">激进</option>
                         </select>
                         <button class="clear-btn" onclick="openClearModal()">清仓</button>
+                        <span id="riskPreferenceStatus" role="status" aria-live="polite"></span>
                         <span class="risk-control-select" id="dynamicRiskBadge" title="仓位上限由风险机器人自动调整">仓位 · 待确认</span>
                       </div>
 
@@ -5678,9 +5682,33 @@
         </div>
       `;
     }
+    let riskPreferenceRevision = 0;
+    let riskPreferenceSaving = false;
+    let confirmedRiskPreference = null;
     async function updateRiskPreference(value) {
-      const result = await postJson('/api/risk_settings', {risk_preference:value});
-      if (!result.ok) { alert(result.error || '风险偏好更新失败'); return; }
+      if (riskPreferenceSaving) return;
+      const select = document.getElementById('riskPreferenceSelect');
+      const status = document.getElementById('riskPreferenceStatus');
+      const previous = confirmedRiskPreference || window.latestRiskPayload?.risk_preference || '中性';
+      riskPreferenceRevision++;
+      riskPreferenceSaving = true;
+      select.disabled = true;
+      status.textContent = '保存中…';
+      try {
+        const result = await postJson('/api/risk_settings', {risk_preference:value});
+        if (!result.ok || result.risk_preference !== value) throw new Error(result.error || '未收到保存确认');
+        confirmedRiskPreference = value;
+        select.value = value;
+        status.textContent = result.risk_refresh_error || result.exposure_refresh_error
+          ? '设置已保存，仓位计算待刷新' : '调整完成';
+      } catch (error) {
+        select.value = previous;
+        status.textContent = '保存未确认：' + (error.message || '请重试');
+      } finally {
+        riskPreferenceSaving = false;
+        riskPreferenceRevision++;
+        select.disabled = false;
+      }
       await loadAll();
     }
     async function updateMarginUsage(value) {
@@ -5695,10 +5723,12 @@
       await loadAll();
     }
     async function loadAll() {
+      const preferenceRevision = riskPreferenceRevision;
       const refreshBtn = document.querySelector('.refresh-btn');
       if (refreshBtn) refreshBtn.classList.add('loading');
       try {
       const [cap, risk, holdings, state, phase, dTactical] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase'), api('/api/d_tactical')]);
+      if (preferenceRevision !== riskPreferenceRevision || riskPreferenceSaving) return;
       if (cap.ok) {
         window.latestCapitalPayload = cap;
         document.getElementById('modeValue').textContent = cap.mode_label || cap.mode;
@@ -5723,7 +5753,11 @@
       const tone = riskTone(risk);
       window.latestRiskPayload = risk;
       const riskSelect = document.getElementById('riskPreferenceSelect');
-      if (riskSelect) riskSelect.value = risk.risk_preference || '中性';
+      if (riskSelect && document.activeElement !== riskSelect) {
+        if (risk.risk_preference === confirmedRiskPreference) confirmedRiskPreference = null;
+        const saved = confirmedRiskPreference || risk.risk_preference;
+        if (saved) riskSelect.value = saved;
+      }
       const marketExposure = Number(risk.recommended_exposure || 0);
       const rebalanceTarget = Number(state?.exposure_state?.target_exposure_pct ?? marketExposure);
       const targetTone = rebalanceTarget <= 0.1 ? 'danger' : rebalanceTarget < 0.5 ? 'warn' : 'ok';
