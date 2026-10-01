@@ -159,7 +159,14 @@ def reference(risk):
                 or not all(math.isfinite(float(v)) for v in values)):
             return {}
         ceiling, reason, _ = candidate(risk)
+        from copy import copy
+        variants = {}
+        for preference in ("保守", "中性", "激进"):
+            alternative = copy(risk)
+            alternative.risk_preference = preference
+            variants[preference] = candidate(alternative)[0]
         return dict(ceiling=ceiling, reason=reason, display_only=True,
+                    preference=risk.risk_preference, preferences=variants,
                     vix_source=str(getattr(risk, 'vix_source', '未知')),
                     account_source=str(getattr(risk, 'account_metrics_source', '未知')))
     except (TypeError, ValueError, AttributeError, OverflowError):

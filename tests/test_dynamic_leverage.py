@@ -143,6 +143,8 @@ class DynamicLeverageTests(unittest.TestCase):
             result = dl.reference(risk)
             self.assertEqual(result['ceiling'], 1.4)
             self.assertTrue(result['display_only'])
+            self.assertEqual(result['preferences'], {'保守':1.05,'中性':1.26,'激进':1.4})
+            self.assertEqual(risk.risk_preference, '激进')
             save.assert_not_called()
 
     def test_cached_reference_still_applies_account_risk(self):

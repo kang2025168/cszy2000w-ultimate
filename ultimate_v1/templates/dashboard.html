@@ -1287,7 +1287,7 @@
                           <option value="激进">激进</option>
                         </select>
                         <button class="clear-btn" onclick="openClearModal()">清仓</button>
-                        <span id="riskPreferenceStatus" role="status" aria-live="polite"></span>
+
                         <span class="risk-control-select" id="dynamicRiskBadge" title="仓位上限由风险机器人自动调整">仓位 · 待确认</span>
                       </div>
 
@@ -2351,7 +2351,7 @@
     }
     function positionPlan(cap) {
       const d = cap.dynamic_leverage || {};
-      const live = !!(d.initialized && d.fresh && d.valid);
+      const live = !!(d.initialized && d.fresh && d.valid && !d.preference_preview);
       const ratio = live ? d.ceiling : d.reference?.ceiling;
       const targets = {...(cap.targets || {})};
       if (ratio != null) {
@@ -5593,7 +5593,7 @@
       const current = Number(margin.exposure_percent || 0);
       const gap = Number(margin.budget || 0) - Number(margin.used || 0);
       const dynamic = cap.dynamic_leverage || {};
-      const ready = dynamic.initialized && dynamic.fresh && dynamic.valid;
+      const ready = dynamic.initialized && dynamic.fresh && dynamic.valid && !dynamic.preference_preview;
       const reference = dynamic.reference || {};
       const waitingLabel = dynamic.market_open === false && dynamic.fresh ? '休市' : '待确认';
       const checked = dynamic.checked_at ? new Date(dynamic.checked_at*1000).toLocaleTimeString() : '尚无采样';
@@ -5685,25 +5685,35 @@
     let riskPreferenceRevision = 0;
     let riskPreferenceSaving = false;
     let confirmedRiskPreference = null;
+    function previewPreference(value) {
+      const cap = window.latestCapitalPayload;
+      const d = cap?.dynamic_leverage;
+      const ratio = d?.reference?.preferences?.[value];
+      if (ratio == null) return;
+      d.preference_preview = true;
+      d.reference = {...d.reference, ceiling:ratio, preference:value};
+      document.getElementById('dynamicRiskBadge').textContent = `仓位 ${(ratio*100).toFixed(0)}% · 参考`;
+      document.getElementById('heroPools').innerHTML = ['A','B','C','D'].map(g=>poolRow(g,cap)).join('');
+      renderRebalanceAdvice(null, window.latestRiskPayload || {});
+      renderDailyActionPanel(cap, window.latestRiskPayload || {}, null, null, null);
+    }
     async function updateRiskPreference(value) {
       if (riskPreferenceSaving) return;
       const select = document.getElementById('riskPreferenceSelect');
-      const status = document.getElementById('riskPreferenceStatus');
       const previous = confirmedRiskPreference || window.latestRiskPayload?.risk_preference || '中性';
       riskPreferenceRevision++;
       riskPreferenceSaving = true;
       select.disabled = true;
-      status.textContent = '保存中…';
+      previewPreference(value);
       try {
         const result = await postJson('/api/risk_settings', {risk_preference:value});
         if (!result.ok || result.risk_preference !== value) throw new Error(result.error || '未收到保存确认');
         confirmedRiskPreference = value;
         select.value = value;
-        status.textContent = result.risk_refresh_error || result.exposure_refresh_error
-          ? '设置已保存，仓位计算待刷新' : '调整完成';
       } catch (error) {
         select.value = previous;
-        status.textContent = '保存未确认：' + (error.message || '请重试');
+        previewPreference(previous);
+        alert('保存未确认：' + (error.message || '请重试'));
       } finally {
         riskPreferenceSaving = false;
         riskPreferenceRevision++;
@@ -5730,6 +5740,11 @@
       const [cap, risk, holdings, state, phase, dTactical] = await Promise.all([api('/api/capital'), api('/api/risk'), api('/api/holdings'), api('/api/state'), api('/api/trade_phase'), api('/api/d_tactical')]);
       if (preferenceRevision !== riskPreferenceRevision || riskPreferenceSaving) return;
       if (cap.ok) {
+        if (confirmedRiskPreference && cap.dynamic_leverage?.reference?.preference !== confirmedRiskPreference) {
+          const d = cap.dynamic_leverage;
+          const ratio = d?.reference?.preferences?.[confirmedRiskPreference];
+          if (ratio != null) { d.preference_preview=true; d.reference={...d.reference,ceiling:ratio,preference:confirmedRiskPreference}; }
+        }
         window.latestCapitalPayload = cap;
         document.getElementById('modeValue').textContent = cap.mode_label || cap.mode;
         renderAnnualGoals(cap.annual_goals || []);
@@ -5754,7 +5769,7 @@
       window.latestRiskPayload = risk;
       const riskSelect = document.getElementById('riskPreferenceSelect');
       if (riskSelect && document.activeElement !== riskSelect) {
-        if (risk.risk_preference === confirmedRiskPreference) confirmedRiskPreference = null;
+        if (risk.risk_preference === confirmedRiskPreference && !cap.dynamic_leverage?.preference_preview) confirmedRiskPreference = null;
         const saved = confirmedRiskPreference || risk.risk_preference;
         if (saved) riskSelect.value = saved;
       }
@@ -5772,7 +5787,7 @@
       marketRisk.classList.add('fresh');
       renderRebalanceAdvice(state.exposure_state, risk);
       const dynamic = cap.dynamic_leverage || {};
-      document.getElementById("dynamicRiskBadge").textContent = dynamic.initialized && dynamic.fresh && dynamic.valid ? `仓位 ${(Number(dynamic.ceiling)*100).toFixed(0)}%` : dynamic.reference?.ceiling != null ? `仓位 ${(Number(dynamic.reference.ceiling)*100).toFixed(0)}% · 参考` : "仓位 · 待确认";
+      document.getElementById("dynamicRiskBadge").textContent = dynamic.initialized && dynamic.fresh && dynamic.valid && !dynamic.preference_preview ? `仓位 ${(Number(dynamic.ceiling)*100).toFixed(0)}%` : dynamic.reference?.ceiling != null ? `仓位 ${(Number(dynamic.reference.ceiling)*100).toFixed(0)}% · 参考` : "仓位 · 待确认";
       document.getElementById("dynamicRiskBadge").title = dynamic.valid && dynamic.fresh ? dynamic.reason : "缓存参考值；开市后核验，不代表已开放交易额度";
       renderBotMonitor(state.bot_monitor);
       window.latestBotProcesses = state.bot_processes || [];
