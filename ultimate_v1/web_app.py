@@ -19,6 +19,7 @@ from .http_server import DashboardServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .bot_monitor import monitor_from_state
 from . import alpaca_gateway
 from .account_config import load_account_config, public_account_config, save_account_config, profile_for_pool
 from .bot_supervisor import (
@@ -1281,9 +1282,16 @@ def _set_c_core_payload(payload: dict) -> dict:
     return {"ok": True, "symbol": symbol, "operation_id": operation_id, "enabled": enable}
 
 
+def _bot_monitor_payload() -> dict:
+    return monitor_from_state({"bot_heartbeats": bot_heartbeats(),
+                               "bot_controls": bot_controls(),
+                               "bot_processes": process_status(),
+                               "risk_state": latest_risk_state()})
+
+
 def _state_payload() -> dict:
     """读取中央状态：最新风控、资金状态、机器人心跳。"""
-    return {
+    payload = {
         "ok": True,
         "risk_state": latest_risk_state(),
         "capital_state": capital_state_rows(),
@@ -1293,6 +1301,9 @@ def _state_payload() -> dict:
         "exposure_state": latest_exposure_state(),
         "rebalance_actions": latest_rebalance_actions(30),
     }
+
+    payload["bot_monitor"] = monitor_from_state(payload)
+    return payload
 
 
 def _latest_table_date(table: str, column: str) -> dict:
@@ -2740,6 +2751,8 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     width = 10.0
                 self._send_json(option_preview(symbol, mode, width))
+            elif path == "/api/bot_monitor":
+                self._send_json(_bot_monitor_payload())
             elif path == "/api/state":
                 self._send_json(_state_payload())
             elif path == "/api/schedules":

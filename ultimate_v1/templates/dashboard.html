@@ -1175,15 +1175,36 @@
       .stats-main-grid { grid-template-columns:1fr; }
       .stats-head { flex-direction:column; }
     }
+    .monitor-trigger { margin-left:12px; white-space:nowrap; font-size:13px; padding:8px 12px; }
+    .monitor-trigger[data-tone="ok"] { color:#09875e; }
+    .monitor-trigger[data-tone="error"] { color:#c62828; }
+    .monitor-trigger[data-tone="warn"] { color:#a56308; }
+    #botMonitorDialog { width:min(960px,94vw); max-height:85vh; overflow:auto; border:1px solid #d8e3ef; border-radius:16px; padding:22px; color:#17202c; background:#f8fbff; }
+    #botMonitorDialog::backdrop { background:rgba(15,23,42,.35); }
+    .monitor-heading { display:flex; align-items:center; gap:12px; justify-content:space-between; }
+    .monitor-heading h2 { margin:0; font-size:20px; }
+    .monitor-row { padding:12px; margin-top:8px; border:1px solid #dce5ef; border-radius:10px; background:white; }
+    .monitor-row-head { display:flex; gap:12px; flex-wrap:wrap; align-items:center; justify-content:space-between; }
+    .monitor-meta,.monitor-message { font-size:12px; color:#64748b; margin-top:6px; overflow-wrap:anywhere; }
+    .monitor-status { font-weight:700; color:#09875e; }
+    .monitor-row[data-status="error"] .monitor-status { color:#c62828; }
+    .monitor-row[data-status="warn"] .monitor-status,.monitor-row[data-status="unknown"] .monitor-status { color:#a56308; }
+    .monitor-row[data-status="off"] .monitor-status { color:#64748b; }
   </style>
 </head>
 <body>
+  <dialog id="botMonitorDialog" aria-labelledby="botMonitorTitle">
+    <div class="monitor-heading"><h2 id="botMonitorTitle">机器人运行监控</h2><div><button type="button" id="monitorRefresh" onclick="refreshBotMonitor()">立即检查</button> <button type="button" onclick="document.getElementById('botMonitorDialog').close()" aria-label="关闭监控">关闭</button></div></div>
+    <p class="monitor-meta" id="monitorCheckTime">正在读取运行状态…</p>
+    <div id="monitorRows"></div>
+    <p class="monitor-meta">依据进程和心跳检查运行状态；交易仍按策略、时段和风控执行。独立进程以心跳为依据，心跳超时不等同于进程已退出。</p>
+  </dialog>
   <header>
   </header>
   <main>
     <section class="dash">
       <div class="left-titlebar">
-        <div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="此生只要2000万 logo" /><div class="brand-copy"><h1>此生只要2000万</h1><div class="dashboard-motto"></div></div></div>
+        <div class="brand-lockup"><img class="brand-logo" src="/assets/cszy_ultimate_logo.png" alt="此生只要2000万 logo" /><div class="brand-copy"><h1>此生只要2000万</h1><div class="dashboard-motto"></div></div><button type="button" id="botMonitorButton" class="monitor-trigger" onclick="openBotMonitor()" aria-haspopup="dialog">● 监控 · 待检查</button></div>
         <div class="title-actions">
           <button class="trade-focus-btn active" id="overviewFocusBtn" onclick="showOverview()">总览</button>
           <button class="trade-focus-btn" id="holdingsFocusBtn" onclick="toggleHoldingsFocus()">持仓</button>
@@ -2120,6 +2141,49 @@
         document.getElementById('adviceStatus').textContent = error.message || '启动失败';
       }
     }
+    let monitorLastSuccess = 0;
+    const monitorStartedAt = Date.now();
+    function renderBotMonitor(data) {
+      if (!data || !data.ok || !Array.isArray(data.rows)) return;
+      const checkedAt = Date.parse(data.checked_at) || Date.now();
+      if (checkedAt < monitorLastSuccess) return;
+      monitorLastSuccess = checkedAt;
+      const counts = data.counts || {};
+      const failures = Number(counts.error || 0), attention = Number(counts.warn || 0) + Number(counts.unknown || 0);
+      const button = document.getElementById('botMonitorButton');
+      button.dataset.tone = failures ? 'error' : attention ? 'warn' : 'ok';
+      button.textContent = '● 监控 · ' + (failures ? `异常 ${failures}` : attention ? `待关注 ${attention}` : '无异常');
+      document.getElementById('monitorCheckTime').textContent = `检查时间：${new Date(monitorLastSuccess).toLocaleString()} · 正常 ${counts.ok || 0} / 待机 ${counts.idle || 0} / 关闭 ${counts.off || 0}`;
+      const html = data.rows.map(row => `<article class="monitor-row" data-status="${esc(row.status)}"><div class="monitor-row-head"><strong>${esc(row.name)}</strong><span class="monitor-status">${esc(row.label)}</span></div><div class="monitor-meta">开关：${row.enabled === null ? '未配置' : row.enabled ? '开启' : '关闭'} · 进程：${esc(row.process)} · 心跳：${row.age_seconds === null ? '未记录' : esc(row.age_seconds) + ' 秒前'}（超时阈值 ${esc(row.stale_after_seconds)} 秒）</div><div class="monitor-meta">最近心跳：${esc(row.last_seen_at || '未记录')}</div>${row.restriction ? `<div class="monitor-message">${esc(row.restriction)}</div>` : ''}<div class="monitor-message">${esc(row.message || '暂无执行信息')}</div></article>`).join('');
+      const container = document.getElementById('monitorRows');
+      if (container.innerHTML !== html) container.innerHTML = html;
+    }
+    async function openBotMonitor() {
+      document.getElementById('botMonitorDialog').showModal();
+      await refreshBotMonitor();
+    }
+    async function refreshBotMonitor() {
+      const button = document.getElementById('monitorRefresh');
+      if (button.disabled) return;
+      button.disabled = true;
+      try {
+        const response = await fetch('/api/bot_monitor', {cache:'no-store', signal:AbortSignal.timeout(15000)});
+        if (!response.ok) throw new Error('检查失败');
+        const data = await response.json();
+        if (!data.ok || !Array.isArray(data.rows)) throw new Error('检查失败');
+        renderBotMonitor(data);
+      } catch (error) {
+        document.getElementById('monitorCheckTime').textContent = '检查失败，保留上次结果；请重试。';
+        const badge = document.getElementById('botMonitorButton');
+        badge.textContent = '● 监控 · 检查失败'; badge.dataset.tone = 'warn';
+      } finally { button.disabled = false; }
+    }
+    setInterval(() => {
+      if (Date.now() - (monitorLastSuccess || monitorStartedAt) > 90000) {
+        const badge = document.getElementById('botMonitorButton');
+        badge.textContent = '● 监控 · 数据已过期'; badge.dataset.tone = 'warn';
+      }
+    }, 10000);
     async function api(path) {
       const r = await fetch(path);
       if (r.status === 401) { location.reload(); return {ok:false, error:'unauthorized'}; }
@@ -5642,6 +5706,7 @@
       void marketRisk.offsetWidth;
       marketRisk.classList.add('fresh');
       renderRebalanceAdvice(state.exposure_state, risk);
+      renderBotMonitor(state.bot_monitor);
       window.latestBotProcesses = state.bot_processes || [];
       latestBotHeartbeats = state.bot_heartbeats || [];
       latestBotControls = state.bot_controls || [];
