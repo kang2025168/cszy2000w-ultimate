@@ -44,7 +44,7 @@ SYMBOLS_CSV = os.getenv("SYMBOLS_CSV", "/app/data/symbols/low_price_symbols.csv"
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "50"))
 MAX_TICKERS = int(os.getenv("MAX_TICKERS", "0"))  # 0 表示不限制
 
-# 退市/长期无数据符号黑名单：这些符号每次拉取都返回空数据，只会刷屏。
+# 人工排除的不可交易/长期空行情符号；空行情本身不是退市证明。
 # 可用环境变量 DELISTED_SYMBOLS 覆盖（逗号分隔）；设为空字符串则不过滤。
 DELISTED_SYMBOLS = {s.strip().upper() for s in os.getenv("DELISTED_SYMBOLS", "HOUS,RAAQ,RAAQW,EXPI").split(",") if s.strip()}
 
@@ -184,11 +184,11 @@ def get_tickers() -> list[str]:
         t = read_symbols_from_csv(SYMBOLS_CSV)
         if MAX_TICKERS and MAX_TICKERS > 0:
             t = t[:MAX_TICKERS]
-    # 3) 过滤退市/长期无数据符号（每天返回空数据，只会刷屏；环境变量 DELISTED_SYMBOLS 可覆盖）
+    # 3) 应用人工排除列表；环境变量 DELISTED_SYMBOLS 可覆盖或清空。
     if DELISTED_SYMBOLS:
         skipped = [s for s in t if s in DELISTED_SYMBOLS]
         if skipped:
-            print(f"[{now_ts()}] 跳过退市/无数据符号 {len(skipped)} 个: {','.join(skipped)}", flush=True)
+            print(f"[{now_ts()}] 跳过人工排除符号 {len(skipped)} 个: {','.join(skipped)}", flush=True)
         t = [s for s in t if s not in DELISTED_SYMBOLS]
     return t
 

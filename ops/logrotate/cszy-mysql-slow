@@ -1,0 +1,12 @@
+# Docker MySQL uses the project's bind-mounted data directory, not /var/log/mysql.
+/opt/cszy2000w-ultimate/data/mysql/*-slow.log {
+    daily
+    maxsize 50M
+    rotate 7
+    compress
+    delaycompress
+    copytruncate
+    missingok
+    notifempty
+    su root root
+}

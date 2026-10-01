@@ -18,3 +18,7 @@ cszy2000.dump.sql
 *.bak*
 .coverage
 htmlcov/
+
+# Server-private database archives and agent work notes
+backups/
+agent_threads/
