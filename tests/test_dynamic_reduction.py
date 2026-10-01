@@ -87,3 +87,45 @@ class DynamicReductionTests(unittest.TestCase):
         self.client.get_clock.return_value=NS(is_open=False)
         self.assertEqual(dr.consume('B',locked=True),'dynamic_waiting_market')
         self.submit.assert_not_called()
+
+    def test_ordinary_old_ceiling_stays_limit(self):
+        self.patcher('ultimate_v1.dynamic_reduction.read_state',return_value={'valid':True,'fresh':True,'allow_buy':True,'changed_at':0})
+        dr.consume('B',locked=True)
+        self.assertFalse(self.prepare.call_args.args[5]['market'])
+
+    def test_emergency_uses_market(self):
+        self.patcher('ultimate_v1.dynamic_reduction.read_state',return_value={'valid':True,'fresh':True,'allow_buy':False,'emergency':True})
+        dr.consume('B',locked=True)
+        self.assertTrue(self.prepare.call_args.args[5]['market'])
+
+    def test_small_excess_does_not_cancel_normal_orders(self):
+        self.patcher('ultimate_v1.dynamic_reduction.pool_excess',return_value=(5,self.allocation))
+        dr.consume('B',locked=True)
+        self.submit.assert_not_called()
+        self.client.cancel_order_by_id.assert_not_called()
+
+    def test_sub_share_ordinary_excess_does_not_force_whole_share(self):
+        self.patcher('ultimate_v1.dynamic_reduction.pool_excess',return_value=(20,self.allocation))
+        dr.consume('B',locked=True)
+        self.submit.assert_not_called()
+
+    def test_b_strategy_rechecks_reduction_under_same_lock(self):
+        from app.bots import split_core
+        from contextlib import contextmanager
+        held=[]
+        @contextmanager
+        def lock(scope):
+            held.append(scope)
+            try:
+                yield
+            finally:
+                held.pop()
+        def consume(*args,**kwargs):
+            self.assertEqual(held,['trading'])
+            self.assertTrue(kwargs['locked'])
+            return 'dynamic_sell_pending'
+        with patch('ultimate_v1.order_journal.execution_lock',side_effect=lock), \
+             patch('ultimate_v1.dynamic_reduction.consume',side_effect=consume), \
+             patch.object(split_core.tb,'safe_call') as ordinary:
+            self.assertFalse(split_core._sell_one('SWKS','B','regular'))
+            ordinary.assert_not_called()

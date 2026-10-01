@@ -76,6 +76,11 @@ def _sell_one(code: str, stype: str, phase: str) -> bool:
 
 def _sell_one_locked(code: str, stype: str, phase: str) -> bool:
     if stype == "B":
+        # Same account lock covers risk reconciliation and the entire strategy
+        # read/decide/submit path; never execute a stale pre-lock sell plan.
+        from ultimate_v1.dynamic_reduction import consume
+        if consume("B", locked=True):
+            return False
         if phase == "premarket_sell":
             return tb.safe_call(tb.strategy_B_premarket_manage, code) is True
         if phase == "preopen_record":

@@ -5597,7 +5597,7 @@
       const reference = dynamic.reference || {};
       const waitingLabel = dynamic.market_open === false && dynamic.fresh ? '休市' : '待确认';
       const checked = dynamic.checked_at ? new Date(dynamic.checked_at*1000).toLocaleTimeString() : '尚无采样';
-      const statusNames = {WITHIN_LIMIT:'额度内',REDUCING:'减仓中',SELL_WORKING:'等待成交',CANCEL_PENDING:'等待撤单',WAITING_MARKET:'等待开市',WAITING_DATA:'等待有效数据',WAITING_STRATEGY:'等待策略核对',WAITING_RECONCILIATION:'持仓待核对',RECONCILIATION_PENDING:'成交待核对',ERROR:'执行异常'};
+      const statusNames = {WITHIN_LIMIT:'额度内',WITHIN_TOLERANCE:'小额偏差暂缓',REDUCING:'减仓中',SELL_WORKING:'等待成交',CANCEL_PENDING:'等待撤单',WAITING_MARKET:'等待开市',WAITING_DATA:'等待有效数据',WAITING_STRATEGY:'等待策略核对',WAITING_RECONCILIATION:'持仓待核对',RECONCILIATION_PENDING:'成交待核对',ERROR:'执行异常'};
       const reductionText = ['B','C','D'].map(g => {
         const r=cap.dynamic_reductions?.[g] || {};
         const recent=Date.now()/1000-Number(r.checked_at || 0)<180;
@@ -5620,7 +5620,7 @@
         <p>判断：${esc(reference.reason || dynamic.reason || '待核验')} · 行情来源：${esc(reference.vix_source || '未知')}</p>
         <p>${esc(dynamic.reason || '尚无有效采样')}${dynamic.fresh ? '' : '（数据过期或未就绪）'}</p>
         <p>恢复确认 ${Number(dynamic.count || 0)}/3；缓存参考不会直接开放下单额度。</p>
-        <p>B40% / C40% / D20% · 按实际成交确认进度</p>`;
+        <p>${(dynamic.data_issues || []).map(issue=>esc(issue)).join(' · ')}</p><p>B40% / C40% / D20% · 按实际成交确认进度</p>`;
 
     }
 
@@ -5697,27 +5697,34 @@
       renderRebalanceAdvice(null, window.latestRiskPayload || {});
       renderDailyActionPanel(cap, window.latestRiskPayload || {}, null, null, null);
     }
+    let desiredRiskPreference = null;
     async function updateRiskPreference(value) {
-      if (riskPreferenceSaving) return;
-      const select = document.getElementById('riskPreferenceSelect');
-      const previous = confirmedRiskPreference || window.latestRiskPayload?.risk_preference || '中性';
+      desiredRiskPreference = value;
       riskPreferenceRevision++;
-      riskPreferenceSaving = true;
-      select.disabled = true;
       previewPreference(value);
+      if (riskPreferenceSaving) return;
+      riskPreferenceSaving = true;
+      const select = document.getElementById('riskPreferenceSelect');
       try {
-        const result = await postJson('/api/risk_settings', {risk_preference:value});
-        if (!result.ok || result.risk_preference !== value) throw new Error(result.error || '未收到保存确认');
-        confirmedRiskPreference = value;
-        select.value = value;
-      } catch (error) {
-        select.value = previous;
-        previewPreference(previous);
-        alert('保存未确认：' + (error.message || '请重试'));
+        while (desiredRiskPreference != null) {
+          const requested = desiredRiskPreference;
+          desiredRiskPreference = null;
+          try {
+            const result = await postJson('/api/risk_settings', {risk_preference:requested});
+            if (!result.ok || result.risk_preference !== requested) throw new Error(result.error || '未收到保存确认');
+            confirmedRiskPreference = requested;
+          } catch (error) {
+            if (desiredRiskPreference == null) {
+              const previous = confirmedRiskPreference || window.latestRiskPayload?.risk_preference || '中性';
+              select.value = previous;
+              previewPreference(previous);
+              alert('保存未确认：' + (error.message || '请重试'));
+            }
+          }
+        }
       } finally {
         riskPreferenceSaving = false;
         riskPreferenceRevision++;
-        select.disabled = false;
       }
       await loadAll();
     }

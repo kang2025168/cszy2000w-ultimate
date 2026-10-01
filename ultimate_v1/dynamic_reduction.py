@@ -98,7 +98,12 @@ def _consume_locked(pool, symbol):
     if allocation is None:
         report(pool,'WAITING_DATA')
         return None
-    report(pool,'REDUCING',excess=excess,target=allocation.target_for(pool))
+    state=read_state()
+    tolerance=0.01 if state.get('emergency') else max(10.0, allocation.target_for(pool)*0.01)
+    raw_excess=excess
+    if excess <= tolerance:
+        excess=0.
+    report(pool,'REDUCING' if excess else 'WITHIN_LIMIT',excess=raw_excess,tolerance=tolerance,target=allocation.target_for(pool))
     if not client.get_clock().is_open:
         report(pool,'WAITING_MARKET',excess=excess)
         return 'dynamic_waiting_market'
@@ -127,6 +132,7 @@ def _consume_locked(pool, symbol):
     all_lots=fetch_all(f"SELECT stock_code, SUM(qty) AS qty FROM `{settings().ops_table}` WHERE qty>0 AND stock_type IN ({placeholders}) GROUP BY stock_code",tuple(same_account))
     allocated={r['stock_code']:float(r['qty']) for r in all_lots}
     candidates=[r for r in lots if (symbol is None or r['stock_code']==symbol) and r['stock_code'] not in busy]
+    lot_tolerance=False
     for lot in candidates:
         sym=lot['stock_code']; position=positions.get(sym)
         if not position: continue
@@ -143,12 +149,18 @@ def _consume_locked(pool, symbol):
         if not ts or not ts.tzinfo or not 0 <= (datetime.now(timezone.utc)-ts).total_seconds() <= 180:
             continue
         price=float(quote.bid or quote.last or 0)
+        # Ordinary reductions must justify at least one strategy trading lot.
+        minimum_lot = 1.0 if pool == 'B' else .1
+        if not state.get('emergency') and excess < minimum_lot*price:
+            lot_tolerance=True
+            report(pool,'WITHIN_TOLERANCE',excess=excess,tolerance=max(tolerance,minimum_lot*price))
+            continue
         qty=reduction_qty(float(lot['qty']),float(position.qty),excess,price)
         if pool == "B":
             qty=min(float(lot["qty"]),float(position.qty),float(math.ceil(qty)))
         if qty<=0: continue
         state=read_state()
-        market=bool(state.get('emergency') or time.time()-float(state.get('changed_at',time.time()))>=60)
+        market=bool(state.get('emergency'))
         cid=f'cszy-dyn-{pool}-{uuid.uuid4().hex[:28]}'
         data=dict(qty=qty,price=broker.stock_limit_price(price),market=market,started_at=time.time(),reason='dynamic_ceiling_reduction')
         intent=journal.prepare(cid,profile,pool,sym,'sell',data)
@@ -161,7 +173,8 @@ def _consume_locked(pool, symbol):
         journal.update(cid,response_json=json.dumps(result))
         report(pool,'SELL_WORKING',excess=excess,order_id=str(order.id),filled_qty=result['filled_qty'])
         return 'dynamic_sell_submitted'
-    report(pool,'WAITING_STRATEGY',excess=excess,reason='持仓/挂单/报价或做T周期待处理')
+    if not lot_tolerance:
+        report(pool,'WAITING_STRATEGY',excess=excess,reason='持仓/挂单/报价或做T周期待处理')
     return None
 
 
