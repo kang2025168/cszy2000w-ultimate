@@ -7,6 +7,7 @@ from .db import db_conn
 
 
 STOCK_OPERATION_COLUMNS = {
+    "b_entry_at": "DATETIME NULL",
     "current_price": "DECIMAL(18,6) NULL",
     "intraday_volume": "BIGINT NULL",
     "strategy_group": "VARCHAR(8) NULL",
@@ -630,7 +631,7 @@ def ensure_strategy_lot_identity(conn) -> None:
                 cur.execute(f"ALTER TABLE `{table}` {clause}")
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _SCHEMA_READY = False
 from threading import Lock
 _SCHEMA_LOCK = Lock()

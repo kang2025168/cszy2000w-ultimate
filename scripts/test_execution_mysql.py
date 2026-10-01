@@ -25,7 +25,7 @@ class TestSocket(OriginalSocket):
 
 socket.socket = TestSocket
 from ultimate_v1.db import db_conn, fetch_one
-from ultimate_v1.schema import ensure_schema
+from ultimate_v1.schema import ensure_schema, SCHEMA_VERSION
 from ultimate_v1 import order_journal as journal, manual_ledger, d_grid
 
 
@@ -92,7 +92,20 @@ class ExecutionDatabaseTests(unittest.TestCase):
 
     def test_migration_is_versioned_and_repeatable(self):
         ensure_schema()
-        self.assertEqual(1, fetch_one("SELECT COUNT(*) AS n FROM schema_migrations WHERE version=4")["n"])
+        self.assertEqual(1, fetch_one("SELECT COUNT(*) AS n FROM schema_migrations WHERE version=%s", (SCHEMA_VERSION,))["n"])
+
+    def test_existing_version_four_adds_b_entry_time(self):
+        from ultimate_v1 import schema
+        with db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM schema_migrations WHERE version=%s", (SCHEMA_VERSION,))
+                cur.execute("INSERT IGNORE INTO schema_migrations(version) VALUES (4)")
+                cur.execute("ALTER TABLE stock_operations DROP COLUMN b_entry_at")
+        schema._SCHEMA_READY = False
+        ensure_schema()
+        self.assertIsNotNone(fetch_one("SHOW COLUMNS FROM stock_operations LIKE 'b_entry_at'"))
+        ensure_schema()
+        self.assertEqual(1, fetch_one("SELECT COUNT(*) AS n FROM schema_migrations WHERE version=%s", (SCHEMA_VERSION,))["n"])
 
     def test_repeated_and_partial_fills_book_exactly_once(self):
         self.prepare()

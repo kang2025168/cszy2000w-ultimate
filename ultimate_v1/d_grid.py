@@ -7,6 +7,7 @@ previous buy and sell have both reached a terminal state.
 """
 
 import argparse
+import json
 import math
 import time as time_module
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from .state_store import get_app_setting, set_app_setting
 from .trading_gate import can_open_position
 from .yahoo_market_data import get_yahoo_stock_quote
 
-D_STOP_LOSS_PCT = 0.05
+D_STOP_LOSS_PCT = 0.01
 
 ACTIVE_STATES = {"BUY_WORKING", "SELL_WORKING", "CLOSING", "BUY_SUBMITTING", "SELL_SUBMITTING", "ERROR"}
 TERMINAL_ORDER_STATES = {"filled", "canceled", "cancelled", "expired", "rejected"}
@@ -45,16 +46,59 @@ def _runtime_text(key: str, env_name: str, default: str) -> str:
 
 
 def _cycle_budget(config: dict) -> float:
-    """每轮使用 D 当前可用资金，但不超过单轮上限。"""
-    fallback = max(0.0, float(config.get("lot_notional") or 0.0))
-    if not _runtime_bool("D_GRID_USE_AVAILABLE_CAPITAL", "D_GRID_USE_AVAILABLE_CAPITAL", True):
-        return fallback
+    """Use at most half of currently available D capital, including fixed sizing."""
     allocation = get_capital_allocation()
     if allocation is None:
         return 0.0
-    available = max(0.0, float(allocation.available.get("D", 0.0) or 0.0))
+    available = max(0.0, float(allocation.available.get("D", 0.0) or 0.0)) * 0.5
     cap = max(0.0, float(_runtime_text("D_GRID_MAX_CYCLE_NOTIONAL_USD", "D_GRID_MAX_CYCLE_NOTIONAL_USD", "10000")))
+    if not _runtime_bool("D_GRID_USE_AVAILABLE_CAPITAL", "D_GRID_USE_AVAILABLE_CAPITAL", True):
+        available = min(available, max(0.0, float(config.get("lot_notional") or 0)))
     return min(available, cap) if cap > 0 else available
+
+
+def _day_guard(now=None):
+    now = now or _now_la()
+    day = now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    return json.loads(get_app_setting("D_DAY_GUARD:" + day, "{}")), day
+
+
+def _entry_guard(symbol, now=None, guard=None):
+    now = now or _now_la()
+    if guard is None:
+        guard, _ = _day_guard(now)
+    stops = guard.get("stops", {})
+    if len(stops) >= 2:
+        return "daily_stop_limit"
+    if symbol in {v["symbol"] for v in stops.values()}:
+        return "stopped_symbol_today"
+    if now.timestamp() < float(guard.get("last_stop", 0)) + 600:
+        return "stop_cooldown"
+    return ""
+
+
+def _record_cycle_guard(cur, config, cycle, stopped):
+    # The account execution lock serializes cycles; persist with cycle completion.
+    now = _now_la()
+    guard, day = _day_guard(now)
+    guard["last_exit"] = now.timestamp()
+    if stopped:
+        stops = guard.setdefault("stops", {})
+        identity = str(cycle["buy_order_id"])
+        if identity not in stops:
+            stops[identity] = {"symbol": config["symbol"], "at": now.timestamp()}
+            guard["last_stop"] = now.timestamp()
+    cur.execute("""INSERT INTO app_settings(setting_key,setting_value,updated_at)
+        VALUES (%s,%s,NOW()) ON DUPLICATE KEY UPDATE
+        setting_value=VALUES(setting_value),updated_at=NOW()""",
+        ("D_DAY_GUARD:" + day, json.dumps(guard)))
+
+
+def _entry_signal(symbol, refresh=False, guard=None):
+    from .d_entry_filter import check_entry
+    if guard is None:
+        guard, _ = _day_guard()
+    return check_entry(symbol, refresh=refresh, not_before=float(guard.get("last_exit", 0)))
 
 
 @dataclass(frozen=True)
@@ -183,6 +227,7 @@ def config_payload() -> dict:
         "flatten_minutes_before_close": 10,
         "market_exit_minutes_before_close": 10,
         "stop_loss_pct": D_STOP_LOSS_PCT,
+        "stop_cooldown_seconds": 600, "max_daily_stops": 2, "cycle_capital_fraction": 0.5,
         "cooldown_seconds": int(float(_runtime_text("D_GRID_COOLDOWN_SEC", "D_GRID_COOLDOWN_SEC", "5"))),
         "buy_timeout_seconds": _buy_timeout_seconds(),
         "entry_pct": float(_runtime_text("D_GRID_ENTRY_PCT", "D_GRID_ENTRY_PCT", "0.0025")),
@@ -317,7 +362,7 @@ def _auto_select_candidate(*, force: bool = False, exclude: set[str] | None = No
     last_check = float(_runtime_text("D_AUTO_SELECT_LAST_EPOCH", "D_AUTO_SELECT_LAST_EPOCH", "0") or 0)
     if not force and time_module.time() - last_check < interval:
         return None
-    active = fetch_all("SELECT symbol, state FROM d_grid_cycles WHERE state IN ('BUY_WORKING','SELL_WORKING','CLOSING','BUY_SUBMITTING','SELL_SUBMITTING') LIMIT 1")
+    active = fetch_all("SELECT symbol, state FROM d_grid_cycles WHERE state IN ('BUY_WORKING','SELL_WORKING','CLOSING','BUY_SUBMITTING','SELL_SUBMITTING','ERROR') LIMIT 1")
     if active:
         return {"kept": active[0]["symbol"], "reason": "active_cycle_locked"}
     rows = fetch_all(
@@ -325,15 +370,15 @@ def _auto_select_candidate(*, force: bool = False, exclude: set[str] | None = No
            WHERE enabled=1
            ORDER BY signal_date DESC, base_score DESC, signal_dollar_volume DESC LIMIT 120"""
     )
-    from .d_entry_filter import check_entry
+    guard, _ = _day_guard()
     scored = []
     for row in rows:
         symbol = str(row.get('symbol') or '').upper()
-        if not symbol or symbol in (exclude or set()):
+        if not symbol or symbol in (exclude or set()) or _entry_guard(symbol, guard=guard):
             continue
         # Pool admission already applied liquidity/price/range filters.
         # Intraday selection uses the same signal check as actual buy entry.
-        entry = check_entry(symbol)
+        entry = _entry_signal(symbol, guard=guard)
         if not entry['ok']:
             continue
         price = entry['price']
@@ -406,8 +451,13 @@ def _set_cycle(cur, symbol: str, **values) -> None:
 
 def _start_cycle(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: bool, client) -> str:
     symbol = config["symbol"]
-    from .d_entry_filter import check_entry
-    entry = check_entry(symbol, refresh=True)
+    blocked = _entry_guard(symbol)
+    if blocked:
+        return "entry_filter:" + blocked
+    cur.execute("SELECT symbol FROM d_grid_cycles WHERE symbol<>%s AND state IN ('BUY_WORKING','SELL_WORKING','CLOSING','BUY_SUBMITTING','SELL_SUBMITTING','ERROR') LIMIT 1", (symbol,))
+    if cur.fetchone():
+        return "entry_filter:active_cycle_locked"
+    entry = _entry_signal(symbol, refresh=True)
     if not entry['ok']:
         return f"entry_filter:{entry['reason']}"
     anchor = entry["price"]
@@ -519,6 +569,8 @@ def _submit_sell(cur, config: dict, cycle: dict, qty: float, fill_price: float, 
 
 
 def _finish_cycle(cur, config: dict, cycle: dict, sell_price: float) -> str:
+    stopped = _stop_pending(cycle)
+    _record_cycle_guard(cur, config, cycle, stopped)
     qty = float(cycle.get("buy_filled_qty") or 0)
     buy_price = float(cycle.get("buy_filled_price") or 0)
     pnl = _money((sell_price - buy_price) * qty)
@@ -538,7 +590,7 @@ def _finish_cycle(cur, config: dict, cycle: dict, sell_price: float) -> str:
                  ('filled','canceled','cancelled','expired','rejected','replaced','closed')""",
         (_sell_base + "-s", _sell_base + "-c-%", _sell_base + "-cm-%", _sell_base + "-cl-%"),
     )
-    _event(cur, config["symbol"], int(cycle["cycle_no"]), "CYCLE_FILLED", "COOLDOWN", order_id=str(cycle.get("sell_order_id") or ""), qty=qty, price=sell_price, message=f"gross_pnl={pnl:.2f}" + (" exit_reason=STOP_LOSS_5PCT" if _stop_pending(cycle) else ""))
+    _event(cur, config["symbol"], int(cycle["cycle_no"]), "CYCLE_FILLED", "COOLDOWN", order_id=str(cycle.get("sell_order_id") or ""), qty=qty, price=sell_price, message=f"gross_pnl={pnl:.2f}" + (" exit_reason=STOP_LOSS_1PCT" if _stop_pending(cycle) else ""))
     return f"cycle_filled gross_pnl={pnl:.2f}"
 
 
@@ -558,6 +610,20 @@ def _advance_buy(cur, config: dict, cycle: dict, quote: StockQuote, dry_run: boo
         return _submit_sell(cur, config, cycle, float(cycle["buy_qty"]), min(quote.ask, float(cycle["buy_limit"])), True, client)
     order = client.get_order_by_id(str(cycle["buy_order_id"]))
     status, filled_qty, fill_price = _order_snapshot(order)
+    # A partial buy is already exposure: do not wait for the ten-minute timeout.
+    if filled_qty > 0 and (_stop_pending(cycle) or _stop_threshold_hit(fill_price, quote, _now_la())):
+        if not _stop_pending(cycle):
+            set_app_setting(_stop_key(cycle), str(cycle["buy_order_id"]))
+            _event(cur, config["symbol"], int(cycle["cycle_no"]),
+                   "STOP_LOSS_TRIGGERED", "BUY_WORKING", qty=filled_qty,
+                   price=_stop_price(quote, _now_la()),
+                   message=f"partial/filled buy entry={fill_price}; cancel buy before market remaining")
+        if status not in TERMINAL_ORDER_STATES:
+            if status != "pending_cancel":
+                client.cancel_order_by_id(str(cycle["buy_order_id"]))
+            return "stop_buy_cancel_pending"
+        return _submit_sell(cur, config, cycle, filled_qty, fill_price, False, client,
+                            closing=True, force_market=True)
     if status == "filled":
         return _submit_sell(cur, config, cycle, filled_qty, fill_price, False, client)
     if status in TERMINAL_ORDER_STATES:
@@ -647,12 +713,33 @@ def _stop_pending(cycle):
     return bool(identity) and get_app_setting(_stop_key(cycle), '') == identity
 
 
+def _stop_price(quote, now):
+    # Match each price to its own timestamp: stale bid must not hide a fresh trade.
+    separate = getattr(quote, "source_timestamps", False)
+    for price, stamp in ((quote.bid, quote.quote_timestamp if separate else quote.timestamp),
+                         (quote.last, quote.trade_timestamp if separate else quote.timestamp)):
+        if stamp is not None and stamp.tzinfo is not None and math.isfinite(float(price or 0)):
+            if float(price or 0) > 0 and -5 <= (now - stamp).total_seconds() <= 60:
+                return float(price)
+    return 0.0
+
+
 def _stop_threshold_hit(cost, quote, now):
-    if cost <= 0 or quote.timestamp is None:
-        return False
-    age = (now - quote.timestamp).total_seconds()
-    price = float(quote.bid or quote.last or 0)
-    return -5 <= age <= 60 and price > 0 and price <= cost * (1 - D_STOP_LOSS_PCT)
+    price = _stop_price(quote, now)
+    return cost > 0 and price > 0 and price <= cost * (1 - D_STOP_LOSS_PCT)
+
+
+_quote_warning_at = {}
+
+
+def _quote_warning(cur, config, cycle, reason):
+    symbol = config["symbol"]
+    epoch = time_module.monotonic()
+    if epoch - _quote_warning_at.get(symbol, -60) >= 60:
+        _quote_warning_at[symbol] = epoch
+        _event(cur, symbol, int(cycle["cycle_no"]), "STOP_QUOTE_UNAVAILABLE",
+               str(cycle["state"]), message=reason[:500])
+        print(f"[D STOP] {symbol}: {reason}", flush=True)
 
 
 def _handle_stop_loss(cur, config, cycle, client, now, dry_run=False):
@@ -660,9 +747,14 @@ def _handle_stop_loss(cur, config, cycle, client, now, dry_run=False):
     if not pending:
         try:
             quote = get_latest_stock_quote(config['symbol'], pool='D')
-        except Exception:
-            return None  # Keep scheduled closeout available when quotes fail.
-        if not _stop_threshold_hit(float(cycle.get('buy_filled_price') or 0), quote, now):
+        except Exception as exc:
+            _quote_warning(cur, config, cycle, type(exc).__name__)
+            return None  # Scheduled closeout remains available.
+        checked_at = max(now, _now_la())
+        if not _stop_price(quote, checked_at):
+            _quote_warning(cur, config, cycle, f'stale/missing quote: bid={quote.bid} last={quote.last} timestamp={quote.timestamp}')
+            return None
+        if not _stop_threshold_hit(float(cycle.get('buy_filled_price') or 0), quote, checked_at):
             return None
         if not dry_run:
             sold, value = _cycle_sell_totals(cur, cycle, client)
@@ -670,8 +762,8 @@ def _handle_stop_loss(cur, config, cycle, client, now, dry_run=False):
                 return _finish_cycle(cur, config, cycle, value / sold)
         set_app_setting(_stop_key(cycle), str(cycle['buy_order_id']))
         _event(cur, config['symbol'], int(cycle['cycle_no']), 'STOP_LOSS_TRIGGERED',
-               str(cycle['state']), price=float(quote.bid or quote.last),
-               message='actual_entry_loss>=5%; cancel-confirm then market remaining')
+               str(cycle['state']), price=_stop_price(quote, checked_at),
+               message=f'actual_entry_loss>=1%; entry={cycle.get("buy_filled_price")} quote_time={quote.timestamp}; cancel-confirm then market remaining')
     if dry_run:
         quote = get_latest_stock_quote(config['symbol'], pool='D')
         price = float(quote.bid or quote.last or 0)

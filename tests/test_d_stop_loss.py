@@ -8,7 +8,7 @@ from ultimate_v1.alpaca_gateway import StockQuote
 class StopLossTests(unittest.TestCase):
     def test_boundary_and_freshness(self):
         now=datetime.now(timezone.utc)
-        for price,seconds,hit in [(95.01,0,False),(95,0,True),(94,0,True),(94,61,False)]:
+        for price,seconds,hit in [(99.01,0,False),(99,0,True),(98,0,True),(98,61,False)]:
             self.assertEqual(hit,d._stop_threshold_hit(100,StockQuote('TEST',price,price,price,now-timedelta(seconds=seconds)),now))
         self.assertFalse(d._stop_threshold_hit(100,StockQuote('TEST',90,90,90),now))
 

@@ -126,7 +126,7 @@ def sample_tick():
         _tick_lock.release()
 
 
-def check_entry(symbol, current_price=None, *, refresh=False):
+def check_entry(symbol, current_price=None, *, refresh=False, not_before=0):
     try:
         now = datetime.now(timezone.utc)
         if refresh:
@@ -136,6 +136,6 @@ def check_entry(symbol, current_price=None, *, refresh=False):
             return {'ok':False,'reason':'stale_quote'}
         # Both daily gain and trend use the same timestamped Alpaca trade source.
         return evaluate_entry(float(observation.get('price',0)),float(observation.get('previous_close',0)),
-                              observation.get('samples',[]),now=now)
+                              [p for p in observation.get('samples',[]) if p[0] > not_before],now=now)
     except Exception as exc:
         return {'ok':False,'reason':'market_data_unavailable','error_type':type(exc).__name__}

@@ -35,6 +35,9 @@ class StockQuote:
     bid: float
     ask: float
     timestamp: datetime | None = None
+    trade_timestamp: datetime | None = None
+    quote_timestamp: datetime | None = None
+    source_timestamps: bool = False
 
 
 def _float_attr(obj, name: str, default: float = 0.0) -> float:
@@ -163,14 +166,14 @@ def get_latest_stock_quote(
     client = stock_data_client(pool=pool, profile=profile)
     feed_name = feed or env_str("ALPACA_DATA_FEED", "iex")
     last = bid = ask = 0.0
-    timestamp = None
+    timestamp = trade_timestamp = quote_timestamp = None
     try:
         response = client.get_stock_latest_trade(
             StockLatestTradeRequest(symbol_or_symbols=[symbol], feed=feed_name)
         )
         trade = response.get(symbol) if isinstance(response, dict) else getattr(response, symbol, None)
         last = float(getattr(trade, "price", 0) or 0)
-        timestamp = getattr(trade, "timestamp", None)
+        timestamp = trade_timestamp = getattr(trade, "timestamp", None)
     except Exception:
         pass
     try:
@@ -180,10 +183,11 @@ def get_latest_stock_quote(
         quote = response.get(symbol) if isinstance(response, dict) else getattr(response, symbol, None)
         bid = float(getattr(quote, "bid_price", 0) or 0)
         ask = float(getattr(quote, "ask_price", 0) or 0)
-        timestamp = getattr(quote, "timestamp", None) or timestamp
+        quote_timestamp = getattr(quote, "timestamp", None)
+        timestamp = quote_timestamp or timestamp
     except Exception:
         pass
-    return StockQuote(symbol, last, bid, ask, timestamp)
+    return StockQuote(symbol, last, bid, ask, timestamp, trade_timestamp, quote_timestamp, True)
 
 
 def get_account_snapshot(pool: str | None = None, profile: str | None = None) -> AccountSnapshot | None:

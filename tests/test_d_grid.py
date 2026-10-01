@@ -73,13 +73,13 @@ class DGridTests(unittest.TestCase):
     @patch("ultimate_v1.d_grid._runtime_text", return_value="10000")
     @patch("ultimate_v1.d_grid._runtime_bool", return_value=True)
     @patch("ultimate_v1.d_grid.get_capital_allocation")
-    def test_cycle_budget_uses_all_available_below_cap(self, allocation_mock, _bool_mock, _text_mock) -> None:
+    def test_cycle_budget_uses_half_available_below_cap(self, allocation_mock, _bool_mock, _text_mock) -> None:
         allocation_mock.return_value = SimpleNamespace(available={"D": 6_000.0})
-        self.assertEqual(6_000.0, _cycle_budget({"lot_notional": 250.0}))
+        self.assertEqual(3_000.0, _cycle_budget({"lot_notional": 250.0}))
 
     @patch("ultimate_v1.d_grid._runtime_text", return_value="10000")
     @patch("ultimate_v1.d_grid._runtime_bool", return_value=True)
     @patch("ultimate_v1.d_grid.get_capital_allocation")
     def test_cycle_budget_is_capped_at_ten_thousand(self, allocation_mock, _bool_mock, _text_mock) -> None:
-        allocation_mock.return_value = SimpleNamespace(available={"D": 12_000.0})
+        allocation_mock.return_value = SimpleNamespace(available={"D": 24_000.0})
         self.assertEqual(10_000.0, _cycle_budget({"lot_notional": 250.0}))

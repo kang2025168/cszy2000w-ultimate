@@ -5,6 +5,9 @@ from ultimate_v1.d_entry_filter import evaluate_entry, check_entry
 
 class DEntryFilterTests(unittest.TestCase):
     def setUp(self):
+        guard = patch("ultimate_v1.d_grid._day_guard", return_value=({}, "2026-09-22"))
+        guard.start()
+        self.addCleanup(guard.stop)
         self.now=datetime(2026,9,22,16,0,tzinfo=timezone.utc)
         self.bars=[(self.now.timestamp()-(19-i)*15,103+i*.05) for i in range(20)]
 
@@ -36,7 +39,8 @@ class DEntryFilterTests(unittest.TestCase):
         from ultimate_v1.alpaca_gateway import StockQuote
         client=Mock()
         with patch('ultimate_v1.d_entry_filter.check_entry',return_value={'ok':False,'reason':'not_rising'}), patch.object(d,'_submit_limit') as submit, patch.object(d,'_cycle_budget') as budget:
-            result=d._start_cycle(Mock(),{'symbol':'MOCK','max_spread':1},{},StockQuote('MOCK',104,104,104),False,client)
+            cur = Mock(); cur.fetchone.return_value = None
+            result=d._start_cycle(cur,{'symbol':'MOCK','max_spread':1},{},StockQuote('MOCK',104,104,104),False,client)
         self.assertEqual('entry_filter:not_rising',result)
         submit.assert_not_called()
         budget.assert_not_called()
@@ -98,4 +102,4 @@ class DEntryFilterTests(unittest.TestCase):
         with patch.object(d,'_runtime_bool',return_value=True),patch.object(d,'_runtime_text',side_effect=lambda k,e,v:v),patch.object(d,'fetch_all',side_effect=[[],[candidate]]),patch('ultimate_v1.d_entry_filter.check_entry',return_value={'ok':True,'price':2.24,'day_gain_pct':12}) as check,patch.object(d,'db_conn',return_value=MagicMock()),patch.object(d,'set_app_setting'):
             selected=d._auto_select_candidate(force=True)
         self.assertEqual('MOCK',selected['symbol'])
-        check.assert_called_once_with('MOCK')
+        check.assert_called_once_with('MOCK', refresh=False, not_before=0.0)

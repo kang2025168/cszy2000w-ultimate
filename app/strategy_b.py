@@ -136,6 +136,9 @@ def get_strategy_b_runtime_config() -> dict:
             "initial_stop_pct": B_INITIAL_STOP_MULT - 1.0,
             "early_lock_start_pct": 0.03,
             "early_lock_profit_pct": 0.01,
+            "holding_exit_trading_days": 3,
+            "holding_exit_peak_gain_pct": 0.05,
+            "holding_exit_minutes_before_close": 10,
             "trail_lock_start_pct": B_TRAIL_LOCK_START_PCT,
             "trail_lock_profit_pct": B_TRAIL_LOCK_SL_MULT - 1.0,
             "initial_stop_grace_seconds": B_INITIAL_STOP_GRACE_SECONDS,
@@ -586,6 +589,8 @@ def _get_recent_closes(conn, code: str, n: int = 4):
 def _update_ops_fields(conn, code: str, **kwargs):
     if not kwargs:
         return
+    if "qty" in kwargs and float(kwargs["qty"] or 0) <= 0:
+        kwargs["b_entry_at"] = None
     cols = []
     vals = []
     for k, v in kwargs.items():
@@ -1218,6 +1223,7 @@ def _sell_qty(conn, code: str, qty: int, reason: str, limit_price: float | None 
     UPDATE `{OPS_TABLE}`
     SET
         qty=%s,
+        b_entry_at=IF(qty=0,NULL,b_entry_at),
         last_order_side='sell',
         last_order_intent=%s,
         last_order_id=%s,
@@ -2671,6 +2677,7 @@ def strategy_B_buy(code: str) -> bool:
             b_last_profit=%s,
             b_stop_pending_since=NULL,
             b_stop_pending_sl=NULL,
+            b_entry_at=NULL,
             can_sell=1,
             can_buy=0,
             last_order_side='buy',
@@ -2700,6 +2707,16 @@ def strategy_B_buy(code: str) -> bool:
                     code,
                 ),
             )
+
+        # Save broker fill time independently of later sync/order metadata.
+        try:
+            from ultimate_v1.b_holding_exit import _aware
+            from datetime import timezone
+            filled_at = _aware(getattr(tc.get_order_by_id(str(order_id)), "filled_at", None))
+            if filled_at is not None:
+                _update_ops_fields(conn, code, b_entry_at=filled_at.astimezone(timezone.utc).replace(tzinfo=None))
+        except Exception as exc:
+            print(f"[B BUY] {code} entry time recovery pending: {type(exc).__name__}", flush=True)
 
         print(
             f"[B BUY] {code} ✅ bought order_id={order_id} qty={qty_to_write} "
@@ -3748,7 +3765,7 @@ def strategy_B_sell(code: str) -> bool:
             # 普通B初始止损统一用 cost*0.95，给动量股正常震荡空间。
             init_sl = float(cost) * B_INITIAL_STOP_MULT if cost > 0 else 0
             if init_sl > 0:
-                sl = _cap_sl_below_price(init_sl, price)
+                sl = round(init_sl, 2)
                 try:
                     _update_ops_fields(conn, code, stop_loss_price=sl)
                     print(f"[B SELL] {code} init_sl={sl:.2f}", flush=True)
@@ -3756,8 +3773,8 @@ def strategy_B_sell(code: str) -> bool:
                     print(f"[B SELL] {code} init_sl write failed: {e}", flush=True)
 
         # ----- 2) 动态拖移 SL -----
-        if price > cost:
-            dyn_sl = _calc_dynamic_trail_sl(cost, price, sl)
+        if peak_price > cost:
+            dyn_sl = _calc_dynamic_trail_sl(cost, peak_price, sl)
             if dyn_sl > sl + 0.01:
                 old_sl = sl
                 sl = dyn_sl
@@ -3831,7 +3848,7 @@ def strategy_B_sell(code: str) -> bool:
         if sl > 0 and price <= sl:
             row_now = _latest_row_for_lock(conn, row_now)
 
-            if _initial_stop_grace_active(row_now, up_pct):
+            if _initial_stop_grace_active(row_now, up_pct) and peak_price <= cost * 1.03:
                 last_time = _parse_dt(row_now.get("last_order_time"))
                 elapsed = int((datetime.now() - last_time).total_seconds()) if last_time else 0
                 left = max(INITIAL_STOP_GRACE_SECONDS - elapsed, 0)
@@ -3893,6 +3910,15 @@ def strategy_B_sell(code: str) -> bool:
         else:
             if pending_since:
                 _clear_pending_stop(conn, code)
+
+        # Time exit follows price protections and uses an immutable confirmed entry.
+        try:
+            from ultimate_v1.b_holding_exit import holding_exit_due
+            if holding_exit_due(conn, row, code, OPS_TABLE, peak_gain_pct):
+                return _sell_qty(conn, code, qty,
+                    "TIME_EXIT_3_SESSIONS peak_never_reached_5pct", limit_price=price) or traded
+        except Exception as exc:
+            print(f"[B TIME EXIT] {code}: unavailable {type(exc).__name__}", flush=True)
 
         # ----- 5) Stage 推进（含跳级,纯减仓）-----
         highest_rule = _find_highest_hit_stage(up_pct)

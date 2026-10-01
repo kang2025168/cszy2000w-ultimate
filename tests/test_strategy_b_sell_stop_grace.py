@@ -10,11 +10,11 @@ class FakeConn:
 
 
 class StrategyBSellStopGraceTests(unittest.TestCase):
-    def _run_case(self, price: float):
+    def _run_case(self, price: float, peak=0, sl=99, age=0):
         import app.strategy_b as b
 
         calls = []
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = (datetime.now()-timedelta(seconds=age)).strftime("%Y-%m-%d %H:%M:%S")
         row = {
             "stock_code": "MOCKB",
             "stock_type": "B",
@@ -22,7 +22,8 @@ class StrategyBSellStopGraceTests(unittest.TestCase):
             "can_sell": 1,
             "qty": 10,
             "cost_price": 100.0,
-            "stop_loss_price": 99.0,
+            "stop_loss_price": sl,
+            "b_peak_price": peak,
             "trigger_price": 100.0,
             "b_stage": 0,
             "last_order_side": "buy",
@@ -52,6 +53,21 @@ class StrategyBSellStopGraceTests(unittest.TestCase):
             b.get_snapshot_realtime = originals["get_snapshot_realtime"]
             b._update_ops_fields = originals["_update_ops_fields"]
             b._sell_qty = originals["_sell_qty"]
+
+    def test_historical_peak_locks_profit_after_price_falls_below_cost(self):
+        result, calls = self._run_case(96, peak=104.09, sl=95, age=600)
+        self.assertTrue(result)
+        self.assertIn('sl=101.00', calls[0][2])
+
+    def test_earned_profit_lock_is_not_delayed_by_initial_grace(self):
+        result, calls = self._run_case(100.5, peak=104, sl=95)
+        self.assertTrue(result)
+        self.assertIn('sl=101.00', calls[0][2])
+
+    def test_missing_stop_is_not_lowered_below_falling_price(self):
+        result, calls = self._run_case(94, sl=0, age=600)
+        self.assertTrue(result)
+        self.assertIn('sl=95.00', calls[0][2])
 
     def test_initial_stop_grace_blocks_normal_stop(self):
         result, calls = self._run_case(98.0)
