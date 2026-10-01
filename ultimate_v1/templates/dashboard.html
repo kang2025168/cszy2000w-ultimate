@@ -1198,6 +1198,7 @@
     .rebalance-summary { font-size:11px; line-height:1.5; margin:5px 0; }
     .rebalance-advice summary { cursor:pointer; font-size:11px; }
     .rebalance-advice .rebalance-detail { display:grid; gap:4px; margin-top:6px; font-size:11px; }
+    #dynamicRiskBadge { display:flex; align-items:center; justify-content:center; font-size:clamp(11px,1vw,14px); font-weight:700; white-space:nowrap; line-height:1.2; padding:4px 8px; min-width:0; }
     </style>
 </head>
 <body>
@@ -2335,6 +2336,17 @@
           </label>`;
       }).join('');
     }
+    function positionPlan(cap) {
+      const d = cap.dynamic_leverage || {};
+      const live = !!(d.initialized && d.fresh && d.valid);
+      const ratio = live ? d.ceiling : d.reference?.ceiling;
+      const targets = {...(cap.targets || {})};
+      if (ratio != null) {
+        for (const g of ['B','C','D']) targets[g] = Number(cap.base_targets?.[g] || 0) * Number(ratio);
+      }
+      const total = ['B','C','D'].reduce((n,g)=>n+Number(targets[g] || 0),0);
+      return {ratio, targets, total, reference:!live, used:Number(cap.margin_summary?.used || 0)};
+    }
     function poolCard(g, cap) {
       const defensive = cap.defensive_pools?.[g];
       if (defensive) {
@@ -2347,20 +2359,22 @@
         return `<div class="pool-card defensive-pool"><div class="pool-head"><div><div class="pool-name">${g} 资金池 <span class="pool-label">${defensive.label}</span></div><div class="small-muted">${sub}</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>底仓目标 ${money(target)}</span><span>缺口 ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
       }
       const riskTarget = Number(cap.targets[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
-      const displayTarget = riskTarget;
+      const plan = positionPlan(cap);
+      const displayTarget = Number(plan.targets[g] ?? riskTarget);
       const used = Number(cap.used[g] || 0), av = Number(cap.available[g] || 0);
       const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
-      const riskPct = poolRiskPct(g, cap);
+      const riskPct = g !== 'A' && plan.ratio != null ? Number(plan.ratio)*100 : poolRiskPct(g, cap);
       return `<div class="pool-card"><div class="pool-head"><div><div class="pool-name">${poolName(g)}</div><div class="small-muted">${poolBaseLabel(g, basePct)} · ${poolRiskLabel(g, riskPct)}</div></div><div class="small-muted">${w.toFixed(1)}%</div></div><div class="pool-value">${money(used)}</div><div class="pool-amounts"><span>${poolTargetLabel(g)} ${money(displayTarget)}</span><span>${poolAvailableLabel(g)} ${money(av)}</span></div><div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div></div>`;
     }
     function poolRow(g, cap) {
       const riskTarget = Number(cap.targets?.[g] || 0), baseTarget = Number(cap.base_targets?.[g] || 0);
-      const displayTarget = riskTarget;
+      const plan = positionPlan(cap);
+      const displayTarget = Number(plan.targets[g] ?? riskTarget);
       const used = Number(cap.used?.[g] || 0), av = Number(cap.available?.[g] || 0);
       const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
       const basePct = Number(cap.base_percents?.[g] || 0) * 100;
-      const riskPct = poolRiskPct(g, cap);
+      const riskPct = g !== 'A' && plan.ratio != null ? Number(plan.ratio)*100 : poolRiskPct(g, cap);
       const weekly = cap.weekly_pools;
       const ledger = weekly?.groups?.[g];
       if (ledger && g !== 'A') {
@@ -2373,7 +2387,7 @@
           <div class="hero-pool-mid"><div><div class="small-muted">当前策略净资产</div><span class="hero-pool-used">${money(ledger.equity)}</span></div><div style="text-align:right"><div class="small-muted">本周盈亏</div><strong style="color:${pnl < 0 ? '#dc2626' : '#15936a'}">${weekly.error ? '待核对' : money(pnl) + ' (' + pct + ')'}</strong></div></div>
           <div class="pool-amounts"><span>持仓占用 ${money(used)}</span><span>可开仓 ${money(av)}</span></div>
           <div class="bar"><div class="fill" style="width:${w}%;background:${colors[g]}"></div></div>
-          <div class="hero-pool-meta">开仓预算 ${money(displayTarget)} · ${poolRiskLabel(g, riskPct)}${ledger.net_flow ? ' · 净转入 ' + money(ledger.net_flow) : ''}</div>
+          <div class="hero-pool-meta">计划预算 ${money(displayTarget)} · 仓位 ${riskPct.toFixed(0)}%${plan.reference ? '（参考）' : ''}${ledger.net_flow ? ' · 净转入 ' + money(ledger.net_flow) : ''}</div>
           ${g === 'D' && Math.abs(unallocated) >= .01 ? `<div class="small-muted">账户待归属差额 ${money(unallocated)}（含费用、期权等）</div>` : ''}</div>`;
       }
       if (g === 'A') {
@@ -2419,12 +2433,13 @@
       grid.innerHTML = ['A','B','C','D'].map(g => {
         const riskTarget = Number(cap.targets?.[g] || 0);
         const baseTarget = Number(cap.base_targets?.[g] || 0);
-        const displayTarget = riskTarget;
+        const plan = positionPlan(cap);
+      const displayTarget = Number(plan.targets[g] ?? riskTarget);
         const used = Number(cap.used?.[g] || 0);
         const av = Number(cap.available?.[g] || 0);
         const w = displayTarget > 0 ? Math.min(100, used / displayTarget * 100) : 0;
         const basePct = Number(cap.base_percents?.[g] || 0) * 100;
-        const riskPct = poolRiskPct(g, cap);
+        const riskPct = g !== 'A' && plan.ratio != null ? Number(plan.ratio)*100 : poolRiskPct(g, cap);
         const riskMetricLabel = g === 'A' ? '账户约束' : '可开比例';
         const riskMetricValue = g === 'A' ? '无杠杆' : `${riskPct.toFixed(0)}%`;
         return `
@@ -5603,7 +5618,8 @@
         const label = !open ? `${g} 关闭` : blocked ? `${g} 风控` : `${g} ${money(amt)}`;
         return `<span class="daily-pill ${cls}">${label}</span>`;
       }).join('');
-      const leverage = Number(cap?.margin_usage_percent || cap?.total_risk_percent || 1);
+      const plan = positionPlan(cap);
+      const leverage = plan.ratio;
       const leverageMode = cap?.margin_usage_mode === 'MANUAL' ? '固定杠杆' : '动态仓位';
       const targetExposure = Number(cap?.total_risk_percent || 0);
       const usedTotal = Number(cap?.used_total || 0);
@@ -5612,7 +5628,9 @@
       const margin = cap?.margin_summary || {};
       const ratioText = value => value == null ? '--' : (Number(value) * 100).toFixed(1) + '%';
       const riskBlocked = risk?.block_all_new;
-      const advice = riskBlocked
+      const advice = plan.reference
+        ? '按参考仓位 '+(Number(plan.ratio || 0)*100).toFixed(0)+'% 规划预算；开市核验后按策略信号执行，当前可下单额度不因此增加。'
+        : riskBlocked
         ? '风控已阻止新开仓，今天以复盘持仓、检查止损和等待风险解除为主。'
         : !risk?.block_b && bCandidates > 0 && enabled.B !== false && Number(available.B || 0) > 0
           ? `先复盘 B 策略候选 ${bCandidates} 只，再按额度和买点分批处理。`
@@ -5624,14 +5642,14 @@
       const actionTone = riskBlocked ? 'danger' : availableTotal > 0 ? 'ok' : 'warn';
       el.innerHTML = `
         <div class="daily-action-section">
-          <div class="daily-action-title">今日可用行动</div>
+          <div class="daily-action-title">当前可下单额度</div>
           <div class="daily-action-main ${actionTone}">${availableTotal > 0 ? money(availableTotal) : '暂停开仓'}</div>
           <div class="daily-pill-row">${poolStatus}</div>
         </div>
         <div class="daily-action-section">
           <div class="daily-action-title">风险预算</div>
-          <div class="daily-action-main">${leverage.toFixed(2)}x</div>
-          <div class="daily-action-note">${leverageMode}上限 · 有效目标 ${ratioText(margin.target_percent)}<br>保证金账户仓位 ${ratioText(margin.exposure_percent)} · 预算使用率 ${ratioText(margin.budget_used_percent)}</div>
+          <div class="daily-action-main">${leverage == null ? '待确认' : Number(leverage).toFixed(2)+'x'}${plan.reference ? ' · 参考' : ''}</div>
+          <div class="daily-action-note">计划预算 ${money(plan.total)} · 仓位 ${ratioText(leverage)}<br>保证金账户仓位 ${ratioText(margin.exposure_percent)} · 预算使用率 ${ratioText(plan.total > 0 ? plan.used / plan.total : null)}</div>
           <div class="daily-action-note">${cap?.margin_usage_reason || '跟随当前风控设置'}</div>
         </div>
         <div class="daily-action-section">
