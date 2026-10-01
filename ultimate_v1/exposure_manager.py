@@ -80,7 +80,7 @@ def _target_exposure_pct() -> tuple[float, str]:
 
 
 def _target_exposure_cap() -> float:
-    return max(1.0, min(1.5, _margin_usage_pct()))
+    return max(0.5, min(1.5, _margin_usage_pct()))
 
 
 def _split_symbols(raw: str, default: str) -> list[str]:
@@ -244,6 +244,12 @@ def _build_weighted_buy_actions(
     min_trade: float,
     reason: str,
 ) -> tuple[float, list[dict]]:
+    from .capital_manager import get_capital_allocation
+    from .rebalance_budget import buying_budget
+    allocation = get_capital_allocation()
+    if allocation is None:
+        return 1.0, []
+    allowed = buying_budget(allocation, risk)["pools"]
     group_values, by_symbol = _holding_maps(holdings)
     weights = _strategy_weights(risk)
     if not weights:
@@ -252,8 +258,8 @@ def _build_weighted_buy_actions(
     scale_ratio = target_value / current_value if current_value > 0 else 1.0
     group_gaps: list[tuple[str, float, float]] = []
     for group, weight in weights.items():
-        group_target = target_value * weight
-        gap = group_target - group_values.get(group, 0.0)
+        group_target = allocation.target_for(group)
+        gap = min(max(0.0, group_target - group_values.get(group, 0.0)), allowed.get(group, 0.0))
         if gap >= min_trade:
             group_gaps.append((group, group_target, gap))
 
@@ -430,103 +436,16 @@ def _group_allowed(side: str, group: str) -> bool:
 
 
 def _submit_stock_order(symbol: str, side: str, qty: int, price: float = 0.0, group: str | None = None):
-    from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import LimitOrderRequest
-
-    tc = alpaca_gateway.trading_client(pool=group)
-    order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
-    limit_price = alpaca_gateway.stock_limit_price(price)
-    if limit_price <= 0:
-        raise RuntimeError("missing current price for limit order")
-    req = LimitOrderRequest(
-        symbol=symbol,
-        qty=int(qty),
-        side=order_side,
-        time_in_force=TimeInForce.DAY,
-        limit_price=limit_price,
-        extended_hours=True,
-    )
-    return tc.submit_order(order_data=req)
+    raise RuntimeError("调仓仅生成规划，请由策略执行器下单")
 
 
 def execute_exposure_plan(plan: ExposurePlan) -> list[dict]:
     """AUTO 模式下按计划提交订单；SUGGEST/OFF 只返回 planned/skipped。"""
-    mode = plan.mode.upper()
-    if mode != "AUTO":
-        return [{**a, "status": "planned"} for a in plan.actions]
-
-    max_buy = env_float("REBALANCE_MAX_BUY_PER_ROUND_USD", 1500.0)
-    max_sell = env_float("REBALANCE_MAX_SELL_PER_ROUND_USD", 1500.0)
-    min_trade = env_float("REBALANCE_MIN_TRADE_USD", 100.0)
-    bought = 0.0
-    sold = 0.0
-    real_qty_by_group: dict[str, dict[str, float]] = {}
-    results: list[dict] = []
-
-    for action in plan.actions:
-        side = str(action["side"]).lower()
-        group = str(action["strategy_group"]).upper()
-        value = float(action["delta_value"])
-        status = "skipped"
-        order_id = ""
-        reason = str(action["reason"])
-        symbol = str(action["symbol"]).upper()
-        price = float(action.get("price") or 0.0)
-
-        if value < min_trade:
-            reason = "below_min_trade"
-        elif symbol in SIGNAL_POOL_SYMBOLS:
-            reason = "strategy_signal_pool_suggestion_only"
-        elif side == "buy" and price <= 0:
-            reason = "missing_realtime_price_for_auto_buy"
-        elif not _group_allowed(side, group):
-            reason = f"permission_denied {group}_{side}"
-        elif side == "buy" and bought + value > max_buy:
-            reason = "round_buy_limit"
-        elif side == "sell" and sold + value > max_sell:
-            reason = "round_sell_limit"
-        else:
-            qty = int(math.floor(float(action["qty"])))
-            if side == "sell":
-                real_qty = real_qty_by_group.setdefault(group, _latest_position_map(pool=group))
-                qty = min(qty, int(math.floor(real_qty.get(str(action["symbol"]), 0.0))))
-            if qty <= 0:
-                reason = "qty_floor_zero"
-            else:
-                try:
-                    order = _submit_stock_order(str(action["symbol"]), side, qty, price, group=group)
-                    order_id = str(getattr(order, "id", "") or getattr(order, "order_id", "") or "")
-                    status = "submitted"
-                    if side == "buy":
-                        bought += value
-                    else:
-                        sold += value
-                except Exception as exc:
-                    status = "failed"
-                    reason = f"submit_error {str(exc)[:180]}"
-
-        with db_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE rebalance_actions
-                    SET status=%s, reason=%s, order_id=%s,
-                        executed_at=IF(%s IN ('submitted','failed','skipped'), NOW(), executed_at)
-                    WHERE round_id=%s AND symbol=%s AND strategy_group=%s AND side=%s
-                    """,
-                    (
-                        status,
-                        reason[:255],
-                        order_id,
-                        status,
-                        action["round_id"],
-                        action["symbol"],
-                        action["strategy_group"],
-                        action["side"],
-                    ),
-                )
-        results.append({**action, "status": status, "order_id": order_id, "reason": reason})
-    return results
+    # Generic rebalancing has no shared strategy exit priority or fill ownership.
+    # Never bypass strategy executors, even when an old deployment sets AUTO.
+    return [{**a, "status": "planned" if plan.mode.upper() == "SUGGEST" else "skipped",
+             "reason": str(a.get("reason", "")) + "; strategy_executor_required"}
+            for a in plan.actions]
 
 
 def refresh_exposure_plan(mode: str | None = None, execute: bool = True) -> ExposurePlan:

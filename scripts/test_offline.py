@@ -8,7 +8,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # A deterministic environment is part of this runner, not production behavior.
 os.environ.clear()
-os.environ.update(CSZY_LOAD_DOTENV="0", ALPACA_MODE="paper", TRADE_ENV="paper", LOG_DIR="/tmp/cszy-test-logs")
+os.environ.update(DYNAMIC_RISK_ENABLED="0", CSZY_LOAD_DOTENV="0", ALPACA_MODE="paper", TRADE_ENV="paper", LOG_DIR="/tmp/cszy-test-logs")
 
 class OfflineSocket(socket.socket):
     def connect(self, *args, **kwargs):

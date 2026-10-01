@@ -10,7 +10,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.clear()
-os.environ.update(CSZY_LOAD_DOTENV="0", DB_HOST="127.0.0.1", DB_PORT="13379",
+os.environ.update(DYNAMIC_RISK_ENABLED="0", CSZY_LOAD_DOTENV="0", DB_HOST="127.0.0.1", DB_PORT="13379",
                   DB_USER="root", DB_PASS="", DB_NAME="cszy_test", ALPACA_MODE="paper")
 OriginalSocket = socket.socket
 
@@ -246,6 +246,36 @@ class ExecutionDatabaseTests(unittest.TestCase):
         row = fetch_one("SELECT qty,is_bought FROM stock_operations WHERE stock_code='MOCK' AND stock_type='D'")
         self.assertEqual(5, float(row["qty"]))
         self.assertEqual(1, row["is_bought"])
+
+    def test_dynamic_reduction_partial_fill_is_idempotent_and_pool_isolated(self):
+        with db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SHOW COLUMNS FROM stock_operations LIKE 'b_stage'")
+                if not cur.fetchone(): cur.execute("ALTER TABLE stock_operations ADD COLUMN b_stage INT DEFAULT 0")
+                cur.execute("INSERT INTO stock_operations (stock_code,stock_type,strategy_group,qty,is_bought,cost_price,stop_loss_price,b_stage) VALUES ('MOCK','B','B',5,1,100,110,2),('MOCK','C','C',7,1,90,80,0)")
+        cid='cszy-dyn-B-test'
+        journal.prepare(cid,'trading','B','MOCK','sell',{'qty':2,'price':120,'market':False,'started_at':0})
+        for _ in range(2): manual_ledger.apply_order(cid,self.order(1,120))
+        self.assertEqual(4,float(fetch_one("SELECT qty FROM stock_operations WHERE stock_code='MOCK' AND stock_type='B'")['qty']))
+        self.assertEqual(7,float(fetch_one("SELECT qty FROM stock_operations WHERE stock_code='MOCK' AND stock_type='C'")['qty']))
+        row=fetch_one("SELECT stop_loss_price,b_stage FROM position_holdings WHERE symbol='MOCK' AND strategy_group='B'")
+        self.assertEqual(110,float(row['stop_loss_price']));self.assertEqual(2,row['b_stage'])
+        for _ in range(2): manual_ledger.apply_order(cid,self.order(2,120,'filled'))
+        self.assertEqual(3,float(fetch_one("SELECT qty FROM stock_operations WHERE stock_code='MOCK' AND stock_type='B'")['qty']))
+        self.assertEqual(2,float(journal.get_intent(cid)['accounted_qty']))
+
+    def test_dynamic_state_survives_database_round_trip(self):
+        from ultimate_v1.dynamic_leverage import advance,read_state,KEY
+        from ultimate_v1.state_store import set_app_setting
+        from datetime import datetime,timezone
+        import json
+        now=datetime.now(timezone.utc)
+        state=advance({'ceiling':1.5},target=.5,reason='test',circuit=True,now=now,market_open=True,valid=True)
+        set_app_setting(KEY,json.dumps(state))
+        restored=read_state(now)
+        self.assertEqual(.5,restored['ceiling'])
+        self.assertFalse(restored['allow_buy'])
+        self.assertEqual(state['circuit_day'],restored['circuit_day'])
 
 
 if __name__ == "__main__":

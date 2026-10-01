@@ -65,7 +65,7 @@ def apply_order(cid: str, order) -> dict:
                               is_bought=int(abs(new_qty) > 0.000001), can_buy=int(abs(new_qty) <= 0.000001),
                               can_sell=int(new_qty > 0.000001), last_order_id=oid,
                               last_order_side="buy" if side == "buy" else "sell",
-                              last_order_intent=f"{group}:MANUAL_{side.upper()} reconciled")
+                              last_order_intent=f"{group}:{'DYNAMIC' if cid.startswith('cszy-dyn-') else 'MANUAL'}_{side.upper()} reconciled")
                 if side == "buy":
                     values["stop_loss_price"] = stop.get("stop_loss_price", 0)
                 if existing:
@@ -73,7 +73,7 @@ def apply_order(cid: str, order) -> dict:
                 else:
                     _insert_ops_row(conn, table, columns, values)
                 upsert_buy_holding(symbol, group, new_qty, new_avg, current_price=avg,
-                    stop_loss_price=stop.get("stop_loss_price", (existing or {}).get("stop_loss_price", 0)),
+                    stop_loss_price=(existing or {}).get("stop_loss_price", 0) if side == "sell" else stop.get("stop_loss_price", 0),
                     take_profit_price=(existing or {}).get("take_profit_price", 0),
                     b_stage=(existing or {}).get("b_stage", 0), capital_pool=group,
                     last_order_id=oid, connection=conn)

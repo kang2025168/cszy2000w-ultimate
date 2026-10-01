@@ -622,6 +622,12 @@ def should_force_close_up_t_now(state: str) -> bool:
 
 
 def _buy_t_qty(conn, client, row: dict, qty: int, current_price: float, intent: str) -> FillResult:
+    from ultimate_v1.trading_gate import can_open_position
+    from ultimate_v1.dynamic_leverage import enabled as dynamic_enabled
+    if _ac_type(row) == "C" and dynamic_enabled():
+        allowed, why = can_open_position("C", qty * current_price)
+        if not allowed:
+            return FillResult(False, error=why)
     if not _has_buying_power(client, qty, current_price):
         return FillResult(False, error="buying_power")
     if not _acquire_intent_lock(conn, client, row, intent, "buy"):
@@ -1142,6 +1148,24 @@ def process_ac_t_symbol(conn, client, row: dict) -> str:
         return "skip:no_price"
     current_price = _money(raw_price)
 
+    if ac_type == "C" and not DRY_RUN:
+        from ultimate_v1.dynamic_reduction import pool_excess
+        from ultimate_v1.dynamic_leverage import enabled, read_state
+        excess, allocation = pool_excess("C")
+        reducing = excess > .01 or (enabled() and not read_state().get('allow_buy'))
+        if reducing and client.get_clock().is_open:
+            if state in {STATE_UP_HOLDING, STATE_UP_WAIT_COST, STATE_GAP_DOWN_HOLDING}:
+                return force_close_up_t(conn, client, row, current_price)
+            if state != STATE_IDLE:
+                from alpaca.trading.requests import GetOrdersRequest
+                from alpaca.trading.enums import QueryOrderStatus
+                orders = client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
+                if orders:
+                    return "risk_waiting_t_orders"
+                _set_row(conn, row, _reset_to_idle_fields())
+                return "risk_cancel_t_reentry"
+            return "risk_no_new_t"
+
     if should_force_recover_now(state):
         # 强制恢复优先级最高，即使已经过了新开做T窗口也要执行。
         return force_buyback_core(conn, client, row, current_price)
@@ -1175,6 +1199,13 @@ def process_ac_t_symbol(conn, client, row: dict) -> str:
 
 
 def run_strategy_ac_t_once(symbol: str | None = None, group: str | None = "C") -> list[dict]:
+    from ultimate_v1.order_journal import execution_lock
+    from ultimate_v1.account_config import profile_for_pool
+    with execution_lock(profile_for_pool(group or "C")):
+        return _run_strategy_ac_t_locked(symbol, group)
+
+
+def _run_strategy_ac_t_locked(symbol: str | None = None, group: str | None = "C") -> list[dict]:
     ensure_schema()
     group = str(group or "C").strip().upper()
     if group not in {"A", "C"}:

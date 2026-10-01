@@ -849,6 +849,24 @@ def _run_symbol_locked(symbol: str, *, now: datetime | None = None) -> str:
                     target_state = "BUY_WORKING" if buying else ("CLOSING" if any(tag in str(cycle.get("pending_client_order_id") or "") for tag in ("-c-", "-cl-", "-cm-")) else "SELL_WORKING")
                     _set_cycle(cur, symbol, state=target_state, **{("buy_order_id" if buying else "sell_order_id"): str(order.id)})
                     return "recovered_" + target_state.lower()
+                if not dry_run:
+                    from .dynamic_reduction import pool_excess, report
+                    excess, allocation = pool_excess("D")
+                    if excess > .01:
+                        report("D", "REDUCING", excess=excess)
+                        if state == "BUY_WORKING":
+                            order = client.get_order_by_id(str(cycle["buy_order_id"]))
+                            status, filled, price = _order_snapshot(order)
+                            if status not in TERMINAL_ORDER_STATES and status != "filled":
+                                client.cancel_order_by_id(str(order.id))
+                                return "risk_cancel_buy_pending"
+                            # Native buy transition accounts for any partial fill.
+                            quote = get_latest_stock_quote(symbol, pool="D")
+                            return _advance_buy(cur, config, cycle, quote, False, client)
+                        if cycle.get('sell_order_id') and state in {'SELL_WORKING','CLOSING','ERROR'}:
+                            if not client.get_clock().is_open:
+                                return "risk_waiting_market"
+                            return _last_minute_exit(cur, config, cycle, client)
                 if cycle.get('sell_order_id') and state in {'SELL_WORKING','CLOSING','ERROR'}:
                     stopped = _handle_stop_loss(cur, config, cycle, client, now, dry_run)
                     if stopped is not None:

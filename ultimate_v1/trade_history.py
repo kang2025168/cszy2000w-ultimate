@@ -11,8 +11,9 @@ def _record_manual_trade(preview: dict) -> None:
     filled_qty = _safe_float(preview.get("filled_qty"))
     price = _safe_float(preview.get("price"))
     filled_avg = _safe_float(preview.get("filled_avg_price"))
+    source = str(preview.get("source") or "手动")
     note = (
-        f"手动{ {'buy':'买入','sell':'卖出','short':'卖空'}.get(str(preview.get('side') or ''), '交易') }"
+        f"{source}{ {'buy':'买入','sell':'卖出','short':'卖空'}.get(str(preview.get('side') or ''), '交易') }"
         f" · {str(preview.get('order_type') or 'limit').upper()}"
         f" · 资金池 {str(preview.get('pool') or '').upper()}"
     )

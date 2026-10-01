@@ -167,7 +167,7 @@ def _auto_margin_usage_pct(risk) -> tuple[float, str]:
     qqq_change = float(getattr(risk, "qqq_change_pct", 0.0) or 0.0)
     loss_days = int(getattr(risk, "loss_days", 0) or 0)
     max_drawdown = float(getattr(risk, "max_drawdown", 0.0) or 0.0)
-    block_all = bool(getattr(risk, "block_all", False))
+    block_all = bool(getattr(risk, "block_all_new", False))
     risk_preference = str(getattr(risk, "risk_preference", "") or "中性")
 
     if block_all or trend == "向下" or vix >= 28 or loss_days >= 2 or max_drawdown >= 0.10:
@@ -197,6 +197,10 @@ def _auto_margin_usage_pct(risk) -> tuple[float, str]:
 
 
 def resolve_margin_usage_pct(risk=None) -> tuple[str, float, str]:
+    from .dynamic_leverage import enabled, read_state
+    if enabled():
+        state = read_state()
+        return "DYNAMIC", float(state.get("ceiling", .5)), str(state.get("reason") or "等待风控有效采样")
     mode = str(get_app_setting("RISK_MARGIN_MODE", "AUTO") or "AUTO").upper()
     if mode == "AUTO":
         risk = risk or get_risk_state()
@@ -251,7 +255,8 @@ def _market_exposure_pct(risk) -> float:
 def _risk_percents() -> tuple[float, dict[str, float]]:
     """计算 B/C/D 有效保证金额度；A 养老金现金账户不使用总杠杆。"""
     risk = get_risk_state()
-    total_pct = resolve_margin_usage_pct(risk)[1] * _market_exposure_pct(risk)
+    from .dynamic_leverage import enabled
+    total_pct = resolve_margin_usage_pct(risk)[1] * (1.0 if enabled() else _market_exposure_pct(risk))
     enabled = pool_enabled_settings()
     pool_pct = {
         group: 0.0 if not enabled[group] else max(0.0, min(1.0, _setting_float(f"RISK_{group}_POOL_PCT", 1.0)))
@@ -311,7 +316,6 @@ def _pool_base_percents() -> dict[str, float]:
 def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpaca_gateway.AccountSnapshot]) -> tuple[date, dict]:
     """更新额度缓存；B/C/D 本金由持久化周账本提供。"""
     month = _month_start()
-    weights, _allow_d = _mode_weights(mode)
     pool_base_percents = _pool_base_percents()
 
     def pool_snapshot(group: str) -> alpaca_gateway.AccountSnapshot:
@@ -333,7 +337,9 @@ def _ensure_monthly_capital_pools(mode: str, snap, broker_snaps: dict[str, alpac
             g:dict(initial=base_targets[g],equity=base_targets[g],pnl=0,net_flow=0,return_pct=None)
             for g in ('B','C','D')})
     for group in ('B', 'C', 'D'):
-        base_targets[group] = max(0.0, weekly['groups'][group]['equity'])
+        from .dynamic_leverage import enabled
+        ledger = weekly['groups'][group]
+        base_targets[group] = max(0.0, float(ledger['initial']) + float(ledger.get('net_flow', 0))) if enabled() else max(0.0, ledger['equity'])
         pool_base_percents[group] = {'B': .4, 'C': .4, 'D': .2}[group]
     # Unallocated account costs must not create extra aggregate buying capacity.
     margin_equity = max(0.0, float(pool_snapshot('B').equity))
@@ -472,6 +478,17 @@ def get_capital_allocation(mode: str | None = None) -> CapitalAllocation | None:
     margin_mode, margin_usage, margin_reason = resolve_margin_usage_pct()
     used = {group: float((by_group.get(group) or {}).get("used_capital") or 0) for group in ("A", "B", "C", "D")}
     available = {group: float((by_group.get(group) or {}).get("available_capital") or 0) for group in ("A", "B", "C", "D")}
+    from .dynamic_leverage import enabled as dynamic_enabled, read_state
+    if dynamic_enabled():
+        from .order_journal import reserved_for_pool
+        remaining = max(0.0, sum(targets[g] - used[g] - reserved_for_pool(g) for g in ('B','C','D')))
+        available_sum = sum(available[g] for g in ('B','C','D'))
+        if available_sum > remaining and available_sum > 0:
+            for group in ('B','C','D'):
+                available[group] *= remaining / available_sum
+    if dynamic_enabled() and not read_state().get('allow_buy'):
+        for group in ('B', 'C', 'D'):
+            available[group] = 0.0
     if weekly.get('error'):
         for group in ('B', 'C', 'D'):
             available[group] = 0.0

@@ -112,6 +112,9 @@ def _buy_one_locked(code: str, stype: str) -> bool:
         tb.log.info(f"[BUY BOT] skip {code}: strategy_{stype.lower()}_enabled=0")
         return False
 
+    from ultimate_v1.dynamic_leverage import enabled, read_state
+    if enabled() and not read_state().get("allow_buy"):
+        return False
     if stype == "B":
         try:
             from ultimate_v1.trading_gate import can_open_position
@@ -143,6 +146,10 @@ def _buy_one_locked(code: str, stype: str) -> bool:
 def run_sell_round(conn, config: SplitBotConfig, phase: str) -> tuple[object, bool]:
     conn = tb.ensure_conn_alive(conn)
     traded_any = False
+    if "B" in config.strategies:
+        from ultimate_v1.dynamic_reduction import consume
+        if consume("B"):
+            return conn, True
     rows = tb.load_rows(conn, mode="sell") or []
     if "B" in config.strategies:
         try:

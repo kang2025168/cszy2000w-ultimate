@@ -189,6 +189,9 @@ def _fetch_vix_value() -> tuple[float, str]:
                 valid = [_safe_float(x, 0.0) for x in closes if _safe_float(x, 0.0) > 0]
                 value = valid[-1] if valid else 0.0
             if value > 0:
+                observed = _safe_float(meta.get("regularMarketTime"), 0.0)
+                if not 0 <= time.time() - observed <= 1200:
+                    return value, "Yahoo过期报价"
                 return value, "Yahoo实时/延迟"
         except Exception as exc:
             print(f"[RISK VIX] Yahoo unavailable, fallback: {exc}", flush=True)

@@ -22,6 +22,9 @@ def run_once(action: str = "scan", symbol: str | None = None, group: str | None 
         return None
     heartbeat(BOT_NAME, "running", f"action={action}")
     if action == "scan":
+        from ultimate_v1.dynamic_reduction import consume
+        if group != "A" and consume("C"):
+            return {"risk_reduction": "pending"}
         if group:
             core_buy = run_strategy_c_core_buy_once() if group == "C" else None
             return {
@@ -53,7 +56,7 @@ def main() -> None:
     parser.add_argument("--group", choices=["A", "C"])
     parser.add_argument("--symbol")
     parser.add_argument("--loop", action="store_true")
-    parser.add_argument("--interval", type=int, default=300)
+    parser.add_argument("--interval", type=int, default=60)
     args = parser.parse_args()
     if args.loop:
         while True:

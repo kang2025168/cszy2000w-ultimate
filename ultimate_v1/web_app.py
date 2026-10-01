@@ -86,9 +86,19 @@ def _allocation_payload() -> dict:
     allocation = get_capital_allocation()
     if allocation is None:
         return {"ok": False, "error": "account_snapshot_failed"}
-    margin_mode, margin_usage, margin_reason = resolve_margin_usage_pct()
+    margin_mode, margin_usage, margin_reason = allocation.margin_usage_mode, allocation.margin_usage_percent, allocation.margin_usage_reason
     from .capital_manager import margin_budget_summary
     margin_summary = margin_budget_summary(allocation)
+    from .rebalance_budget import buying_budget
+    rebalance_budget = buying_budget(allocation, get_risk_state())
+    from .dynamic_leverage import enabled as dynamic_enabled, read_state
+    dynamic_state = read_state() if dynamic_enabled() else {}
+    reduction_states = {}
+    for group in ("B", "C", "D"):
+        try:
+            reduction_states[group] = json.loads(get_app_setting("DYNAMIC_REDUCTION_"+group, "{}") or "{}")
+        except (TypeError, ValueError):
+            reduction_states[group] = {}
     used = allocation.used
     available = allocation.available
     usable_total = sum(allocation.target_for(g) for g in ("A", "B", "C", "D"))
@@ -134,6 +144,10 @@ def _allocation_payload() -> dict:
         "base_total": base_total,
         "usable_total": usable_total,
         "margin_summary": margin_summary,
+        "rebalance_budget": rebalance_budget,
+        "dynamic_leverage": dynamic_state,
+        "dynamic_reductions": reduction_states,
+        "allocation_policy": "周初固定分配 B40% / C40% / D20%，周内盈亏归各池",
         "used_total": used_total,
         "total_risk_percent": allocation.total_risk_percent,
         "margin_usage_percent": margin_usage,
@@ -347,7 +361,7 @@ def _risk_payload() -> dict:
         "qqq_change_pct": state.qqq_change_pct,
         "vix": state.vix,
         "risk_preference": state.risk_preference,
-        "allocation_mode": state.allocation_mode,
+        "allocation_mode": "周初固定分配 B40% / C40% / D20%",
         "recommended_exposure": state.recommended_exposure,
         "recommended_weights": state.recommended_weights or {},
         "account_metrics_source": state.account_metrics_source,
@@ -2876,22 +2890,27 @@ class Handler(BaseHTTPRequestHandler):
                 _sync_buy_bot_control(bot_name, enabled)
                 self._send_json({"ok": True, "bot_name": bot_name, "enabled": enabled, "running": running})
             elif path == "/api/risk_settings":
+                from .dynamic_leverage import enabled as dynamic_enabled
+                if dynamic_enabled() and any(k in payload for k in ("margin_usage", "margin_mode")):
+                    self._send_json({"ok": False, "error": "当前由动态仓位管理控制上限，不支持手动杠杆"}, 400)
+                    return
                 risk_preference = str(payload.get("risk_preference") or "").strip()
                 margin_usage = payload.get("margin_usage")
                 margin_mode = str(payload.get("margin_mode") or "").strip().upper()
                 pool_enabled = payload.get("pool_enabled")
                 response = {"ok": True}
+                changes = {}
                 if risk_preference:
                     if risk_preference not in {"保守", "中性", "激进"}:
                         self._send_json({"ok": False, "error": "不支持的风险偏好"}, 400)
                         return
-                    set_app_setting("RISK_PREFERENCE", risk_preference)
+                    changes["RISK_PREFERENCE"] = risk_preference
                     response["risk_preference"] = risk_preference
                 if margin_mode:
                     if margin_mode not in {"AUTO", "MANUAL"}:
                         self._send_json({"ok": False, "error": "不支持的额度模式"}, 400)
                         return
-                    set_app_setting("RISK_MARGIN_MODE", margin_mode)
+                    changes["RISK_MARGIN_MODE"] = margin_mode
                     response["margin_mode"] = margin_mode
                 if margin_usage is not None:
                     try:
@@ -2901,8 +2920,8 @@ class Handler(BaseHTTPRequestHandler):
                     if margin_value not in {1.0, 1.1, 1.2, 1.3, 1.4, 1.5}:
                         self._send_json({"ok": False, "error": "不支持的保证金额度"}, 400)
                         return
-                    set_app_setting("RISK_MARGIN_MODE", "MANUAL")
-                    set_app_setting("RISK_TOTAL_CAPITAL_PCT", f"{margin_value:.1f}")
+                    changes["RISK_MARGIN_MODE"] = "MANUAL"
+                    changes["RISK_TOTAL_CAPITAL_PCT"] = f"{margin_value:.1f}"
                     response["margin_usage"] = margin_value
                 if isinstance(pool_enabled, dict):
                     current = {
@@ -2919,11 +2938,13 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json({"ok": False, "error": "至少保留一个资金池开启"}, 400)
                         return
                     for group, enabled in current.items():
-                        set_app_setting(f"RISK_{group}_POOL_ENABLED", "1" if enabled else "0")
+                        changes[f"RISK_{group}_POOL_ENABLED"] = "1" if enabled else "0"
                     response["pool_enabled"] = current
                 if not any(key in response for key in ("risk_preference", "margin_usage", "margin_mode", "pool_enabled")):
                     self._send_json({"ok": False, "error": "没有可更新的设置"}, 400)
                     return
+                for key, value in changes.items():
+                    set_app_setting(key, value)
                 try:
                     write_risk_state(get_risk_state())
                 except Exception as exc:

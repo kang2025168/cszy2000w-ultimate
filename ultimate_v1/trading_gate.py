@@ -12,6 +12,9 @@ def can_open_position(
     available_override: float | None = None,
 ) -> tuple[bool, str]:
     """记录风控提示，再过资金池；资金池允许才可以新开仓。"""
+    from .dynamic_leverage import enabled, read_state
+    if strategy_group.upper() in {"B", "C", "D", "F"} and enabled() and not read_state().get("allow_buy"):
+        return False, "dynamic_risk_not_ready_or_locked"
     risk_allow, risk_reason = can_open(strategy_group)
     if not risk_allow:
         return False, f"risk:{risk_reason}"

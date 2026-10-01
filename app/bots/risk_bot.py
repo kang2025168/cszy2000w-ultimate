@@ -21,6 +21,11 @@ def refresh_risk_state():
     ensure_schema()
     state = log_risk_state()
     write_risk_state(state)
+    from ultimate_v1.dynamic_leverage import enabled, refresh
+    if enabled():
+        refresh(state)
+        from ultimate_v1.dynamic_reduction import reconcile_pending
+        reconcile_pending()
     heartbeat(
         BOT_NAME,
         "running",
