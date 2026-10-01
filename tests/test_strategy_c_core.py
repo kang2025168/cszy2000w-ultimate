@@ -93,6 +93,48 @@ class StrategyCCorePlanTests(unittest.TestCase):
         )
         self.assertNotIn("QQQ", [plan.symbol for plan in plans])
 
+class ExecutableCorePlanTests(unittest.TestCase):
+    def plan(self, prices, available=1000, current=None):
+        from unittest.mock import patch
+        from ultimate_v1.strategy_c_watchlist import StrategyCWatchItem
+        items = (StrategyCWatchItem("QQQ", .1, "etf", 1, 1),
+                 StrategyCWatchItem("VOO", .09, "etf", 1, 2),
+                 StrategyCWatchItem("NEXT", .1, "stock", 2, 3))
+        with patch("ultimate_v1.strategy_c_core.STRATEGY_C_WATCHLIST", items):
+            return build_c_core_buy_plan(
+                target_capital=1816.91, available_capital=available,
+                buying_power=1000, current_values=current or {"QQQ":141.83,"VOO":136.86},
+                prices=prices, daily_budget_pct=1, daily_budget_max=0)
+
+    def test_production_residuals_do_not_block_next_tier(self):
+        plans = self.plan({"QQQ":740,"VOO":630,"NEXT":100})
+        self.assertEqual(["NEXT"], [p.symbol for p in plans])
+        self.assertLessEqual(plans[0].notional, plans[0].target_value)
+
+    def test_affordable_first_tier_keeps_priority(self):
+        plans = self.plan({"QQQ":300,"VOO":630,"NEXT":100})
+        self.assertEqual(["QQQ"], [p.symbol for p in plans])
+
+    def test_missing_invalid_prices_fail_closed(self):
+        for value in (0, -1, float("nan"), float("inf")):
+            self.assertEqual([], self.plan({"NEXT":value}))
+        self.assertEqual([], self.plan({}))
+
+    def test_available_budget_filters_unaffordable_lots(self):
+        plans = self.plan({"QQQ":740,"VOO":630,"NEXT":100}, available=26)
+        self.assertEqual(["NEXT"], [p.symbol for p in plans])
+        self.assertLessEqual(sum(p.notional for p in plans),26)
+
+    def test_proportional_split_drops_orders_below_lot_minimum(self):
+        plans = self.plan({"QQQ":700,"VOO":600,"NEXT":100}, available=100,
+                          current={"QQQ":1,"VOO":1})
+        self.assertEqual(1,len(plans))
+        for p in plans:
+            price={"QQQ":700,"VOO":600}[p.symbol]
+            self.assertGreaterEqual(_stock_qty_for_notional(p.notional,price),.1)
+        self.assertLessEqual(sum(p.notional for p in plans),100)
+
+
 class _CoreQtyCursor:
     def __init__(self, allocated_qty):
         self.allocated_qty = allocated_qty

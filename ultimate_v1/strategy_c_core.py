@@ -108,6 +108,7 @@ def build_c_core_buy_plan(
     cash_reserve: float = 25.0,
     max_orders: int = 3,
     tier_fill_ratio: float = 0.90,
+    prices: dict[str, float] | None = None,
 ) -> list[CoreBuyPlan]:
     """Create a target-gap plan bounded by pool budget and broker buying power.
 
@@ -133,20 +134,29 @@ def build_c_core_buy_plan(
 
     excluded = {str(symbol).upper() for symbol in (excluded_symbols or set())}
     deficits = [row for row in _candidate_deficits(target_capital, current_values) if row["item"].symbol not in excluded]
+    # An unbuyable residual must not hold every later tier hostage. Unknown
+    # quotes fail closed; do not assume an affordable lot when a map is supplied.
+    for row in deficits:
+        price = _safe_float((prices or {}).get(row["item"].symbol))
+        row["minimum"] = max(min_order, math.ceil(price * 10) / 100) if prices is not None and math.isfinite(price) and price > 0 else min_order
+        row["eligible"] = (
+            (prices is None or (math.isfinite(price) and price > 0))
+            and min(row["deficit"], usable) >= row["minimum"]
+        )
     active_tier = None
     for tier in sorted({row["item"].tier for row in deficits}):
         tier_rows = [row for row in deficits if row["item"].tier == tier]
         tier_target = sum(row["target"] for row in tier_rows)
         tier_current = sum(min(row["current"], row["target"]) for row in tier_rows)
         completion = tier_current / tier_target if tier_target > 0 else 1.0
-        if completion < tier_fill_ratio and sum(row["deficit"] for row in tier_rows) >= min_order:
+        if completion < tier_fill_ratio and any(row["eligible"] for row in tier_rows):
             active_tier = tier
             break
     if active_tier is None:
-        available_rows = [row for row in deficits if row["deficit"] >= min_order]
+        available_rows = [row for row in deficits if row["eligible"]]
     else:
         available_rows = [
-            row for row in deficits if row["item"].tier == active_tier and row["deficit"] >= min_order
+            row for row in deficits if row["item"].tier == active_tier and row["eligible"]
         ]
     if not available_rows:
         return []
@@ -157,9 +167,9 @@ def build_c_core_buy_plan(
     while len(selected) > 1:
         total_deficit = sum(row["deficit"] for row in selected)
         allocations = [min(row["deficit"], usable * row["deficit"] / total_deficit) for row in selected]
-        if all(value >= min_order for value in allocations):
+        if all(value >= row["minimum"] for row, value in zip(selected, allocations)):
             break
-        smallest = min(range(len(selected)), key=lambda index: allocations[index])
+        smallest = min(range(len(selected)), key=lambda index: allocations[index] / selected[index]["minimum"])
         selected.pop(smallest)
 
     total_deficit = sum(row["deficit"] for row in selected)
@@ -169,7 +179,7 @@ def build_c_core_buy_plan(
     plans = []
     for row, allocation in zip(selected, allocations):
         amount = math.floor(float(allocation) * 100) / 100.0
-        if amount < min_order:
+        if amount < row["minimum"]:
             continue
         item = row["item"]
         plans.append(
@@ -516,13 +526,24 @@ def _run_strategy_c_core_buy_locked(*, dry_run: bool | None = None, ignore_marke
         return {**result, "ok": False, "reason": block_reason}
 
     current_values = _current_c_values()
+    excluded = _busy_c_symbols()
+    prices = {}
+    for row in _candidate_deficits(float(allocation.C_target or 0), current_values):
+        symbol = row["item"].symbol
+        if symbol in excluded or row["deficit"] < env_float("C_CORE_MIN_ORDER_USD", 25.0):
+            continue
+        try:
+            prices[symbol] = alpaca_gateway.get_latest_stock_price(symbol, pool="C")
+        except Exception as exc:
+            print(f"[C CORE] planning quote unavailable {symbol}: {exc}", flush=True)
     plans = build_c_core_buy_plan(
+        prices=prices,
         target_capital=float(allocation.C_target or 0.0),
         available_capital=float(allocation.available.get("C", 0.0) or 0.0),
         buying_power=_safe_float(getattr(account, "buying_power", 0)),
         current_values=current_values,
         daily_spent=_daily_spent(),
-        excluded_symbols=_busy_c_symbols(),
+        excluded_symbols=excluded,
         min_order=env_float("C_CORE_MIN_ORDER_USD", 25.0),
         daily_budget_pct=env_float("C_CORE_DAILY_BUDGET_PCT", 1.0),
         daily_budget_max=env_float("C_CORE_DAILY_BUDGET_MAX_USD", 0.0),
