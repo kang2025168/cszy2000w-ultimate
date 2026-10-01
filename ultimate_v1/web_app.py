@@ -90,9 +90,11 @@ def _allocation_payload() -> dict:
     from .capital_manager import margin_budget_summary
     margin_summary = margin_budget_summary(allocation)
     from .rebalance_budget import buying_budget
-    rebalance_budget = buying_budget(allocation, get_risk_state())
-    from .dynamic_leverage import enabled as dynamic_enabled, read_state
+    display_risk = get_risk_state()
+    rebalance_budget = buying_budget(allocation, display_risk)
+    from .dynamic_leverage import enabled as dynamic_enabled, read_state, reference
     dynamic_state = read_state() if dynamic_enabled() else {}
+    dynamic_state["reference"] = reference(display_risk)
     reduction_states = {}
     for group in ("B", "C", "D"):
         try:

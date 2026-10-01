@@ -104,7 +104,7 @@ def refresh(risk):
     from .order_journal import execution_lock
     from .alpaca_gateway import get_latest_stock_quote
     now=datetime.now(ZoneInfo('UTC'))
-    valid=False; market_open=False; candidate_valid=True
+    valid=False; market_open=False; candidate_valid=True; issues=[]
     try:
         target,reason,circuit=candidate(risk)
     except (ValueError,TypeError,AttributeError):
@@ -119,6 +119,12 @@ def refresh(risk):
             quote_time=datetime.fromisoformat(quote_time.replace('Z','+00:00'))
         now=datetime.now(ZoneInfo('UTC'))
         age=(now-quote_time).total_seconds() if quote_time and quote_time.tzinfo else float('inf')
+        if not candidate_valid: issues.append('风险参数无效')
+        if not market_open: issues.append('休市，等待开市后有效采样')
+        if not 0 <= age <= 180: issues.append('QQQ报价过期或缺少时间')
+        if risk.vix_source != 'Yahoo实时/延迟': issues.append('VIX来源：'+str(risk.vix_source))
+        if not str(risk.account_metrics_source).startswith('Alpaca实时账户'): issues.append('账户来源：'+str(risk.account_metrics_source))
+        if risk.market_trend not in ('向上','横盘','向下') or any(x in str(risk.market_reason) for x in ('不足','未启用','失败','环境变量','手动')): issues.append('趋势数据不可核验')
         valid=(candidate_valid and 0 <= age <= 180 and float(quote.last or quote.bid or 0)>0
                and risk.market_trend in ('向上','横盘','向下')
                and not any(x in str(risk.market_reason) for x in ('不足','未启用','失败','环境变量','手动'))
@@ -126,8 +132,8 @@ def refresh(risk):
                and risk.vix_source == 'Yahoo实时/延迟'
                and str(risk.account_metrics_source).startswith('Alpaca实时账户')
                and all(math.isfinite(float(v)) for v in (risk.vix,risk.daily_pnl_pct,risk.max_drawdown)))
-    except Exception:
-        pass
+    except Exception as exc:
+        issues.append("风险采样失败："+type(exc).__name__)
     with execution_lock('dynamic_leverage_state'):
         try:
             old=json.loads(get_app_setting(KEY,'{}') or '{}')
@@ -136,5 +142,25 @@ def refresh(risk):
         except (ValueError,TypeError):
             old={}
         state=advance(old,target=target,reason=reason,circuit=circuit,now=now,market_open=market_open,valid=valid)
+        state["data_issues"]=issues
+        if not valid:
+            state["reason"]="；".join(issues) or "风险数据校验未通过"
         set_app_setting(KEY,json.dumps(state,ensure_ascii=False))
     return state
+
+
+def reference(risk):
+    """Display-only calculation from available inputs; never advances execution state."""
+    try:
+        values = (risk.vix, risk.qqq_change_pct, risk.daily_pnl_pct,
+                  risk.max_drawdown, risk.loss_days)
+        if (risk.market_trend not in ('向上', '横盘', '向下')
+                or float(risk.vix) <= 0
+                or not all(math.isfinite(float(v)) for v in values)):
+            return {}
+        ceiling, reason, _ = candidate(risk)
+        return dict(ceiling=ceiling, reason=reason, display_only=True,
+                    vix_source=str(getattr(risk, 'vix_source', '未知')),
+                    account_source=str(getattr(risk, 'account_metrics_source', '未知')))
+    except (TypeError, ValueError, AttributeError, OverflowError):
+        return {}

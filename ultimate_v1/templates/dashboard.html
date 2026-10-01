@@ -1190,7 +1190,15 @@
     .monitor-row[data-status="error"] .monitor-status { color:#c62828; }
     .monitor-row[data-status="warn"] .monitor-status,.monitor-row[data-status="unknown"] .monitor-status { color:#a56308; }
     .monitor-row[data-status="off"] .monitor-status { color:#64748b; }
-  </style>
+  /* Keep status reports compact and prevent equal-height pool stretching. */
+    .hero-pools-list { grid-template-rows:none; grid-auto-rows:max-content; align-content:start; }
+    .hero-pools-list .hero-pool-row { align-content:start; }
+    .rebalance-advice { display:block; min-height:0; padding:10px; min-width:0; overflow-wrap:anywhere; }
+    .rebalance-title { justify-content:space-between; font-size:12px; }
+    .rebalance-summary { font-size:11px; line-height:1.5; margin:5px 0; }
+    .rebalance-advice summary { cursor:pointer; font-size:11px; }
+    .rebalance-advice .rebalance-detail { display:grid; gap:4px; margin-top:6px; font-size:11px; }
+    </style>
 </head>
 <body>
   <dialog id="botMonitorDialog" aria-labelledby="botMonitorTitle">
@@ -5558,6 +5566,8 @@
       const gap = Number(margin.budget || 0) - Number(margin.used || 0);
       const dynamic = cap.dynamic_leverage || {};
       const ready = dynamic.initialized && dynamic.fresh && dynamic.valid;
+      const reference = dynamic.reference || {};
+      const waitingLabel = dynamic.market_open === false && dynamic.fresh ? '休市' : '待确认';
       const checked = dynamic.checked_at ? new Date(dynamic.checked_at*1000).toLocaleTimeString() : '尚无采样';
       const statusNames = {WITHIN_LIMIT:'额度内',REDUCING:'减仓中',SELL_WORKING:'等待成交',CANCEL_PENDING:'等待撤单',WAITING_MARKET:'等待开市',WAITING_DATA:'等待有效数据',WAITING_STRATEGY:'等待策略核对',WAITING_RECONCILIATION:'持仓待核对',RECONCILIATION_PENDING:'成交待核对',ERROR:'执行异常'};
       const reductionText = ['B','C','D'].map(g => {
@@ -5565,15 +5575,15 @@
         const recent=Date.now()/1000-Number(r.checked_at || 0)<180;
         return g+'：'+(recent ? (statusNames[r.status] || '待检查') : '待检查');
       }).join(' · ');
-      el.innerHTML = `<span class="rebalance-icon">调</span>
-        <span class="rebalance-title">仓位规划 <span class="risk-chip info">策略执行</span></span>
-        <span class="rebalance-detail"><span>仓位 ${ready ? (Number(dynamic.ceiling)*100).toFixed(0)+'%' : '待确认'}</span>
-        <span>当前 ${(current*100).toFixed(1)}% · 允许仓位 ${ready ? (target*100).toFixed(1)+'%' : '待确认'}</span>
-        <span>${ready ? '仓位差额 '+money(Math.abs(gap)) : '风险数据未就绪，暂停新增买入'}</span>
-        <span>风控后 B/C/D 可用额度 ${budget ? money(budget.allowed_total) : '待核验'}</span>
-        <span>B40% / C40% / D20% · 周初分配，盈亏归各池</span><span>${esc(dynamic.reason || '等待风险采样')} · 恢复确认 ${Number(dynamic.count || 0)}/3 · 更新 ${esc(checked)}${dynamic.fresh ? '' : '（数据过期或未就绪）'}</span>
-        <span>${!ready ? '等待有效风险数据，不据此发起减仓' : gap < -.01 ? '超额待处理：' + money(-gap) : dynamic.allow_buy ? '额度已开放，等待策略买点' : '暂停新增买入'}</span>
-        <span>${esc(reductionText)}</span><span>由各策略执行；以实际成交确认进度</span></span>`;
+      const expanded = !!el.querySelector('details[open]');
+      el.innerHTML = `<div class="rebalance-title">仓位规划 <span>当前 ${(current*100).toFixed(1)}% · 允许 ${ready ? (Number(dynamic.ceiling)*100).toFixed(0)+'%' : reference.ceiling != null ? (Number(reference.ceiling)*100).toFixed(0)+'%（缓存参考）' : waitingLabel}</span></div>
+        <div class="rebalance-summary">${ready ? (gap < -.01 ? '超额待处理 '+money(-gap) : '可用额度 '+money(budget?.allowed_total || 0)) : esc(waitingLabel === '休市' ? '休市，按缓存计算参考仓位，开市后核验' : dynamic.reason || '等待风险机器人采样')} · 更新 ${esc(checked)}</div>
+        <details ${expanded ? 'open' : ''}><summary>执行详情</summary>
+        <div class="rebalance-detail"><span>${esc(reductionText)}</span>
+        <span>参考原因：${esc(reference.reason || dynamic.reason || '待核验')} · 行情来源：${esc(reference.vix_source || '未知')}</span><span>恢复确认 ${Number(dynamic.count || 0)}/3 · ${dynamic.allow_buy ? '等待策略买点' : '暂停新增买入'}</span>
+        <span>${esc(dynamic.reason || '尚无有效采样')}${dynamic.fresh ? '' : '（数据过期或未就绪）'}</span>
+        <span>B40% / C40% / D20% · 按实际成交确认进度</span></div></details>`;
+
     }
 
     function renderDailyActionPanel(cap, risk, holdingsPayload, state, dTactical) {
@@ -5691,8 +5701,8 @@
       marketRisk.classList.add('fresh');
       renderRebalanceAdvice(state.exposure_state, risk);
       const dynamic = cap.dynamic_leverage || {};
-      document.getElementById("dynamicRiskBadge").textContent = dynamic.initialized && dynamic.fresh && dynamic.valid ? `仓位 ${(Number(dynamic.ceiling)*100).toFixed(0)}%` : "仓位 · 待确认";
-      document.getElementById("dynamicRiskBadge").title = dynamic.reason || "等待有效行情";
+      document.getElementById("dynamicRiskBadge").textContent = dynamic.initialized && dynamic.fresh && dynamic.valid ? `仓位 ${(Number(dynamic.ceiling)*100).toFixed(0)}%` : dynamic.reference?.ceiling != null ? `仓位 ${(Number(dynamic.reference.ceiling)*100).toFixed(0)}% · 参考` : "仓位 · 待确认";
+      document.getElementById("dynamicRiskBadge").title = dynamic.valid && dynamic.fresh ? dynamic.reason : "缓存参考值；开市后核验，不代表已开放交易额度";
       renderBotMonitor(state.bot_monitor);
       window.latestBotProcesses = state.bot_processes || [];
       latestBotHeartbeats = state.bot_heartbeats || [];

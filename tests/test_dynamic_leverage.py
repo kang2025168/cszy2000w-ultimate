@@ -136,3 +136,15 @@ class DynamicLeverageTests(unittest.TestCase):
             self.assertFalse(state['initialized'])
             self.assertFalse(state['allow_buy'])
             self.assertNotIn('ceiling',state)
+
+    def test_cached_reference_calculates_without_opening_trade_gate(self):
+        risk = self.risk(vix=16.3)
+        with patch.object(dl, 'set_app_setting') as save:
+            result = dl.reference(risk)
+            self.assertEqual(result['ceiling'], 1.4)
+            self.assertTrue(result['display_only'])
+            save.assert_not_called()
+
+    def test_cached_reference_still_applies_account_risk(self):
+        self.assertEqual(dl.reference(self.risk(vix=16.3,loss_days=3))['ceiling'], .5)
+        self.assertEqual(dl.reference(self.risk(vix=float('nan'))), {})
