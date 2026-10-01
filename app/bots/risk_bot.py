@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import time
+import logging
 
 from ultimate_v1.risk_controller import log_risk_state
 from ultimate_v1.schema import ensure_schema
@@ -37,14 +38,18 @@ def refresh_risk_state():
 def loop(interval_sec: int) -> None:
     """循环刷新风险状态。"""
     while True:
-        refresh_risk_state()
-        time.sleep(interval_sec)
+        started = time.monotonic()
+        try:
+            refresh_risk_state()
+        except Exception:
+            logging.exception("Risk refresh failed; existing state will expire and block new buys")
+        time.sleep(max(1, interval_sec - (time.monotonic() - started)))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="风险机器人")
     parser.add_argument("--loop", action="store_true")
-    parser.add_argument("--interval", type=int, default=60)
+    parser.add_argument("--interval", type=int, default=30)
     args = parser.parse_args()
     if args.loop:
         loop(args.interval)

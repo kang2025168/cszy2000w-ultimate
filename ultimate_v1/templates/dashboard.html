@@ -1267,7 +1267,7 @@
                           <option value="激进">激进</option>
                         </select>
                         <button class="clear-btn" onclick="openClearModal()">清仓</button>
-                        <span class="risk-control-select" id="dynamicRiskBadge" title="仓位上限由风险机器人自动调整">动态仓位 · 待检查</span>
+                        <span class="risk-control-select" id="dynamicRiskBadge" title="仓位上限由风险机器人自动调整">仓位 · 待确认</span>
                       </div>
 
                     </div>
@@ -5556,6 +5556,9 @@
       const target = Number(margin.target_percent || 0);
       const current = Number(margin.exposure_percent || 0);
       const gap = Number(margin.budget || 0) - Number(margin.used || 0);
+      const dynamic = cap.dynamic_leverage || {};
+      const ready = dynamic.initialized && dynamic.fresh && dynamic.valid;
+      const checked = dynamic.checked_at ? new Date(dynamic.checked_at*1000).toLocaleTimeString() : '尚无采样';
       const statusNames = {WITHIN_LIMIT:'额度内',REDUCING:'减仓中',SELL_WORKING:'等待成交',CANCEL_PENDING:'等待撤单',WAITING_MARKET:'等待开市',WAITING_DATA:'等待有效数据',WAITING_STRATEGY:'等待策略核对',WAITING_RECONCILIATION:'持仓待核对',RECONCILIATION_PENDING:'成交待核对',ERROR:'执行异常'};
       const reductionText = ['B','C','D'].map(g => {
         const r=cap.dynamic_reductions?.[g] || {};
@@ -5564,12 +5567,12 @@
       }).join(' · ');
       el.innerHTML = `<span class="rebalance-icon">调</span>
         <span class="rebalance-title">仓位规划 <span class="risk-chip info">策略执行</span></span>
-        <span class="rebalance-detail"><span>动态仓位上限 ${(Number(cap.margin_usage_percent || 1)*100).toFixed(0)}%</span>
-        <span>当前 ${(current*100).toFixed(1)}% · 有效目标 ${(target*100).toFixed(1)}%</span>
-        <span>目标${gap >= 0 ? '增加' : '减少'}差额 ${money(Math.abs(gap))}</span>
+        <span class="rebalance-detail"><span>仓位 ${ready ? (Number(dynamic.ceiling)*100).toFixed(0)+'%' : '待确认'}</span>
+        <span>当前 ${(current*100).toFixed(1)}% · 允许仓位 ${ready ? (target*100).toFixed(1)+'%' : '待确认'}</span>
+        <span>${ready ? '仓位差额 '+money(Math.abs(gap)) : '风险数据未就绪，暂停新增买入'}</span>
         <span>风控后 B/C/D 可用额度 ${budget ? money(budget.allowed_total) : '待核验'}</span>
-        <span>B40% / C40% / D20% · 周初分配，盈亏归各池</span><span>${esc(cap.dynamic_leverage?.reason || '等待风险采样')} · 确认 ${Number(cap.dynamic_leverage?.count || 0)}/3</span>
-        <span>${gap < -.01 ? '超额减仓中：' + money(-gap) : cap.dynamic_leverage?.allow_buy ? '额度已开放，等待策略买点' : '暂停新增买入'}</span>
+        <span>B40% / C40% / D20% · 周初分配，盈亏归各池</span><span>${esc(dynamic.reason || '等待风险采样')} · 恢复确认 ${Number(dynamic.count || 0)}/3 · 更新 ${esc(checked)}${dynamic.fresh ? '' : '（数据过期或未就绪）'}</span>
+        <span>${!ready ? '等待有效风险数据，不据此发起减仓' : gap < -.01 ? '超额待处理：' + money(-gap) : dynamic.allow_buy ? '额度已开放，等待策略买点' : '暂停新增买入'}</span>
         <span>${esc(reductionText)}</span><span>由各策略执行；以实际成交确认进度</span></span>`;
     }
 
@@ -5688,7 +5691,7 @@
       marketRisk.classList.add('fresh');
       renderRebalanceAdvice(state.exposure_state, risk);
       const dynamic = cap.dynamic_leverage || {};
-      document.getElementById("dynamicRiskBadge").textContent = `动态上限 ${(Number(dynamic.ceiling || .5)*100).toFixed(0)}%`;
+      document.getElementById("dynamicRiskBadge").textContent = dynamic.initialized && dynamic.fresh && dynamic.valid ? `仓位 ${(Number(dynamic.ceiling)*100).toFixed(0)}%` : "仓位 · 待确认";
       document.getElementById("dynamicRiskBadge").title = dynamic.reason || "等待有效行情";
       renderBotMonitor(state.bot_monitor);
       window.latestBotProcesses = state.bot_processes || [];

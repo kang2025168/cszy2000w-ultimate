@@ -121,3 +121,18 @@ class DynamicLeverageTests(unittest.TestCase):
             self.assertTrue(state['valid'])
             self.assertEqual(state['ceiling'],1.)
             self.assertEqual(state['count'],1)
+
+    def test_missing_state_is_not_an_initialized_fifty_percent_decision(self):
+        with patch.object(dl,'get_app_setting',return_value='{}'):
+            state=dl.read_state()
+            self.assertFalse(state['initialized'])
+            self.assertFalse(state['fresh'])
+            self.assertFalse(state['allow_buy'])
+            self.assertNotIn('ceiling',state)
+
+    def test_corrupt_state_does_not_publish_fake_ceiling(self):
+        with patch.object(dl,'get_app_setting',return_value='{broken'):
+            state=dl.read_state()
+            self.assertFalse(state['initialized'])
+            self.assertFalse(state['allow_buy'])
+            self.assertNotIn('ceiling',state)

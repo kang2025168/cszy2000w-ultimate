@@ -89,12 +89,14 @@ def read_state(now=None):
         ceiling=float(state.get('ceiling',.5))
         if not math.isfinite(ceiling) or not .5 <= ceiling <= 1.5:
             raise ValueError('bad ceiling')
-        state['fresh']=0 <= age <= MAX_STATE_AGE
+        state['initialized']='ceiling' in state and 'checked_at' in state
+        state['age_seconds']=max(0,age)
+        state['fresh']=state['initialized'] and 0 <= age <= MAX_STATE_AGE
         state['allow_buy']=bool(state.get('valid') and state['fresh'] and state.get('market_open') and
                                 state.get('circuit_day') != now.astimezone(ZoneInfo('America/New_York')).date().isoformat())
         return state
     except (ValueError,TypeError,AttributeError):
-        return dict(ceiling=.5,fresh=False,valid=False,allow_buy=False,status='DATA_UNAVAILABLE')
+        return dict(initialized=False,fresh=False,valid=False,allow_buy=False,status='DATA_UNAVAILABLE',reason='尚未取得有效风险状态')
 
 
 def refresh(risk):
