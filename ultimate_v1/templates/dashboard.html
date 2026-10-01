@@ -1199,6 +1199,14 @@
     .rebalance-advice summary { cursor:pointer; font-size:11px; }
     .rebalance-advice .rebalance-detail { display:grid; gap:4px; margin-top:6px; font-size:11px; }
     #dynamicRiskBadge { display:flex; align-items:center; justify-content:center; font-size:clamp(11px,1vw,14px); font-weight:700; white-space:nowrap; line-height:1.2; padding:4px 8px; min-width:0; }
+    .hero-side-column { align-content:start; grid-template-rows:auto auto; }
+    .pool-execution-overview { padding:10px; border:1px solid var(--line); border-radius:8px; background:#fff; min-width:0; }
+    .pool-execution-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:8px 0; }
+    .pool-execution-grid > div { display:flex; flex-direction:column; gap:4px; padding:7px; background:#f3f7fc; border-radius:6px; font-size:11px; }
+    .plan-detail-button { font-size:11px; padding:3px 0; border:0; background:transparent; color:#075985; height:auto; }
+    #positionPlanDialog { width:min(480px,90vw); max-height:80vh; overflow:auto; border:1px solid var(--line); border-radius:12px; padding:18px; color:var(--ink); }
+    #positionPlanDialog::backdrop { background:rgba(15,23,42,.3); }
+    #positionPlanDialog p { font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
     </style>
 </head>
 <body>
@@ -1287,6 +1295,7 @@
               <div class="hero-side-column">
                 <div class="mobile-real-assets" id="mobileRealAssets"></div>
                 <div class="hero-pools-list" id="heroPools"></div>
+                <div id="poolExecutionOverview" class="pool-execution-overview"></div>
               </div>
               <div class="daily-action-panel" id="brokerBalances">
                 <div class="daily-action-section">
@@ -5590,14 +5599,24 @@
         const recent=Date.now()/1000-Number(r.checked_at || 0)<180;
         return g+'：'+(recent ? (statusNames[r.status] || '待检查') : '待检查');
       }).join(' · ');
-      const expanded = !!el.querySelector('details[open]');
+
       el.innerHTML = `<div class="rebalance-title">仓位规划 <span>当前 ${(current*100).toFixed(1)}% · 允许 ${ready ? (Number(dynamic.ceiling)*100).toFixed(0)+'%' : reference.ceiling != null ? (Number(reference.ceiling)*100).toFixed(0)+'%（缓存参考）' : waitingLabel}</span></div>
         <div class="rebalance-summary">${ready ? (gap < -.01 ? '超额待处理 '+money(-gap) : '可用额度 '+money(budget?.allowed_total || 0)) : esc(waitingLabel === '休市' ? '休市，按缓存计算参考仓位，开市后核验' : dynamic.reason || '等待风险机器人采样')} · 更新 ${esc(checked)}</div>
-        <details ${expanded ? 'open' : ''}><summary>执行详情</summary>
-        <div class="rebalance-detail"><span>${esc(reductionText)}</span>
-        <span>参考原因：${esc(reference.reason || dynamic.reason || '待核验')} · 行情来源：${esc(reference.vix_source || '未知')}</span><span>恢复确认 ${Number(dynamic.count || 0)}/3 · ${dynamic.allow_buy ? '等待策略买点' : '暂停新增买入'}</span>
-        <span>${esc(dynamic.reason || '尚无有效采样')}${dynamic.fresh ? '' : '（数据过期或未就绪）'}</span>
-        <span>B40% / C40% / D20% · 按实际成交确认进度</span></div></details>`;
+        <button class="plan-detail-button" onclick="document.getElementById('positionPlanDialog').showModal()">查看判断依据 ↗</button>`;
+      const overview = document.getElementById('poolExecutionOverview');
+      if (overview) overview.innerHTML = `<div class="rebalance-title">仓位执行 <span class="small-muted">${dynamic.allow_buy ? '按信号执行' : waitingLabel === '休市' ? '休市等待' : '新增买入暂停'}</span></div>
+        <div class="pool-execution-grid">${['B','C','D'].map(g => {
+          const r=cap.dynamic_reductions?.[g] || {};
+          const age=Date.now()/1000-Number(r.checked_at || 0);
+          const status=age>=0 && age<180 ? (statusNames[r.status] || '待检查') : '待检查';
+          return `<div><strong>${g}</strong><span>${esc(status)}</span></div>`;
+        }).join('')}</div><div class="small-muted">恢复确认 ${Number(dynamic.count || 0)}/3 · 更新 ${esc(checked)}</div>`;
+      const dialogBody = document.getElementById('positionPlanDialogBody');
+      if (dialogBody) dialogBody.innerHTML = `<p>${esc(reductionText)}</p>
+        <p>判断：${esc(reference.reason || dynamic.reason || '待核验')} · 行情来源：${esc(reference.vix_source || '未知')}</p>
+        <p>${esc(dynamic.reason || '尚无有效采样')}${dynamic.fresh ? '' : '（数据过期或未就绪）'}</p>
+        <p>恢复确认 ${Number(dynamic.count || 0)}/3；缓存参考不会直接开放下单额度。</p>
+        <p>B40% / C40% / D20% · 按实际成交确认进度</p>`;
 
     }
 
@@ -5837,5 +5856,9 @@
     setInterval(loadAll, 30000);
     setInterval(() => { if (optionHistoryVisible && manualTradeTab === 'option') loadOptionHistory(); }, 60000);
   </script>
+<dialog id="positionPlanDialog" aria-labelledby="positionPlanDialogTitle">
+      <form method="dialog"><div class="rebalance-title"><h3 id="positionPlanDialogTitle">仓位判断依据</h3><button aria-label="关闭">关闭</button></div></form>
+      <div id="positionPlanDialogBody"></div>
+    </dialog>
 </body>
 </html>
